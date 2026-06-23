@@ -1,0 +1,30 @@
+node_modules/
+.DS_Store
+*.log
+.vite/
+coverage/
+
+# このリポジトリは npm 専用
+# 誤ってpnpm vitestなどを実行するとpnpm installが暗黙的に実行され
+# node_modules/.bin/vp が pnpm shim で上書きされて `vp` 直叩きが壊れる事象あり
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# 個人設定
+.claude/settings.local.json
+CLAUDE.local.md
+.env
+.env.*
+
+.claude/skills/
+.agents/skills
+skills-lock.json
+
+# .tempディレクトリは維持するが中身は管理しない
+.temp/*
+!.temp/.gitkeep
+
+# レビュー依頼の生成物・回収パッケージ (§8 ファイル命名規約)
+*-review.html
+*-feedback.json
