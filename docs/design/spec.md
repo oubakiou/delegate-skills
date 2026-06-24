@@ -30,13 +30,13 @@ main agent
 
 ## 3. skill 一覧
 
-| skill                | 用途                                       | subagent_type   | ツール権限                                       | 既定モデル | env                                              |
-| -------------------- | ------------------------------------------ | --------------- | ------------------------------------------------ | ---------- | ------------------------------------------------ |
-| `delegate-explore`   | read-only のコード/ドキュメント探索・読解  | Explore         | read-only（Read/Grep/Glob）                      | `haiku`    | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
-| `delegate-implement` | コード実装・修正（1 コミットに収まる単位） | general-purpose | Edit/Write/Bash（push なし）                     | `sonnet`   | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
-| `delegate-git`       | git + gh 操作                              | general-purpose | git/gh 限定はプロンプト制約で担保（push・PR 可） | `haiku`    | `DELEGATE_GIT_MODEL` / `DELEGATE_WORK_DIR`       |
-| `delegate-chore`     | フォールバック雑務                         | general-purpose | Edit/Write/Bash（push なし）                     | `haiku`    | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
-| `delegate-review`    | コードレビュー（差分の指摘）               | general-purpose | read-only（Read/Grep/Glob）                      | `opus`     | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
+| skill                                         | 用途                                       | subagent_type   | ツール権限                                       | 既定モデル | env                                              |
+| --------------------------------------------- | ------------------------------------------ | --------------- | ------------------------------------------------ | ---------- | ------------------------------------------------ |
+| [`delegate-explore`](delegate-explore.md)     | read-only のコード/ドキュメント探索・読解  | Explore         | read-only（Read/Grep/Glob）                      | `haiku`    | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
+| [`delegate-implement`](delegate-implement.md) | コード実装・修正（1 コミットに収まる単位） | general-purpose | Edit/Write/Bash（push なし）                     | `sonnet`   | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
+| [`delegate-git`](delegate-git.md)             | git + gh 操作                              | general-purpose | git/gh 限定はプロンプト制約で担保（push・PR 可） | `haiku`    | `DELEGATE_GIT_MODEL` / `DELEGATE_WORK_DIR`       |
+| [`delegate-chore`](delegate-chore.md)         | フォールバック雑務                         | general-purpose | Edit/Write/Bash（push なし）                     | `haiku`    | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
+| [`delegate-review`](delegate-review.md)       | コードレビュー（差分の指摘）               | general-purpose | read-only（Read/Grep/Glob）                      | `opus`     | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
 
 ### 既定モデルの根拠
 
