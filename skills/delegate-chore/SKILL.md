@@ -5,7 +5,7 @@ description: >
   explore / implement / git のどれにも明確に当てはまらない雑務を、最安のモデル(haiku)の subagent に
   委譲するフォールバックスキル。軽微な整形・リネーム・一括置換・定型コマンド実行などの雑用を、
   親エージェントの context を汚さず安く片付けたいときに使う。専用スキルが当てはまる場合はそちらを優先する。
-allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/delegate-codex.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
+allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
 ---
 
 # delegate-chore
@@ -17,12 +17,13 @@ allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/resolve-model.sh:
 1. **前提条件チェック**: `bash .claude/skills/delegate-chore/scripts/check-md2idx.sh`（exit 3 なら中止）
 2. **モデル解決**: `model="$(bash .claude/skills/delegate-chore/scripts/resolve-model.sh DELEGATE_CHORE_MODEL haiku)"`
 3. **チェーン確認**: `task_type_chain="$(bash .claude/skills/delegate-chore/scripts/check-delegate-chain.sh chore "$PARENT_TASK_TYPE_CHAIN")"`（exit 4 なら中止）
-4. **ファイル事前確保**: protocol v1 の命名で `request_file` / `response_file` を mktemp
-5. **リクエスト作成**: Objective / Scope / Context / Acceptance criteria の Markdown を `npx md2idx` で JSON 化し `task_type_chain` 等を前置して `request_file` に書く
-6. **実行系分岐**:
+4. **リクエスト作成**: Objective / Scope / Context / Acceptance criteria の Markdown を `build-request.sh` に stdin で渡し、`request_file` / `response_file` のパスを得る（命名・md2idx 変換・envelope 付与・空 index の fail-fast を内包）:
+   - `paths="$(printf '%s' "$req_md" | bash .claude/skills/delegate-chore/scripts/build-request.sh chore "$task_type_chain" "$REQUESTER_SESSION_ID")"`
+   - `request_file="$(printf '%s' "$paths" | jq -r .request_file)"` / `response_file="$(printf '%s' "$paths" | jq -r .response_file)"`
+5. **実行系分岐**:
    - `model` が `gpt*`: `bash .claude/skills/delegate-chore/scripts/delegate-codex.sh "$model" chore "$request_file" "$response_file"`
-   - それ以外: Agent tool を `subagent_type: general-purpose` / `model: $model` で起動
-7. **レスポンス読み取り**: `jq -r .status` → `jq -r .index` →（検証コマンドを伴う場合のみ）Verification section
+   - それ以外: Agent tool を `subagent_type: general-purpose` / `model: $model` で起動。worker には `read-request.sh` で読み `build-response.sh <status> <sid> "$response_file"` で報告を書くよう指示
+6. **レスポンス読み取り**: `bash .claude/skills/delegate-chore/scripts/read-response.sh "$response_file"`（status）→ `... "$response_file" index` →（検証コマンドを伴う場合のみ）Verification section
 
 ## skill 昇格提案（フィードバックループ）
 
