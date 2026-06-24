@@ -3,8 +3,9 @@ name: delegate-implement
 license: MIT
 description: >
   コードの実装・修正を安価なモデルの subagent に委譲するスキル。
-  ファイル編集を伴う実装タスク（機能追加・バグ修正・リファクタ等）を、親エージェントの context を
-  汚さずに処理したいときに使う。子は Edit/Write/Bash で実作業し、結果はファイル経由で受け取る。
+  複数ファイルまたは既存パターン調査を伴う実装タスク（機能追加・バグ修正・リファクタ等）を、
+  親エージェントの context を汚さずに処理したいときに使う。単一ファイルの小変更、明確な一括置換、
+  main が既に読んだ箇所の数行修正、設計判断が未確定な実装には使わない。子は Edit/Write/Bash で実作業し、結果はファイル経由で受け取る。
   read-only の調査は delegate-explore、git/PR 操作は親エージェントが直接扱うこと。
 allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Bash(vp:*), Read
 ---
@@ -20,6 +21,10 @@ allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/prepare.sh:*)
 
 以降のコマンド例は Claude Code の `.claude/skills/delegate-implement` を使う。Codex で使う場合は、同じ相対構造の `.agents/skills/delegate-implement` に読み替える。
 
+## 委譲する前に（コストゲート）
+
+implement は、調査・編集・検証を worker にまとめて任せる価値がある規模の実装に使う。複数ファイルにまたがる変更、既存パターン調査を伴う変更、worker が検証コマンドまで実行でき、main が `git diff` / Verification / Summary の確認に集中できる変更を発火条件にする。一方、単一ファイルの小変更、明確な一括置換、main が既に読んだ箇所の数行修正、設計判断が未確定な実装は委譲せず main が直接処理する。
+
 ## 実行フロー
 
 1. **準備（集約）**: 前提チェック→モデル解決→チェーン確認→リクエスト生成を `prepare.sh` 1 本に畳む。Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。Verification には worker が自ら実行すべき検証コマンド（`vp check` / テスト）を記し、その結果を報告 Markdown の Verification section（実行コマンドと exit code を含む）に収めるよう指示する。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
@@ -27,11 +32,22 @@ allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/prepare.sh:*)
    - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"`
 2. **実行系分岐**:
    - `model` が `gpt*`: `bash .claude/skills/delegate-implement/scripts/delegate-codex.sh "$model" implement "$request_file" "$response_file"`
-   - それ以外: Agent tool を `subagent_type: general-purpose` / `model: $model` で起動。worker には `read-request.sh "$request_file" all` で指示全文を読み、`build-response.sh <status> <sid> "$response_file"` で報告を書くよう指示
-3. **レスポンス読み取り**: `bash .claude/skills/delegate-implement/scripts/read-response.sh "$response_file" auto`。大きい response の場合のみ `... "$response_file" index` → Verification / Summary section（`... "$response_file" <N>`）の段階読みに切り替える。
-4. **検証フェーズ（必須）**: `status` を先に確認し、必要時のみ Verification section を引く。決定論的検証（`vp check` の lint/型・テスト）の exit code は信頼し、意味的・受け入れ基準は Summary を中心に確認する。`status` が `completed` でない時や pass 申告の裏取りが要るときのみ main 側で `vp check` / `git diff` を再実行する
+   - それ以外: Agent tool を `subagent_type: general-purpose` / `model: $model` で起動。**worker への指示は下記の固定テンプレを `<REQUEST_FILE>` / `<RESPONSE_FILE>` だけ実パスに差し替えてそのまま渡す**。タスク本体は request_file に入っているので、main は指示文を作文し直さない（main の出力＝課金トークンを増やさないため）:
+
+     ```
+     あなたは delegate-implement の worker。タスク指示は request_file にある。
+     1. `bash .claude/skills/delegate-implement/scripts/read-request.sh <REQUEST_FILE> all` で指示全文を読む（小さいので丸読みでよい）。
+     2. 指示どおり実装・修正し、指定された検証コマンドを実行する。push は禁止。AGENTS.md / CLAUDE.md の規約に従う。
+     3. 報告 Markdown を stdin で `bash .claude/skills/delegate-implement/scripts/build-response.sh <status> claude-implement-worker <RESPONSE_FILE>` に渡して書く。status は completed|partial|failed|needs_input。見出しは canonical 英語 section 名に固定: `Summary`（必須）・`Changed files`（必須）・`Verification`（必須。実行コマンドと exit code）／該当時 `Findings`・`Blockers`・`Error`。main が裏取りすべき `git diff` / test result の条件を `Summary` または `Verification` に書く。アドホックな見出しは使わない。
+     4. 最終メッセージは status 一語と 1 行要約のみ（詳細は response_file に書く。main の context を膨らませない）。
+     ```
+
+3. **レスポンス読み取り**: `bash .claude/skills/delegate-implement/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合のみ status を返すので `... "$response_file" index` → Verification / Summary / Changed files section（`... "$response_file" <N>`）の段階読みに切り替える。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
+4. **検証フェーズ（必須）**: `status` を先に確認し、必要時のみ Verification / Changed files section を引く。決定論的検証（`vp check` の lint/型・テスト）の exit code は信頼し、意味的・受け入れ基準は Summary と `git diff` を中心に確認する。`status` が `completed` でない時、pass 申告の裏取りが要る時、差分が広い時、worker が Verification にリスクや未検証項目を書いた時は main 側で `git diff` / test result を裏取りする
 
 ## 制約
 
 - 編集は可。ただし **push はしない**（push・PR は親エージェントが直接扱う）
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）
+- main は worker 出力を echo / 再要約しない。ユーザー向けは Summary を指す 1 行に留める（出力＝課金トークンを増やさないため。spec.md §6）
+- worker 起動プロンプトは step 2 の固定テンプレをそのまま使い、タスク本体を作文し直さない（同上）
