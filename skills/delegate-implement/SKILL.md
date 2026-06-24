@@ -5,7 +5,7 @@ description: >
   コードの実装・修正を安価なモデルの subagent に委譲するスキル。
   ファイル編集を伴う実装タスク（機能追加・バグ修正・リファクタ等）を、親エージェントの context を
   汚さずに処理したいときに使う。子は Edit/Write/Bash で実作業し、結果はファイル経由で受け取る。
-  read-only の調査は delegate-explore、git/PR 操作は delegate-git を使うこと。
+  read-only の調査は delegate-explore、git/PR 操作は親エージェントが直接扱うこと。
 allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Bash(vp:*), Read
 ---
 
@@ -33,5 +33,5 @@ allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/prepare.sh:*)
 
 ## 制約
 
-- 編集は可。ただし **push はしない**（push・PR は delegate-git）
+- 編集は可。ただし **push はしない**（push・PR は親エージェントが直接扱う）
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）

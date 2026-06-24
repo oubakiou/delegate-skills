@@ -1,6 +1,6 @@
 # delegate-skills 仕様
 
-実装・調査・git 操作・雑務などのタスクを安価なモデルの subagent に委譲し、トークン費用を圧縮する skill 集の仕様。
+実装・調査・雑務などのタスクを安価なモデルの subagent に委譲し、トークン費用を圧縮する skill 集の仕様。
 
 ## 1. 目的
 
@@ -32,18 +32,16 @@ main agent
 
 ## 3. skill 一覧
 
-| skill                                         | 用途                                       | subagent_type   | ツール権限                                       | 既定モデル | env                                              |
-| --------------------------------------------- | ------------------------------------------ | --------------- | ------------------------------------------------ | ---------- | ------------------------------------------------ |
-| [`delegate-explore`](delegate-explore.md)     | read-only のコード/ドキュメント探索・読解  | Explore         | read-only（Read/Grep/Glob）                      | `haiku`    | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
-| [`delegate-implement`](delegate-implement.md) | コード実装・修正（1 コミットに収まる単位） | general-purpose | Edit/Write/Bash（push なし）                     | `sonnet`   | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
-| [`delegate-git`](delegate-git.md)             | git + gh 操作                              | general-purpose | git/gh 限定はプロンプト制約で担保（push・PR 可） | `haiku`    | `DELEGATE_GIT_MODEL` / `DELEGATE_WORK_DIR`       |
-| [`delegate-chore`](delegate-chore.md)         | フォールバック雑務                         | general-purpose | Edit/Write/Bash（push なし）                     | `haiku`    | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
-| [`delegate-review`](delegate-review.md)       | コードレビュー（差分の指摘）               | general-purpose | read-only（Read/Grep/Glob）                      | `opus`     | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
+| skill                                         | 用途                                       | subagent_type   | ツール権限                   | 既定モデル | env                                              |
+| --------------------------------------------- | ------------------------------------------ | --------------- | ---------------------------- | ---------- | ------------------------------------------------ |
+| [`delegate-explore`](delegate-explore.md)     | read-only のコード/ドキュメント探索・読解  | Explore         | read-only（Read/Grep/Glob）  | `haiku`    | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
+| [`delegate-implement`](delegate-implement.md) | コード実装・修正（1 コミットに収まる単位） | general-purpose | Edit/Write/Bash（push なし） | `sonnet`   | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
+| [`delegate-chore`](delegate-chore.md)         | フォールバック雑務                         | general-purpose | Edit/Write/Bash（push なし） | `haiku`    | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
+| [`delegate-review`](delegate-review.md)       | コードレビュー（差分の指摘）               | general-purpose | read-only（Read/Grep/Glob）  | `opus`     | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
 
 ### 既定モデルの根拠
 
 - explore / chore は read 中心・低リスクのため `haiku`
-- git は取り消し困難な外向き操作（push/PR）を含むが、判断をサブエージェントに委ねず main が明確な指示で単純操作のみを delegate する前提のため `haiku`
 - implement も編集の判断を要するため `sonnet`
 - review は指摘品質が成果物に直結し判断比重が高いため `opus`
 - 個々のタスクが軽微なときは、その種別の既定モデルを `DELEGATE_<TYPE>_MODEL=haiku` で明示的に引き下げてコストを抑えられる
@@ -64,13 +62,12 @@ env に入れる値は Claude エイリアス（Agent tool の enum 対応）か
 
 `resolve-model.sh` の出力プレフィックスで選ぶ。
 
-| 種別      | Claude パス（Agent tool）                      | Codex パス（`codex exec -m <model>`）        |
-| --------- | ---------------------------------------------- | -------------------------------------------- |
-| explore   | `subagent_type: Explore`（read-only）          | `--sandbox danger-full-access` + constraints |
-| implement | `subagent_type: general-purpose`               | `--sandbox danger-full-access`               |
-| git       | `subagent_type: general-purpose` + constraints | `--sandbox danger-full-access` + constraints |
-| chore     | `subagent_type: general-purpose`               | `--sandbox danger-full-access`               |
-| review    | `subagent_type: general-purpose`（read-only）  | `--sandbox danger-full-access` + constraints |
+| 種別      | Claude パス（Agent tool）                     | Codex パス（`codex exec -m <model>`）        |
+| --------- | --------------------------------------------- | -------------------------------------------- |
+| explore   | `subagent_type: Explore`（read-only）         | `--sandbox danger-full-access` + constraints |
+| implement | `subagent_type: general-purpose`              | `--sandbox danger-full-access`               |
+| chore     | `subagent_type: general-purpose`              | `--sandbox danger-full-access`               |
+| review    | `subagent_type: general-purpose`（read-only） | `--sandbox danger-full-access` + constraints |
 
 ### Codex パスの起動
 
@@ -239,7 +236,6 @@ delegate-skills/
       SKILL.md
       scripts/                   # shared/ からの生成コピー（sync-shared.ts）
     delegate-implement/{SKILL.md, scripts/}
-    delegate-git/{SKILL.md, scripts/}
     delegate-chore/{SKILL.md, scripts/}
     delegate-review/{SKILL.md, scripts/}
   shared/                        # 共有スクリプトの正本（種別/実行系非依存）
@@ -285,7 +281,6 @@ delegate-skills/
 - 検証は worker 側に閉じ込め、main は報告 Markdown の Verification section（実行コマンドと exit code を含む）から最小限だけ確認する（§6）。決定論的検証（`vp check` の lint/型、`vp test`）は exit code をそのまま信頼し、意味的・受け入れ基準のみ main が最小サマリで確認する。安価 worker による虚偽 pass のリスクは、捏造の旨みが薄い機械的な exit code 報告に信頼を限定することで抑える
 - Codex パスは別課金のサブプロセス（GPT 系に in-session 実行手段が無いため不可避）
 - Codex パスは `danger-full-access` で動くため sandbox 由来の隔離が無い。push 抑止・explore の read-only 性は prompt の constraints と main の検証に依存する残存リスクがある
-- `delegate-git` の破壊的操作（force push / branch 削除 / PR merge）は残存リスクであり main の検証で確認する
 
 ## 13. 参照
 

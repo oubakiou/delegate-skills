@@ -5,7 +5,7 @@
 [![English](https://img.shields.io/badge/Language-English-blue?style=for-the-badge)](./README.md)
 [![日本語](https://img.shields.io/badge/言語-日本語-lightgrey?style=for-the-badge)](./README_ja.md)
 
-**A skill set for LLM agents that delegates implementation, exploration, git operations, review, and chores to a cheaper-model subagent — compressing token cost.**
+**A skill set for LLM agents that delegates implementation, exploration, review, and chores to a cheaper-model subagent — compressing token cost.**
 
 ## Overview
 
@@ -20,15 +20,14 @@ Hand-off between main and sub is file-based (request/response). Both files use t
 
 ## Skills
 
-| skill                | Purpose                                  | subagent_type   | Tool permissions                   | Default model | env                                              |
-| -------------------- | ---------------------------------------- | --------------- | ---------------------------------- | ------------- | ------------------------------------------------ |
-| `delegate-explore`   | Read-only code & doc exploration         | Explore         | read-only                          | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
-| `delegate-implement` | Code implementation & edits (one commit) | general-purpose | Edit/Write/Bash (no push)          | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
-| `delegate-git`       | git + gh operations (push/PR allowed)    | general-purpose | git/gh-only via prompt constraints | `haiku`       | `DELEGATE_GIT_MODEL` / `DELEGATE_WORK_DIR`       |
-| `delegate-chore`     | Fallback chores                          | general-purpose | Edit/Write/Bash (no push)          | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
-| `delegate-review`    | Code review (diff findings)              | general-purpose | read-only                          | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
+| skill                | Purpose                                  | subagent_type   | Tool permissions          | Default model | env                                              |
+| -------------------- | ---------------------------------------- | --------------- | ------------------------- | ------------- | ------------------------------------------------ |
+| `delegate-explore`   | Read-only code & doc exploration         | Explore         | read-only                 | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
+| `delegate-implement` | Code implementation & edits (one commit) | general-purpose | Edit/Write/Bash (no push) | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
+| `delegate-chore`     | Fallback chores                          | general-purpose | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
+| `delegate-review`    | Code review (diff findings)              | general-purpose | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
 
-Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; git involves hard-to-undo operations but the subagent makes no judgment calls — main delegates only simple operations with explicit instructions — so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
+Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
 
 ## Environment variables
 
@@ -76,7 +75,6 @@ delegate-skills/
       SKILL.md
       scripts/                     # copied from shared/ by sync-shared.ts
     delegate-implement/{SKILL.md, scripts/}
-    delegate-git/{SKILL.md, scripts/}
     delegate-chore/{SKILL.md, scripts/}
     delegate-review/{SKILL.md, scripts/}
   .claude/skills/<skill>/scripts/  # Claude Code gh skill install layout

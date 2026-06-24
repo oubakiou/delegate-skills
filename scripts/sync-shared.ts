@@ -21,7 +21,6 @@ const SHARED_SCRIPTS = [
 const DELEGATE_SKILLS = [
   'delegate-explore',
   'delegate-implement',
-  'delegate-git',
   'delegate-chore',
   'delegate-review',
 ]
