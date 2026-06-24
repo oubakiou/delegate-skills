@@ -76,6 +76,11 @@ append_metrics() {
   ) >/dev/null 2>&1 || true
 }
 
+write_companion_markdown() {
+  # JSON が protocol の正本で、Markdown は人間の監査・デバッグ用の派生物に留める。
+  (jq -r '.sections | join("\n\n")' "$1" >"${1%.json}.md") >/dev/null 2>&1 || true
+}
+
 ts="$(date +%Y%m%d_%H%M%S)"
 request_file="$(mktemp --tmpdir="$work_dir" "delegate_${task_type}_${ts}_request_XXXXX" --suffix=.json)"
 # 乱数トークンを共有して response を導出（_request_ は task_type に含まれないため一意に置換できる）
@@ -99,6 +104,7 @@ if ! jq -e '.index != null and (.index | length) > 0 and (.sections | length) > 
   exit 1
 fi
 
+write_companion_markdown "$request_file"
 rm -f "$src_md"
 
 request_bytes="$(wc -c <"$request_file" | tr -d '[:space:]')"

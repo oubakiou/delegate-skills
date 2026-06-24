@@ -76,6 +76,11 @@ append_metrics() {
   ) >/dev/null 2>&1 || true
 }
 
+write_companion_markdown() {
+  # JSON が protocol の正本で、Markdown は人間の監査・デバッグ用の派生物に留める。
+  (jq -r '.sections | join("\n\n")' "$1" >"${1%.json}.md") >/dev/null 2>&1 || true
+}
+
 cat >"$src_md"
 body_bytes="$(wc -c <"$src_md" | tr -d '[:space:]')"
 body_chars="$(wc -m <"$src_md" | tr -d '[:space:]')"
@@ -92,6 +97,7 @@ if ! jq -e '.index != null and (.index | length) > 0 and (.sections | length) > 
   exit 1
 fi
 
+write_companion_markdown "$response_file"
 rm -f "$src_md"
 
 response_bytes="$(wc -c <"$response_file" | tr -d '[:space:]')"

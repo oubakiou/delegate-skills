@@ -111,6 +111,17 @@ response_file="${request_file/_request_/_response_}"
 - クリーンアップ: ファイルは残す（監査・デバッグ用）。既定では mktemp の置き場（`TMPDIR`、無ければ `/tmp`）に蓄積するため不要分は手動で削除する。`DELEGATE_WORK_DIR` で置き場を固定できる
 - **main 事前確保の利点**: main は sub の最終メッセージをパースせずに response_file パスを決定的に知れる。sub の返答が崩れてもパスを見失わない
 
+### 人間向け Markdown 派生物
+
+request / response の JSON は protocol の source of truth とし、agent 間通信・互換性判定・段階読み取りは JSON だけを見る。一方、監査・デバッグで人間が読みやすいよう、JSON 書き出し後に同じ basename の `.md` を best-effort で生成する。
+
+```bash
+jq -r '.sections | join("\n\n")' "$request_file" >"${request_file%.json}.md"
+jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
+```
+
+`.md` は `sections` を結合した補助成果物であり、`task_type_chain` / `requester_session_id` / `status` / `responder_session_id` などの構造化メタデータは正本 JSON に残す。`.md` 生成に失敗しても protocol の成否は JSON 生成結果で判定する。
+
 ### リクエストファイル（main → sub）
 
 ```json
@@ -130,6 +141,7 @@ response_file="${request_file/_request_/_response_}"
 - `requester_session_id`: 必須。リクエスト元（親）のプロセス / セッション ID（追跡・デバッグ用）
 - `index` / `sections`: 指示 Markdown（Objective / Scope / Context / Acceptance criteria / Verification / Constraints）の md2idx 出力
 - response_file パスは prompt で渡す（request file には含めない）
+- JSON 書き出し後、人間向けに `${request_file%.json}.md` を補助生成する
 
 ### レスポンスファイル（sub → main）
 
@@ -149,6 +161,7 @@ response_file="${request_file/_request_/_response_}"
 - `status`: `completed | partial | failed | needs_input`（構造化フィールド。main が最優先・最安に読む）
 - `responder_session_id`: 必須。リクエスト先（子）のプロセス / セッション ID（追跡・デバッグ用）
 - `index` / `sections`: 報告 Markdown（Summary / Changed files / Commands / Verification / Findings / Blockers / Error）の md2idx 出力。検証結果は構造化フィールドに持たず、報告 Markdown の Verification section に収め、main は `status` の次にこの section だけを必要時に引く
+- JSON 書き出し後、人間向けに `${response_file%.json}.md` を補助生成する
 
 ### md2idx（トークン圧縮の核）
 
@@ -165,13 +178,13 @@ main が最高級モデルのとき、削減は「委譲」とは独立の別レ
 - **append-only**: 過去ターン（SKILL.md / プロトコルの規約文、既読の response）を再注入・再要約しない。プレフィックスを保てば prompt cache のヒット率が上がる
 - **最小・一度きりの読み取り**: 各 response は `status` → 必要 section を1回で済ませ、同じ response_file を後続ターンで再 Read しない（再読は tool result として二重計上される）
 - **echo しない**: sub の出力本文を main が要約し直さない（main の出力が次ターンの入力として二重計上される）。response の Summary section を参照させる
-- **多段委譲は TTL 内に詰める**: §7 の多段（`implement ⇒ explore ⇒ git` 等）は間を空けず連続実行し、確認待ちは1点に集約して cache TTL 跨ぎの再キャッシュを避ける
+- **多段委譲は TTL 内に詰める**: §7 の多段（`implement ⇒ explore` 等）は間を空けず連続実行し、確認待ちは1点に集約して cache TTL 跨ぎの再キャッシュを避ける
 
 ## 7. 多段委譲ポリシー（再帰防止）
 
 - delegate された sub も別種別の delegate skill を呼べる（`implement ⇒ explore` は可）
-- **同一種別がチェーンに二度登場することを禁止**（`implement ⇒ implement` も `implement ⇒ explore ⇒ implement` も不可、`implement ⇒ explore ⇒ git` は可）
-- 種別が有限（explore / implement / git / chore）なのでチェーン長が頭打ちになり無限ループが構造的に発生しない
+- **同一種別がチェーンに二度登場することを禁止**（`implement ⇒ implement` も `implement ⇒ explore ⇒ implement` も不可、`implement ⇒ explore ⇒ review` は可）
+- 種別が有限（explore / implement / chore / review）なのでチェーン長が頭打ちになり無限ループが構造的に発生しない
 - チェーンは request file の構造化キー `task_type_chain`（先祖種別 + 自種別）で持ち回る。Claude パスは env が Bash 呼び出し間で持続しないため `task_type_chain` を source of truth とし子起動時に明示的に渡す
 - 起動エントリで `check-delegate-chain.sh <task_type> <parent_task_type_chain>` を実行、該当すれば exit 4
 
