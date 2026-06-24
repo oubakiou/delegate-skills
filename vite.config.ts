@@ -29,6 +29,9 @@ export default {
     },
   },
   test: {
+    // exclude を指定すると既定 (node_modules / .git のみ) を置換するため再掲する。
+    // .temp/ は使い捨ての作業領域で、紛れ込んだテストファイルを対象にしない。
+    exclude: ['**/node_modules/**', '**/.git/**', '**/.temp/**'],
     // shared/: 共有実装 (sanitize / codex-jsonl) の正本はここでテストする
     // skills/*/scripts/pipe-sanitize*.ts: 各 skill 固有のパイプ処理 (canonical)
     // skills/*/scripts/http-fetch*.ts: direct HTTP fetcher (canonical)
