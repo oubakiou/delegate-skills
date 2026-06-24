@@ -43,6 +43,11 @@ REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_r
 # response_file のペアトークン（main 事前確保の一意トークン）から responder_session_id を導出して渡す。
 RESPONDER_SESSION_ID="codex:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
+write_companion_markdown() {
+  # JSON が protocol の正本で、Markdown は人間の監査・デバッグ用の派生物に留める。
+  (jq -r '.sections | join("\n\n")' "$1" >"${1%.json}.md") >/dev/null 2>&1 || true
+}
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
@@ -76,5 +81,7 @@ if [ ! -s "$RESPONSE_FILE" ]; then
   echo "ERROR: 子 Codex が response_file を生成しませんでした: $RESPONSE_FILE" >&2
   exit 1
 fi
+
+write_companion_markdown "$RESPONSE_FILE"
 
 printf '%s\n' "$RESPONSE_FILE"
