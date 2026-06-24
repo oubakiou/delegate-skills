@@ -11,6 +11,10 @@ const SHARED_SCRIPTS = [
   'check-md2idx.sh',
   'check-delegate-chain.sh',
   'delegate-codex.sh',
+  'build-request.sh',
+  'read-request.sh',
+  'build-response.sh',
+  'read-response.sh',
 ]
 
 const DELEGATE_SKILLS = [
