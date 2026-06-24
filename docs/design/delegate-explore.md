@@ -27,15 +27,23 @@ explore は「読むだけで答えが出る」作業に使う。調査の結果
 - **`subagent_type=Explore`**: 編集を許さない read-only 調査が責務であり、Claude パスでは専用の探索エージェントを使う
 - **制約**: ファイル編集・push はしない。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の二分岐)）
 
-## 4. 段階読み取りと探索の二面性
+## 4. 発火条件と段階読み取り
+
+explore は読む量が大きいほど token cost 削減が効きやすい。複数ファイル・長めの設計資料・広い参照関係など、main が直接読むと context を膨らませる調査を発火条件にする。一方、単一の短いファイル確認、`rg` / `git grep` 一発で答えが出る調査、main が既に読んだ箇所の確認には使わず、main が直接処理する。
 
 explore の成果物は、親エージェントが必要な分だけ読める形で返すことに価値がある。レスポンスは protocol v1 の `index` を先に読み、必要な section だけを後から取得する前提にする。これにより、調査対象の全文や長い根拠ログを main の context に流し込まずに済む。
 
-もう一つの役割は、コード調査とドキュメント読解を同じ read-only 枠で扱うこと。実装前に呼び出し関係を追う作業と、仕様書から該当要件を拾う作業はどちらも副作用がなく、安価な探索としてまとめて委譲できる。副作用がないため失敗時の巻き戻しも不要で、低リスクな前処理として使いやすい。
+## 5. 起動テンプレートと出力規律
 
-TODO: delegate-chore で先行適用した発火条件の絞り込み、worker 起動の固定テンプレ化（J1）、main の echo / 再要約禁止（J3）を explore に横展開する。explore では token cost 削減が効きやすい一方、単一の短いファイル確認や `rg` 一発で済む調査は委譲しない発火条件にする。固定テンプレには read-only、根拠ファイル/行の明示、main が読むべき最小 section の提示、編集・push 禁止を含める。
+delegate-chore で先行適用した worker 起動の固定テンプレ化（J1）と main の echo / 再要約禁止（J3）を explore にも適用する。worker への起動プロンプトは `<REQUEST_FILE>` / `<RESPONSE_FILE>` だけを差し替える固定ボイラープレートにし、タスク本体は request_file に置く。固定テンプレには read-only、根拠ファイル / 行の明示、main が読むべき最小 section の提示、編集・git 書き込み・push 禁止を含める。
 
-## 5. 共通事項への参照
+worker の報告 Markdown は canonical 英語 section 名に固定する。`Summary` は必須で、必要に応じて `Findings`（根拠ファイル / 行）、`Verification`（実行コマンドと exit code）、`Blockers`、`Error` を使う。main は response 読了後に worker 本文を echo / 再要約せず、ユーザー向けには Summary を指す 1 行に留める。これにより main の orchestration 出力を増やさず、調査結果の詳細は response_file の段階読み取りに残す。
+
+## 6. 探索対象の二面性
+
+explore はコード調査とドキュメント読解を同じ read-only 枠で扱う。実装前に呼び出し関係を追う作業と、仕様書から該当要件を拾う作業はどちらも副作用がなく、安価な探索としてまとめて委譲できる。副作用がないため失敗時の巻き戻しも不要で、低リスクな前処理として使いやすい。
+
+## 7. 共通事項への参照
 
 - 実行フロー（前提条件チェック → モデル解決 → チェーン確認 → ファイル事前確保 → リクエスト作成 → 実行系分岐 → レスポンス読み取り）: [SKILL.md](../../skills/delegate-explore/SKILL.md)
 - ファイルプロトコル v1: [protocol-v1.md](protocol-v1.md)
