@@ -37,6 +37,7 @@ REAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 [ -f "$REAL_CODEX_HOME/auth.json" ] && cp "$REAL_CODEX_HOME/auth.json" "$CODEX_HOME_ISOLATED/auth.json"
 
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
+REPORT_FILE="$WORK_DIR/report.md"
 
 # Codex 子は自身の session id を prompt 内から素直に取得できないため、ラッパが
 # response_file のペアトークン（main 事前確保の一意トークン）から responder_session_id を導出して渡す。
@@ -49,11 +50,11 @@ PROMPT=$(cat <<PROMPT_EOF
    まず \`jq -r .index "${REQUEST_FILE}"\` で目次を読み、必要な section だけ \`jq -r '.sections[N]' "${REQUEST_FILE}"\` で取得する。
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業報告を Markdown(report.md) に書き、レスポンスを生成する:
-   \`npx md2idx report.md | jq --arg s "<status>" --arg sid "${RESPONDER_SESSION_ID}" '{protocol_version: 1, type: "response", status: \$s, responder_session_id: \$sid} + .' > "${RESPONSE_FILE}"\`
+4. 作業報告を Markdown("${REPORT_FILE}") に書き、レスポンスを生成する:
+   \`npx md2idx "${REPORT_FILE}" | jq --arg s "<status>" --arg sid "${RESPONDER_SESSION_ID}" '{protocol_version: 1, type: "response", status: \$s, responder_session_id: \$sid} + .' > "${RESPONSE_FILE}"\`
    status は completed | partial | failed | needs_input のいずれか。report.md の見出しは
    Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
-5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。
+5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。リポジトリ root に report.md を作らない。
 PROMPT_EOF
 )
 

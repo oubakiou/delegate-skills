@@ -12,6 +12,7 @@ set -euo pipefail
 #   見出しは Objective / Scope / Context / Acceptance criteria / Verification / Constraints。
 # stdout: {"request_file": "...", "response_file": "..."}（JSON）
 # 置き場: DELEGATE_WORK_DIR（無ければ TMPDIR、無ければ /tmp）
+# telemetry: DELEGATE_METRICS_FILE が設定されたときだけ JSONL に proxy metric を追記する
 # exit: 2=引数エラー / 3=前提条件(jq)不足 / 1=md2idx 失敗・空 index/sections
 
 if [ $# -lt 3 ]; then
@@ -37,6 +38,44 @@ work_dir="${DELEGATE_WORK_DIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$work_dir"
 work_dir="$(cd "$work_dir" && pwd)"
 
+append_metrics() {
+  [ -n "${DELEGATE_METRICS_FILE:-}" ] || return 0
+  (
+    metrics_dir="$(dirname "$DELEGATE_METRICS_FILE")"
+    mkdir -p "$metrics_dir"
+    jq -cn \
+      --arg kind build_request \
+      --arg task_type "$task_type" \
+      --arg requester_session_id "$requester_session_id" \
+      --arg request_file "$request_file" \
+      --arg response_file "$response_file" \
+      --argjson body_bytes "$body_bytes" \
+      --argjson body_chars "$body_chars" \
+      --argjson body_lines "$body_lines" \
+      --argjson request_bytes "$request_bytes" \
+      --argjson sections "$sections" \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{
+        kind: $kind,
+        ts: $ts,
+        task_type: $task_type,
+        requester_session_id: $requester_session_id,
+        request_file: $request_file,
+        response_file: $response_file,
+        body: {
+          bytes: $body_bytes,
+          chars: $body_chars,
+          lines: $body_lines,
+          estimated_tokens: (($body_chars + 3) / 4 | floor)
+        },
+        request: {
+          bytes: $request_bytes,
+          sections: $sections
+        }
+      }' >>"$DELEGATE_METRICS_FILE"
+  ) >/dev/null 2>&1 || true
+}
+
 ts="$(date +%Y%m%d_%H%M%S)"
 request_file="$(mktemp --tmpdir="$work_dir" "delegate_${task_type}_${ts}_request_XXXXX" --suffix=.json)"
 # 乱数トークンを共有して response を導出（_request_ は task_type に含まれないため一意に置換できる）
@@ -44,6 +83,9 @@ response_file="${request_file/_request_/_response_}"
 src_md="$(mktemp --tmpdir="$work_dir" "delegate_${task_type}_${ts}_reqsrc_XXXXX" --suffix=.md)"
 
 cat >"$src_md"
+body_bytes="$(wc -c <"$src_md" | tr -d '[:space:]')"
+body_chars="$(wc -m <"$src_md" | tr -d '[:space:]')"
+body_lines="$(wc -l <"$src_md" | tr -d '[:space:]')"
 
 npx --yes md2idx "$src_md" | jq \
   --argjson chain "$task_type_chain" \
@@ -58,5 +100,9 @@ if ! jq -e '.index != null and (.index | length) > 0 and (.sections | length) > 
 fi
 
 rm -f "$src_md"
+
+request_bytes="$(wc -c <"$request_file" | tr -d '[:space:]')"
+sections="$(jq '.sections | length' "$request_file")"
+append_metrics
 
 jq -n --arg req "$request_file" --arg res "$response_file" '{request_file: $req, response_file: $res}'

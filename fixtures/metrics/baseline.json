@@ -1,0 +1,29 @@
+[
+  {
+    "name": "scriptable-chore",
+    "records": 5,
+    "orchestrationEvents": 5,
+    "workerReadRequestEstimatedTokens": 182,
+    "mainReadResponseEstimatedTokens": 67,
+    "inlineTrue": 1,
+    "inlineFalse": 0
+  },
+  {
+    "name": "read-heavy-chore",
+    "records": 5,
+    "orchestrationEvents": 5,
+    "workerReadRequestEstimatedTokens": 407,
+    "mainReadResponseEstimatedTokens": 89,
+    "inlineTrue": 1,
+    "inlineFalse": 0
+  },
+  {
+    "name": "mixed-chore",
+    "records": 5,
+    "orchestrationEvents": 5,
+    "workerReadRequestEstimatedTokens": 207,
+    "mainReadResponseEstimatedTokens": 62,
+    "inlineTrue": 1,
+    "inlineFalse": 0
+  }
+]

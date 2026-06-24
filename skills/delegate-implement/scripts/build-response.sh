@@ -10,6 +10,7 @@ set -euo pipefail
 #   レポート本文 Markdown は stdin から渡す。response_file は main が事前確保したパス。
 #   status: completed | partial | failed | needs_input
 #   見出しは Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
+# telemetry: DELEGATE_METRICS_FILE が設定されたときだけ JSONL に proxy metric を追記する
 # stdout: response_file のパス（本文は親 context に入れない）
 # exit: 2=引数/ status 不正 / 3=前提条件(jq)不足 / 1=md2idx 失敗・空 index/sections
 
@@ -39,7 +40,46 @@ work_dir="$(dirname "$response_file")"
 mkdir -p "$work_dir"
 src_md="$(mktemp --tmpdir="$work_dir" "$(basename "$response_file" .json)_repsrc_XXXXX" --suffix=.md)"
 
+append_metrics() {
+  [ -n "${DELEGATE_METRICS_FILE:-}" ] || return 0
+  (
+    metrics_dir="$(dirname "$DELEGATE_METRICS_FILE")"
+    mkdir -p "$metrics_dir"
+    jq -cn \
+      --arg kind build_response \
+      --arg status "$status" \
+      --arg responder_session_id "$responder_session_id" \
+      --arg response_file "$response_file" \
+      --argjson body_bytes "$body_bytes" \
+      --argjson body_chars "$body_chars" \
+      --argjson body_lines "$body_lines" \
+      --argjson response_bytes "$response_bytes" \
+      --argjson sections "$sections" \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{
+        kind: $kind,
+        ts: $ts,
+        status: $status,
+        responder_session_id: $responder_session_id,
+        response_file: $response_file,
+        body: {
+          bytes: $body_bytes,
+          chars: $body_chars,
+          lines: $body_lines,
+          estimated_tokens: (($body_chars + 3) / 4 | floor)
+        },
+        response: {
+          bytes: $response_bytes,
+          sections: $sections
+        }
+      }' >>"$DELEGATE_METRICS_FILE"
+  ) >/dev/null 2>&1 || true
+}
+
 cat >"$src_md"
+body_bytes="$(wc -c <"$src_md" | tr -d '[:space:]')"
+body_chars="$(wc -m <"$src_md" | tr -d '[:space:]')"
+body_lines="$(wc -l <"$src_md" | tr -d '[:space:]')"
 
 npx --yes md2idx "$src_md" | jq \
   --arg s "$status" \
@@ -53,5 +93,9 @@ if ! jq -e '.index != null and (.index | length) > 0 and (.sections | length) > 
 fi
 
 rm -f "$src_md"
+
+response_bytes="$(wc -c <"$response_file" | tr -d '[:space:]')"
+sections="$(jq '.sections | length' "$response_file")"
+append_metrics
 
 printf '%s\n' "$response_file"

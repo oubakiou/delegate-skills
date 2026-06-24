@@ -14,6 +14,8 @@ Delegate routine, mechanical work to a cheaper model without polluting the main 
 - Claude family (`sonnet`/`haiku`/`opus`/`fable`) → in-session **Agent tool**
 - `gpt-*` → **Codex subprocess** (`codex exec`)
 
+When the requester itself is Codex, `gh skill install` places the skill under `.agents/skills/<skill>/scripts/...`; set `DELEGATE_<TYPE>_MODEL` to a `gpt-*` model unless your environment provides a Claude Agent-tool equivalent.
+
 Hand-off between main and sub is file-based (request/response). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
 ## Skills
@@ -30,26 +32,29 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 
 ## Environment variables
 
-| Variable                | Default                                | Description                         |
-| ----------------------- | -------------------------------------- | ----------------------------------- |
-| `DELEGATE_<TYPE>_MODEL` | per skill                              | Per-type model override             |
-| `DELEGATE_WORK_DIR`     | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files |
+| Variable                       | Default                                | Description                                           |
+| ------------------------------ | -------------------------------------- | ----------------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`        | per skill                              | Per-type model override                               |
+| `DELEGATE_WORK_DIR`            | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                   |
+| `DELEGATE_RESPONSE_INLINE_MAX` | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto` |
+| `DELEGATE_METRICS_FILE`        | unset                                  | Optional JSONL proxy-metric telemetry output path     |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
 ## Architecture
 
-Each skill bundles its own copy of the shared scripts (self-contained), invoked at the skill-local path `.claude/skills/<skill>/scripts/...`:
+Each skill bundles its own copy of the shared scripts (self-contained). `gh skill install` places them under `.claude/skills/<skill>/scripts/...` for Claude Code and under the same relative layout at `.agents/skills/<skill>/scripts/...` for Codex.
 
 ```
 main agent
-  ├─ <skill>/scripts/check-md2idx.sh         Precondition check (npx md2idx, fail-closed)
-  ├─ <skill>/scripts/resolve-model.sh        Model resolution (type env → default)
-  ├─ <skill>/scripts/check-delegate-chain.sh Recursion guard for multi-hop delegation (same type twice forbidden → exit 4)
-  ├─ Pre-allocate request_file / response_file with mktemp (sharing ts + random token)
+  ├─ <skill>/scripts/prepare.sh              Precondition check → model resolution → chain check → request generation
+  │   ├─ check-md2idx.sh                     Precondition check (npx md2idx, fail-closed)
+  │   ├─ resolve-model.sh                    Model resolution (type env → default)
+  │   ├─ check-delegate-chain.sh             Recursion guard for multi-hop delegation (same type twice forbidden → exit 4)
+  │   └─ build-request.sh                    Create request_file / response_file with mktemp (sharing ts + random token)
   ├─ model is gpt* → <skill>/scripts/delegate-codex.sh launches a Codex subprocess
   │                  otherwise → Agent tool (subagent_type per skill)
-  └─ Read the response incrementally with jq: status → index → needed sections → verify
+  └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
 ```
 
 The canonical copy of each shared script lives in `shared/`; `scripts/sync-shared.ts` copies it into every skill's `scripts/`.
@@ -60,6 +65,12 @@ See [docs/design/protocol-v1.md](docs/design/protocol-v1.md) for the protocol de
 
 ```
 delegate-skills/
+  fixtures/
+    metrics/                        # fixed telemetry scenarios and baseline
+      baseline.json
+      scriptable-chore/{request.md,response.md}
+      read-heavy-chore/{request.md,response.md}
+      mixed-chore/{request.md,response.md}
   skills/                          # gh skill install source (canonical SKILL.md)
     delegate-explore/
       SKILL.md
@@ -68,13 +79,23 @@ delegate-skills/
     delegate-git/{SKILL.md, scripts/}
     delegate-chore/{SKILL.md, scripts/}
     delegate-review/{SKILL.md, scripts/}
+  .claude/skills/<skill>/scripts/  # Claude Code gh skill install layout
+  .agents/skills/<skill>/scripts/  # Codex gh skill install layout
   shared/                          # canonical shared scripts (type/runtime-agnostic)
     resolve-model.sh
     check-md2idx.sh
     check-delegate-chain.sh
     delegate-codex.sh
+    prepare.sh
+    build-request.sh
+    read-request.sh
+    build-response.sh
+    read-response.sh
   scripts/
     sync-shared.ts                 # shared/ → each skill's scripts/ (+ in-source test)
+    summarize-metrics.ts           # summarize telemetry JSONL
+    run-metrics-fixtures.sh        # run fixed metrics fixtures
+    check-metrics-baseline.sh      # detect fixture baseline drift
   docs/
     design/
       spec.md

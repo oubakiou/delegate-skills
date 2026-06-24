@@ -38,7 +38,7 @@ TypeScript のコード調査・変更検証には Claude Code の `LSP` deferre
 
 Vitest の **in-source testing** で種別非依存の汎用部品を単体検証する。対象は `vite.config.ts` の `test.includeSource`（`shared/**`、各 skill の `scripts/*-sanitize*.ts` 等）。
 
-正本（canonical）は `shared/` 側に置き、各 skill 配下の生成コピーはテストを重複実行しない。`gh skill install` で配布される `.claude/skills/` 側ではなく、正本である `skills/` 側を直接テスト対象にして回帰検出漏れを防ぐ。
+正本（canonical）は `shared/` 側に置き、各 skill 配下の生成コピーはテストを重複実行しない。インストール先である `.claude/skills/`（Claude Code）や `.agents/skills/`（Codex）側ではなく、正本である `skills/` 側を直接テスト対象にして回帰検出漏れを防ぐ。
 
 ## shared/ 同期パターン
 

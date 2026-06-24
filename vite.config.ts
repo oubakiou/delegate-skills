@@ -43,6 +43,7 @@ export default {
     includeSource: [
       'shared/**/*.ts',
       'scripts/sync-shared*.ts',
+      'scripts/summarize-metrics*.ts',
       'skills/*/scripts/pipe-sanitize*.ts',
       'skills/*/scripts/merge-summary*.ts',
       'skills/*/scripts/http-fetch*.ts',
