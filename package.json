@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "metrics:baseline:check": "bash scripts/check-metrics-baseline.sh",
+    "metrics:cost-check": "bash scripts/run-metrics-fixtures.sh --json | node scripts/evaluate-cost-fixtures.ts",
     "metrics:fixtures": "bash scripts/run-metrics-fixtures.sh",
     "metrics:summarize": "node scripts/summarize-metrics.ts",
     "sync-shared": "node scripts/sync-shared.ts",

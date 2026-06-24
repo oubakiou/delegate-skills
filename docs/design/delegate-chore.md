@@ -110,6 +110,10 @@ delegate が得になる条件: benefit > overhead
 
 baseline の drift 検出は `npm run metrics:baseline:check` で行う。現在値を `fixtures/metrics/baseline.json` と完全一致で比較するため、proxy metric の増減が意図したものなら fixture を再実行して妥当性を確認し、baseline と下表を同時に更新する。
 
+`npm run metrics:cost-check` は fixture telemetry から、worker に逃がした request 量、main が読んだ response 量、差し引きの main input 削減量、最低限必要な main/worker 入力単価比を出す。この `min_input_ratio` は orchestration 出力、cache、worker 固定費を無視した下限であり、実コスト倍率ではない。したがって `min_input_ratio` を満たしていても、実際に得になるとは限らない。
+
+現時点の fixture では `read-heavy-chore` / `mixed-chore` は main context 削減候補として見える。一方 `scriptable-chore` は fixture 上の `worker_read_request` があっても、実運用で shell-only に落とせるなら avoided main content はほぼ 0 なので、コスト削減候補とは扱わない。
+
 ### 初期 fixture baseline（proxy metric）
 
 `npm run metrics:fixtures` による初期 baseline は次のとおり。数値は token 課金額ではなく、`chars / 4` または `bytes / 4` 近似による proxy metric である。

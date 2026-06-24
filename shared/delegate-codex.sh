@@ -37,7 +37,7 @@ REAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 [ -f "$REAL_CODEX_HOME/auth.json" ] && cp "$REAL_CODEX_HOME/auth.json" "$CODEX_HOME_ISOLATED/auth.json"
 
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
-REPORT_FILE="$WORK_DIR/report.md"
+REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_report_XXXXX" --suffix=.md)"
 
 # Codex 子は自身の session id を prompt 内から素直に取得できないため、ラッパが
 # response_file のペアトークン（main 事前確保の一意トークン）から responder_session_id を導出して渡す。

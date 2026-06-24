@@ -2,9 +2,10 @@
 name: delegate-chore
 license: MIT
 description: >
-  explore / implement / git のどれにも明確に当てはまらない雑務を、最安のモデル(haiku)の subagent に
-  委譲するフォールバックスキル。軽微な整形・リネーム・一括置換・定型コマンド実行などの雑用を、
-  親エージェントの context を汚さず安く片付けたいときに使う。専用スキルが当てはまる場合はそちらを優先する。
+  explore / implement / git のどれにも明確に当てはまらない雑務のうち、対象 content を読んで判断する必要があり、
+  親エージェントの context を膨らませたくない作業を安価な subagent に委譲するフォールバックスキル。
+  単一コマンドで処理できる軽微な整形・リネーム・一括置換・定型コマンド実行は原則として main が直接実行し、
+  この skill は使わない。専用スキルが当てはまる場合はそちらを優先する。
 allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
 ---
 
