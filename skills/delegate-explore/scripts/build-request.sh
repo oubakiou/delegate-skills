@@ -82,9 +82,15 @@ write_companion_markdown() {
 }
 
 ts="$(date +%Y%m%d_%H%M%S)"
-request_file="$(mktemp --tmpdir="$work_dir" "delegate_${task_type}_${ts}_request_XXXXX" --suffix=.json)"
-# 乱数トークンを共有して response を導出（_request_ は task_type に含まれないため一意に置換できる）
-response_file="${request_file/_request_/_response_}"
+request_tmp="$(mktemp --tmpdir="$work_dir" "delegate_${task_type}_${ts}_req_XXXXX" --suffix=.json)"
+# mktemp は suffix 併用時に末尾 X が必要なので、一旦 valid な一時名で作ってから desired basename に rename する。
+request_token="$(basename "$request_tmp")"
+request_token="${request_token#delegate_${task_type}_${ts}_req_}"
+request_token="${request_token%.json}"
+request_file="${work_dir}/delegate_${task_type}_${ts}_${request_token}_req.json"
+mv "$request_tmp" "$request_file"
+# 乱数トークンを共有して response を導出（末尾の `_req` / `_res` だけを差し替える）
+response_file="${request_file%_req.json}_res.json"
 src_md="$(mktemp --tmpdir="$work_dir" "delegate_${task_type}_${ts}_reqsrc_XXXXX" --suffix=.md)"
 
 cat >"$src_md"

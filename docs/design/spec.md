@@ -112,18 +112,23 @@ main が request_file / response_file を事前確保する。詳細は [protoco
 
 ```bash
 ts="$(date +%Y%m%d_%H%M%S)"
-name="delegate_<type>_${ts}_request_XXXXX"
+tmp_name="delegate_<type>_${ts}_req_XXXXX"
 # 既定の置き場は mktemp に委ねる（TMPDIR、無ければ /tmp）。DELEGATE_WORK_DIR で上書き可
 if [ -n "${DELEGATE_WORK_DIR:-}" ]; then
   mkdir -p "$DELEGATE_WORK_DIR"
-  request_file="$(mktemp --tmpdir="$DELEGATE_WORK_DIR" "$name" --suffix=.json)"
+  request_tmp="$(mktemp --tmpdir="$DELEGATE_WORK_DIR" "$tmp_name" --suffix=.json)"
 else
-  request_file="$(mktemp --tmpdir "$name" --suffix=.json)"
+  request_tmp="$(mktemp --tmpdir "$tmp_name" --suffix=.json)"
 fi
-response_file="${request_file/_request_/_response_}"
+request_token="$(basename "$request_tmp")"
+request_token="${request_token#delegate_<type>_${ts}_req_}"
+request_token="${request_token%.json}"
+request_file="${request_tmp%/*}/delegate_<type>_${ts}_${request_token}_req.json"
+mv "$request_tmp" "$request_file"
+response_file="${request_file%_req.json}_res.json"
 ```
 
-- request_file と response_file は `ts`（タイムスタンプ）とランダムトークンを共有し、ファイル名中の `request`/`response` だけが異なる → 同一秒に並列実行してもファイル名から両者の対応関係を一意特定できる
+- request_file と response_file は `ts`（タイムスタンプ）とランダムトークンを共有し、末尾の `_req`/`_res` だけが異なる → 同一秒に並列実行してもファイル名から両者の対応関係を一意特定できる
 - 乱数の出所は request の mktemp 1 箇所。一意性も保たれる
 - クリーンアップ: ファイルは残す（監査・デバッグ用）。既定では mktemp の置き場（`TMPDIR`、無ければ `/tmp`）に蓄積するため不要分は手動で削除する。`DELEGATE_WORK_DIR` で置き場を固定できる
 - **main 事前確保の利点**: main は sub の最終メッセージをパースせずに response_file パスを決定的に知れる。sub の返答が崩れてもパスを見失わない
