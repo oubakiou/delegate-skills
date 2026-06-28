@@ -2,7 +2,7 @@
 name: delegate-review
 license: MIT
 description: >
-  コードレビュー（差分の指摘出し）を判断比重の高いモデルの subagent に委譲するスキル。
+  コード/ドキュメントレビュー（差分の指摘出し）を判断比重の高いモデルの subagent に委譲するスキル。
   大きめの diff、複数ファイルにまたがる変更、main が差分全体を読むと重い一次レビューに使う。
   数行の diff、main が既に読んだ差分、style / typo 程度の軽微レビューには使わない。
   read-only で編集や git の書き込み操作はしない。結果はファイル経由で受け取り、
@@ -12,7 +12,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-review/scripts/prepare.sh:*), B
 
 # delegate-review
 
-差分のコードレビューを委譲する。task_type=`review`、既定モデル `opus`（指摘品質が成果物に直結し判断比重が高いため）。Claude パスは `delegate-claude.sh`（`claude -p` 子プロセス）。
+差分のコード/ドキュメントレビューを委譲する。task_type=`review`、既定モデル `opus`（指摘品質が成果物に直結し判断比重が高いため）。Claude パスは `delegate-claude.sh`（`claude -p` 子プロセス）。
 
 ## スクリプトパス
 
@@ -24,6 +24,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-review/scripts/prepare.sh:*), B
 ## 委譲する前に（コストゲート）
 
 review は、main が差分全体を読むと context を膨らませる一次レビューに使う。大きめの diff、複数ファイルにまたがる変更、広い影響範囲の確認が必要な差分を発火条件にする。一方、数行の diff、main が既に読んだ差分、style / typo 程度の軽微レビューは委譲せず main が直接処理する。
+レビュー対象はコード差分に限らず、README / spec / design docs / changelog などのドキュメント差分も含める。
 
 ## 実行フロー
 
