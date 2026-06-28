@@ -18,16 +18,21 @@ Both paths launch a child process via a shell wrapper, so the skills work unifor
 
 Hand-off between main and sub is file-based (request/response). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
+`delegate-imagegen` is the exception to the model-branching rule: it is a Codex-only capability bridge for image generation/editing, not a cheaper-model delegation path.
+
 ## Skills
 
-| skill                | Purpose                                  | Tool permissions          | Default model | env                                              |
-| -------------------- | ---------------------------------------- | ------------------------- | ------------- | ------------------------------------------------ |
-| `delegate-explore`   | Read-only code & doc exploration         | read-only                 | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
-| `delegate-implement` | Code implementation & edits (one commit) | Edit/Write/Bash (no push) | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
-| `delegate-chore`     | Fallback chores                          | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
-| `delegate-review`    | Code/doc review (diff findings)          | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
+| skill                | Purpose                                  | Tool permissions          | Default model | env                                                  |
+| -------------------- | ---------------------------------------- | ------------------------- | ------------- | ---------------------------------------------------- |
+| `delegate-explore`   | Read-only code & doc exploration         | read-only                 | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`       |
+| `delegate-implement` | Code implementation & edits (one commit) | Edit/Write/Bash (no push) | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`     |
+| `delegate-chore`     | Fallback chores                          | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`         |
+| `delegate-review`    | Code/doc review (diff findings)          | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`        |
+| `delegate-imagegen`  | Image generation/editing via Codex       | Codex subprocess          | Codex default | `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
 
 Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
+
+`delegate-imagegen` intentionally has no user-facing model selector. If the user does not specify an output directory, generated files go under `.temp/imagegen/`.
 
 ## Environment variables
 
@@ -37,6 +42,7 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 | `DELEGATE_WORK_DIR`            | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                   |
 | `DELEGATE_RESPONSE_INLINE_MAX` | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto` |
 | `DELEGATE_METRICS_FILE`        | unset                                  | Optional JSONL proxy-metric telemetry output path     |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR` | `.temp/imagegen`                       | Default output directory for `delegate-imagegen`      |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
@@ -55,6 +61,8 @@ main agent
   │                  otherwise → <skill>/scripts/delegate-claude.sh launches a Claude subprocess (claude -p)
   └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
 ```
+
+`delegate-imagegen` uses `<skill>/scripts/prepare-imagegen.sh` and `<skill>/scripts/delegate-imagegen-codex.sh` instead of `prepare.sh` model resolution and the Claude/Codex model branch.
 
 The canonical copy of each shared script lives in `shared/`; `scripts/sync-shared.ts` copies it into every skill's `scripts/`.
 
@@ -77,6 +85,7 @@ delegate-skills/
     delegate-implement/{SKILL.md, scripts/}
     delegate-chore/{SKILL.md, scripts/}
     delegate-review/{SKILL.md, scripts/}
+    delegate-imagegen/{SKILL.md, scripts/}
   .claude/skills/<skill>/scripts/  # Claude Code gh skill install layout
   .agents/skills/<skill>/scripts/  # Codex gh skill install layout
   shared/                          # canonical shared scripts (type/runtime-agnostic)

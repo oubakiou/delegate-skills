@@ -85,7 +85,7 @@ jq -r '.sections | join("\n\n")' "$request_file" >"${request_file%.json}.md"
 - `type`: 固定値 `response`（ファイル種別の自己記述）
 - `status`: `completed | partial | failed | needs_input`。main が最優先・最安に読む構造化フィールド（md2idx の section ではない）
 - `responder_session_id`: 必須。リクエスト先（子エージェント / Codex 子プロセス）のプロセス / セッション ID。追跡・デバッグ用
-- `index` / `sections`: 作業報告の md2idx 出力。Markdown 見出しは Summary / Changed files / Commands / Verification / Findings / Blockers / Error。検証結果は構造化フィールドに持たず、Verification section に収める。main は `status` の次にこの section だけを必要時に引く（検証ログを main の context に流し込まない）
+- `index` / `sections`: 作業報告の md2idx 出力。標準の Markdown 見出しは Summary / Changed files / Commands / Verification / Findings / Blockers / Error。skill 固有の成果物に合わせて見出しを追加・置換してよい。`delegate-imagegen` は Summary / Generated files / Parameters / Verification / Blockers を使う。検証結果は構造化フィールドに持たず、Verification section に収める。main は `status` の次にこの section だけを必要時に引く（検証ログを main の context に流し込まない）
 
 生成:
 
