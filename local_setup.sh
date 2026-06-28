@@ -52,6 +52,18 @@ gh skill install oubakiou/mdxg-redline md-review --agent claude-code --scope pro
 gh skill install oubakiou/skills guarded-webfetch-codex --agent claude-code --scope project
 gh skill install oubakiou/skills guarded-websearch-codex --agent claude-code --scope project
 
+echo "delegate skillをClaude CodeとCodexにインストールします"
+for agent in claude-code codex; do
+  for skill in \
+    delegate-explore \
+    delegate-implement \
+    delegate-chore \
+    delegate-review \
+  ; do
+    gh skill install . "$skill" --from-local --agent "$agent" --scope project --force
+  done
+done
+
 # python3はskill-creator 同梱の Python スクリプト (eval-viewer 等) を実行するために必要
 # bubblewrapはCodexに必要
 sudo apt-get update -qq && sudo apt-get install -y -qq python3 libpython3-stdlib bubblewrap > /dev/null 2>&1
