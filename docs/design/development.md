@@ -61,6 +61,69 @@ self-contained 配布のため、共有スクリプトは `shared/` を正本と
 4. 最終ドリフト検証（fail-closed）
 5. `vp test`
 
+## リリースプロセス
+
+`gh skill publish` で GitHub Releases と `gh skill` レジストリに **同一の `vX.Y.Z` git tag で**公開する。
+
+| 公開先                | 配布物                                     | 公開コマンド                    |
+| --------------------- | ------------------------------------------ | ------------------------------- |
+| GitHub Releases       | リリースノート（What's New）               | `gh skill publish` が兼ねる     |
+| `gh skill` レジストリ | 各 delegate 系 skill（`gh skill install`） | `gh skill publish --tag vX.Y.Z` |
+
+### 全体フロー
+
+```mermaid
+flowchart TD
+    A["1. main ブランチで変更を commit + push"] --> B["2. gh skill publish --dry-run<br/>(検証)"]
+    B --> C["3. gh skill publish --tag vX.Y.Z<br/>(tag + GitHub Release + skill 公開)"]
+    C --> D["4. gh release edit で What's New notes に差し替え"]
+```
+
+#### 1. main に変更を commit + push
+
+リリース対象の変更がすべて main にマージされた状態にする。
+
+#### 2. dry-run で検証
+
+```bash
+gh skill publish --dry-run
+```
+
+`skills/*/SKILL.md` の `name` がディレクトリ名と一致するか、frontmatter の検証等をリリース前に行う。
+
+#### 3. gh skill publish でタグ + Release + skill 公開
+
+```bash
+gh skill publish --tag v0.1.0
+```
+
+`--tag` を渡すと対話なしで publish する。タグは push 済みの main HEAD に切られるため、手順 1 の push を先に完了しておく。
+
+#### 4. リリースノートを差し替え
+
+```bash
+gh release edit v0.1.0 --notes-file <notes.md>
+```
+
+publish が付ける auto notes を What's New 形式に置き換える。
+
+### リリースチェックリスト
+
+- [ ] リリース対象の変更がすべて main にマージ済み
+- [ ] `vp check` がエラーなし
+- [ ] `vp test` が全パス
+- [ ] `gh skill publish --dry-run` がエラーなし
+- [ ] `gh skill publish --tag vX.Y.Z` 後、tag が正しい commit を指す（`git ls-remote --tags origin vX.Y.Z`）
+- [ ] `gh release edit` で What's New ノートに差し替え済み
+
+## ローカル skill の再インストール
+
+`skills/<skill-name>/` を編集した後で Claude Code から最新版を試すには、対象 skill を再インストールする:
+
+```bash
+gh skill install . <skill-name> --from-local --agent claude-code --scope project --force
+```
+
 ## コーディング規約
 
 [../../AGENTS.md](../../AGENTS.md) に従う。要点:
