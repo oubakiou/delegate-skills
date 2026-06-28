@@ -11,21 +11,21 @@
 
 Delegate routine, mechanical work to a cheaper model without polluting the main agent's (expensive model) context. The delegation target **branches on the model name**:
 
-- Claude family (`sonnet`/`haiku`/`opus`/`fable`) → in-session **Agent tool**
-- `gpt-*` → **Codex subprocess** (`codex exec`)
+- Claude family (`sonnet`/`haiku`/`opus`/`fable`) → **Claude subprocess** (`claude -p` via `delegate-claude.sh`)
+- `gpt-*` → **Codex subprocess** (`codex exec` via `delegate-codex.sh`)
 
-When the requester itself is Codex, `gh skill install` places the skill under `.agents/skills/<skill>/scripts/...`; set `DELEGATE_<TYPE>_MODEL` to a `gpt-*` model unless your environment provides a Claude Agent-tool equivalent.
+Both paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code or Codex.
 
 Hand-off between main and sub is file-based (request/response). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
 ## Skills
 
-| skill                | Purpose                                  | subagent_type   | Tool permissions          | Default model | env                                              |
-| -------------------- | ---------------------------------------- | --------------- | ------------------------- | ------------- | ------------------------------------------------ |
-| `delegate-explore`   | Read-only code & doc exploration         | Explore         | read-only                 | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
-| `delegate-implement` | Code implementation & edits (one commit) | general-purpose | Edit/Write/Bash (no push) | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
-| `delegate-chore`     | Fallback chores                          | general-purpose | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
-| `delegate-review`    | Code review (diff findings)              | general-purpose | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
+| skill                | Purpose                                  | Tool permissions          | Default model | env                                              |
+| -------------------- | ---------------------------------------- | ------------------------- | ------------- | ------------------------------------------------ |
+| `delegate-explore`   | Read-only code & doc exploration         | read-only                 | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
+| `delegate-implement` | Code implementation & edits (one commit) | Edit/Write/Bash (no push) | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
+| `delegate-chore`     | Fallback chores                          | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
+| `delegate-review`    | Code review (diff findings)              | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
 
 Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
 
@@ -52,7 +52,7 @@ main agent
   │   ├─ check-delegate-chain.sh             Recursion guard for multi-hop delegation (same type twice forbidden → exit 4)
   │   └─ build-request.sh                    Create request_file / response_file with mktemp (sharing ts + random token)
   ├─ model is gpt* → <skill>/scripts/delegate-codex.sh launches a Codex subprocess
-  │                  otherwise → Agent tool (subagent_type per skill)
+  │                  otherwise → <skill>/scripts/delegate-claude.sh launches a Claude subprocess (claude -p)
   └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
 ```
 
@@ -84,6 +84,7 @@ delegate-skills/
     check-md2idx.sh
     check-delegate-chain.sh
     delegate-codex.sh
+    delegate-claude.sh
     prepare.sh
     build-request.sh
     read-request.sh
@@ -105,6 +106,7 @@ delegate-skills/
 
 - Node.js and `md2idx` (`npx md2idx` must be runnable; a global install via `npm install -g md2idx` is recommended since every skill uses it heavily)
 - `jq`
+- When using Claude family models: the `claude` CLI (logged in)
 - When using `gpt-*`: the `codex` CLI (logged in)
 
 ## Development

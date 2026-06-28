@@ -11,19 +11,19 @@
 
 main agent（高価なモデル）の context を汚さず、定型的・機械的な作業を安価なモデルへ委譲する。委譲先は**モデル名で二分岐**する:
 
-- Claude 系（`sonnet`/`haiku`/`opus`/`fable`）→ in-session の **Agent tool**
-- `gpt-*` → **Codex 子プロセス**（`codex exec`）
+- Claude 系（`sonnet`/`haiku`/`opus`/`fable`）→ **Claude 子プロセス**（`claude -p`、`delegate-claude.sh`）
+- `gpt-*` → **Codex 子プロセス**（`codex exec`、`delegate-codex.sh`）
 
-main↔sub の受け渡しはファイルベース（リクエスト/レスポンス）で、両方とも [md2idx](https://github.com/oubakiou/md2idx) 形式（`index` + `sections`）を採用し段階読み取りでトークンを節約する。
+どちらのパスもシェルラッパ経由で子プロセスを起動するため、requester が Claude Code でも Codex でも同じように動作する。main↔sub の受け渡しはファイルベース（リクエスト/レスポンス）で、両方とも [md2idx](https://github.com/oubakiou/md2idx) 形式（`index` + `sections`）を採用し段階読み取りでトークンを節約する。
 
 ## skill 一覧
 
-| skill                | 用途                                       | subagent_type   | ツール権限                   | 既定モデル | env                                              |
-| -------------------- | ------------------------------------------ | --------------- | ---------------------------- | ---------- | ------------------------------------------------ |
-| `delegate-explore`   | read-only のコード/ドキュメント探索・読解  | Explore         | read-only                    | `haiku`    | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
-| `delegate-implement` | コード実装・修正（1 コミットに収まる単位） | general-purpose | Edit/Write/Bash（push なし） | `sonnet`   | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
-| `delegate-chore`     | フォールバック雑務                         | general-purpose | Edit/Write/Bash（push なし） | `haiku`    | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
-| `delegate-review`    | コードレビュー（差分の指摘）               | general-purpose | read-only                    | `opus`     | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
+| skill                | 用途                                       | ツール権限                   | 既定モデル | env                                              |
+| -------------------- | ------------------------------------------ | ---------------------------- | ---------- | ------------------------------------------------ |
+| `delegate-explore`   | read-only のコード/ドキュメント探索・読解  | read-only                    | `haiku`    | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`   |
+| `delegate-implement` | コード実装・修正（1 コミットに収まる単位） | Edit/Write/Bash（push なし） | `sonnet`   | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR` |
+| `delegate-chore`     | フォールバック雑務                         | Edit/Write/Bash（push なし） | `haiku`    | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`     |
+| `delegate-review`    | コードレビュー（差分の指摘）               | read-only                    | `opus`     | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`    |
 
 既定モデルの根拠: explore / chore は read 中心・低リスクで `haiku`、implement は編集の判断を要するため `sonnet`、review は指摘品質が成果物に直結し判断比重が高いため `opus`。
 
@@ -47,7 +47,7 @@ main agent
   ├─ <skill>/scripts/check-delegate-chain.sh 多段委譲の再帰防止（同一種別2度禁止 → exit 4）
   ├─ request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
   ├─ model が gpt* → <skill>/scripts/delegate-codex.sh で Codex 子プロセス
-  │                 それ以外 → Agent tool（subagent_type は skill 毎）
+  │                 それ以外 → <skill>/scripts/delegate-claude.sh で Claude 子プロセス（claude -p）
   └─ jq で response の status → index → 必要 section を段階読み取り → 検証
 ```
 
@@ -57,6 +57,7 @@ main agent
 
 - Node.js と `md2idx`（`npx md2idx` が実行可能なこと。各 skill が多用するため `npm install -g md2idx` でのグローバルインストールを推奨）
 - `jq`
+- Claude 系モデルを使う場合: `claude` CLI（ログイン済み）
 - `gpt-*` を使う場合: `codex` CLI（ログイン済み）
 
 ## 開発

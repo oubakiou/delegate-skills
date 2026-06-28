@@ -1,6 +1,6 @@
 # delegate-skills protocol v1
 
-main agent と delegate された subagent / Codex 子プロセスの間のファイルベースプロトコル。実行系（Claude Agent tool / Codex）に依存しない。
+main agent と delegate された subagent / Codex 子プロセスの間のファイルベースプロトコル。実行系（claude -p / Codex）に依存しない。
 
 > 生成・読み取りは `shared/{build-request,read-request,build-response,read-response}.sh`（各 skill の `scripts/` に同梱）に集約されている。以下の `npx md2idx` / `jq` の手順はこれらが内部で行う処理の仕様であり、運用では手組みの代わりにスクリプトを使う。
 
