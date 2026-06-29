@@ -18,6 +18,8 @@ Both paths launch a child process via a shell wrapper, so the skills work unifor
 
 Hand-off between main and sub is file-based (request/response). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
+When delegating, use the dedicated skill for the task type (`delegate-explore`, `delegate-implement`, `delegate-review`, `delegate-chore`, `delegate-imagegen`) rather than bypassing into a generic subagent.
+
 `delegate-imagegen` resolves a Codex model with the same env/default mechanism as the other delegates, but it remains a Codex-only capability bridge: `DELEGATE_IMAGEGEN_MODEL` selects the child model, `gpt*` routes to Codex, and non-`gpt*` fails closed instead of falling through to Claude.
 
 ## Skills

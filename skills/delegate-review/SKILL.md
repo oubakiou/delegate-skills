@@ -5,6 +5,7 @@ description: >
   コード/ドキュメントレビュー（差分の指摘出し）を判断比重の高いモデルの subagent に委譲するスキル。
   大きめの diff、複数ファイルにまたがる変更、main が差分全体を読むと重い一次レビューに使う。
   数行の diff、main が既に読んだ差分、style / typo 程度の軽微レビューには使わない。
+  review の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
   read-only で編集や git の書き込み操作はしない。結果はファイル経由で受け取り、
   index → 必要 section の順で段階的に読む。コード変更を伴う場合は delegate-implement を使うこと。
 allowed-tools: Bash(bash .claude/skills/delegate-review/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-review/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-review/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-review/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-review/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-review/scripts/delegate-claude.sh:*), Bash(bash .claude/skills/delegate-review/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-review/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-review/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-review/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git status:*), Read
@@ -25,6 +26,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-review/scripts/prepare.sh:*), B
 
 review は、main が差分全体を読むと context を膨らませる一次レビューに使う。大きめの diff、複数ファイルにまたがる変更、広い影響範囲の確認が必要な差分を発火条件にする。一方、数行の diff、main が既に読んだ差分、style / typo 程度の軽微レビューは委譲せず main が直接処理する。
 レビュー対象はコード差分に限らず、README / spec / design docs / changelog などのドキュメント差分も含める。
+review の作業を委譲する場合は、この skill を使う。generic な subagent へ流す運用はしない。
 
 ## 実行フロー
 

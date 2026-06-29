@@ -6,6 +6,7 @@ description: >
   親エージェントの context を膨らませたくない作業を安価な subagent に委譲するフォールバックスキル。
   単一コマンドで処理できる軽微な整形・リネーム・一括置換・定型コマンド実行は原則として main が直接実行し、
   この skill は使わない。専用スキルが当てはまる場合はそちらを優先する。
+  chore の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
 allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/delegate-claude.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-chore/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
 ---
 

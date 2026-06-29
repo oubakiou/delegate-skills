@@ -23,6 +23,7 @@ main agent
 ```
 
 ファイルプロトコルは実行系（claude -p / Codex）に依存しない。「誰が request_file を読み response_file を書くか」だけが変わる。
+委譲するときは、task_type に対応する専用 skill（explore / implement / review / chore / imagegen）を使い、generic な subagent へ直接流さない。
 
 ### 委譲メカニズムの選定理由
 

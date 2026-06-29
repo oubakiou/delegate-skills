@@ -6,6 +6,7 @@ description: >
   ユーザーが画像、イラスト、写真風ビジュアル、バナー、サムネイル、アイコン案、テクスチャ、モック画像などの生成や編集を求め、
   main agent 側で画像生成手段を直接使えない、またはプロンプト試行錯誤・生成パラメータ・失敗ログを隔離したい場合に使う。
   主目的は token cost 削減ではなく capability bridge と context isolation。DELEGATE_IMAGEGEN_MODEL で Codex モデルを切り替える。
+  imagegen の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
 allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imagegen.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/delegate-imagegen-codex.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Bash(test -f:*), Bash(ls:*), Bash(file:*), Read
 ---
 

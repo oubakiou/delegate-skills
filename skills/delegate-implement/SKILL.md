@@ -7,6 +7,7 @@ description: >
   親エージェントの context を汚さずに処理したいときに使う。単一ファイルの小変更、明確な一括置換、
   main が既に読んだ箇所の数行修正、設計判断が未確定な実装には使わない。子は Edit/Write/Bash で実作業し、結果はファイル経由で受け取る。
   read-only の調査は delegate-explore、git/PR 操作は親エージェントが直接扱うこと。
+  implement の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
 allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/delegate-claude.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-implement/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Bash(vp:*), Read
 ---
 

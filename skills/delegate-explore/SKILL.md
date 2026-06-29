@@ -8,6 +8,7 @@ description: >
   複数ファイルや長めの文書を読む必要があり、親エージェントの context を汚さずに安く処理したいときに使う。
   単一の短いファイル確認や rg 一発で済む調査には使わない。結果はファイル経由で受け取り、
   index → 必要 section の順で段階的に読む。コード変更を伴う場合は delegate-implement を使うこと。
+  explore の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
 allowed-tools: Bash(bash .claude/skills/delegate-explore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-claude.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
 ---
 
