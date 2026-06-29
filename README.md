@@ -48,6 +48,10 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
+## Model price reference
+
+[`shared/model-token-prices.json`](shared/model-token-prices.json) contains a manually curated token price snapshot for supported delegate model families. `scripts/sync-shared.ts` bundles a copy into each skill directory. It is reference data for cost analysis and reporting only; delegate-skills does not use it as a cost gate.
+
 ## Architecture
 
 Each skill bundles its own copy of the shared scripts (self-contained). `gh skill install` places them under `.claude/skills/<skill>/scripts/...` for Claude Code and under the same relative layout at `.agents/skills/<skill>/scripts/...` for Codex.
@@ -66,7 +70,7 @@ main agent
 
 `delegate-imagegen` uses `<skill>/scripts/prepare-imagegen.sh` and `<skill>/scripts/delegate-imagegen-codex.sh` to preserve image-output defaults. `prepare-imagegen.sh` still resolves `DELEGATE_IMAGEGEN_MODEL` and returns `model`, but imagegen only accepts the `gpt*`/Codex branch.
 
-The canonical copy of each shared script lives in `shared/`; `scripts/sync-shared.ts` copies it into every skill's `scripts/`.
+The canonical copy of each shared script/asset lives in `shared/`; `scripts/sync-shared.ts` copies it into every skill.
 
 See [docs/design/protocol-v1.md](docs/design/protocol-v1.md) for the protocol details.
 
@@ -90,7 +94,8 @@ delegate-skills/
     delegate-imagegen/{SKILL.md, scripts/}
   .claude/skills/<skill>/scripts/  # Claude Code gh skill install layout
   .agents/skills/<skill>/scripts/  # Codex gh skill install layout
-  shared/                          # canonical shared scripts (type/runtime-agnostic)
+  shared/                          # canonical shared scripts/assets (type/runtime-agnostic)
+    model-token-prices.json
     resolve-model.sh
     check-md2idx.sh
     check-delegate-chain.sh
@@ -102,7 +107,7 @@ delegate-skills/
     build-response.sh
     read-response.sh
   scripts/
-    sync-shared.ts                 # shared/ → each skill's scripts/ (+ in-source test)
+    sync-shared.ts                 # shared/ → each skill (+ in-source test)
     summarize-metrics.ts           # summarize telemetry JSONL
     run-metrics-fixtures.sh        # run fixed metrics fixtures
     check-metrics-baseline.sh      # detect fixture baseline drift

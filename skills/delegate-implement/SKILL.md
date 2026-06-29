@@ -22,6 +22,10 @@ allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/prepare.sh:*)
 
 以降のコマンド例は Claude Code の `.claude/skills/delegate-implement` を使う。Codex で使う場合は、同じ相対構造の `.agents/skills/delegate-implement` に読み替える。
 
+## モデル価格参照
+
+コスト分析・単価比較が必要な場合のみ、`<skill_dir>/model-token-prices.json` を読む。このデータは参照用であり、delegate の起動可否判定には使わない。
+
 ## 委譲する前に（コストゲート）
 
 implement は、調査・編集・検証を worker にまとめて任せる価値がある規模の実装に使う。複数ファイルにまたがる変更、既存パターン調査を伴う変更、worker が検証コマンドまで実行でき、main が `git diff` / Verification / Summary の確認に集中できる変更を発火条件にする。一方、単一ファイルの小変更、明確な一括置換、main が既に読んだ箇所の数行修正、設計判断が未確定な実装は委譲せず main が直接処理する。

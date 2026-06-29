@@ -198,6 +198,8 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 
 `DELEGATE_METRICS_FILE` が設定されたときだけ、共有スクリプトは JSONL に proxy metric を追記する。通常運用では未設定で、挙動も出力も変えない。metrics 書き込みは best-effort であり、書き込み先の作成や追記に失敗しても本処理は継続する。記録対象は `prepare.sh` / `build-request.sh` / `read-request.sh` / `build-response.sh` / `read-response.sh` で、主なフィールドは `kind`、対象ファイル、selector、inline 判定、section 数、`bytes` / `chars` / `lines` / `estimated_tokens`。`read-request.sh` / `read-response.sh` はファイル全体サイズに加え、実際に stdout へ出した `selected` 量を記録する。この telemetry は実課金額ではなく、main が読んだ response 量、worker が読んだ request 量、orchestration event 数を比較するための近似である。
 
+`shared/model-token-prices.json` はモデルごとの token 単価スナップショットを持つ基礎データであり、`scripts/sync-shared.ts` で各 skill ディレクトリへ同梱する。metrics の分析やレポートで参照するためのデータであり、delegate の起動可否を判定する cost gate には使わない。価格は外部サービス側で変わるため、実行時制御の source of truth ではなく、更新日と参照元を含む手動更新データとして扱う。参照元に明示価格が無いモデルは、推測値を入れず `null` と `pricing_status` で表す。
+
 ### main 側の context / cache 規律（コスト最適化）
 
 main が最高級モデルのとき、削減は「委譲」とは独立の別レイヤーとしても効く。md2idx 圧縮と乗算で効く原則:

@@ -21,6 +21,10 @@ allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imageg
 
 以降のコマンド例は Claude Code の `.claude/skills/delegate-imagegen` を使う。Codex で使う場合は、同じ相対構造の `.agents/skills/delegate-imagegen` に読み替える。
 
+## モデル価格参照
+
+コスト分析・単価比較が必要な場合のみ、`<skill_dir>/model-token-prices.json` を読む。このデータは参照用であり、delegate の起動可否判定には使わない。
+
 ## 委譲する前に
 
 この skill は、main agent が画像生成 capability を持たない場合、または画像生成に関する試行錯誤を worker 側へ隔離したい場合に使う。ユーザーが求める成果物が SVG / HTML / CSS / canvas / 既存デザインシステム内のコードで表現する方が適切なら、この skill ではなく通常の実装・編集として扱う。

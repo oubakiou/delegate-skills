@@ -21,6 +21,10 @@ allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/prepare.sh:*), Ba
 
 以降のコマンド例は Claude Code の `.claude/skills/delegate-chore` を使う。Codex で使う場合は、同じ相対構造の `.agents/skills/delegate-chore` に読み替える。
 
+## モデル価格参照
+
+コスト分析・単価比較が必要な場合のみ、`<skill_dir>/model-token-prices.json` を読む。このデータは参照用であり、delegate の起動可否判定には使わない。
+
 ## 委譲する前に（コストゲート）
 
 委譲はオーバーヘッド（worker 起動・request/response の往復・main 側の読み取り）を伴う。**この chore が単一コマンド（`sed` / `find` / `chmod` / `jq` 等）でスクリプト化でき、対象内容をモデル context に載せずに済むなら、委譲は純損**になりやすい（オーバーヘッドが context 衛生・トークン両面の利得を上回る）。その場合は委譲せず main が直接実行するか、繰り返すなら下記フィードバックループの自動化提案へ回す。委譲が見合うのは、content をモデルが読み込んで処理する必要がある嵩んだ作業。根拠は [docs/design/delegate-chore.md §5](../../docs/design/delegate-chore.md)。

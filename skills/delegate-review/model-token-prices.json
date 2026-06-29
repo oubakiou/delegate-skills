@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "currency": "USD",
+  "unit": "per_1m_tokens",
+  "retrieved_at": "2026-06-29",
+  "usage": "Reference data for cost analysis and reporting. It is not used as a cost gate.",
+  "null_price": "No explicit price row was found in the listed source at retrieved_at.",
+  "sources": {
+    "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "openai": "https://developers.openai.com/api/docs/pricing"
+  },
+  "models": [
+    {
+      "provider": "anthropic",
+      "model": "claude-fable-5",
+      "display_name": "Claude Fable 5",
+      "input": 10,
+      "cached_input": 1,
+      "output": 50,
+      "source": "anthropic"
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4.8",
+      "display_name": "Claude Opus 4.8",
+      "input": 5,
+      "cached_input": 0.5,
+      "output": 25,
+      "source": "anthropic"
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4.6",
+      "display_name": "Claude Sonnet 4.6",
+      "input": 3,
+      "cached_input": 0.3,
+      "output": 15,
+      "source": "anthropic"
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-haiku-4.5",
+      "display_name": "Claude Haiku 4.5",
+      "input": 1,
+      "cached_input": 0.1,
+      "output": 5,
+      "source": "anthropic"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5",
+      "display_name": "GPT-5",
+      "input": null,
+      "cached_input": null,
+      "output": null,
+      "pricing_status": "not_listed_in_source",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "display_name": "GPT-5.5",
+      "input": 5,
+      "cached_input": 0.5,
+      "output": 30,
+      "context": "standard_short_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "display_name": "GPT-5.5",
+      "input": 10,
+      "cached_input": 1,
+      "output": 45,
+      "context": "standard_long_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.5-pro",
+      "display_name": "GPT-5.5 Pro",
+      "input": 30,
+      "cached_input": null,
+      "output": 180,
+      "context": "standard_short_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.5-pro",
+      "display_name": "GPT-5.5 Pro",
+      "input": 60,
+      "cached_input": null,
+      "output": 270,
+      "context": "standard_long_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "display_name": "GPT-5.4",
+      "input": 2.5,
+      "cached_input": 0.25,
+      "output": 15,
+      "context": "standard_short_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "display_name": "GPT-5.4",
+      "input": 5,
+      "cached_input": 0.5,
+      "output": 22.5,
+      "context": "standard_long_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "display_name": "GPT-5.4 Mini",
+      "input": 0.75,
+      "cached_input": 0.075,
+      "output": 4.5,
+      "context": "standard",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "display_name": "GPT-5.4 Nano",
+      "input": 0.2,
+      "cached_input": 0.02,
+      "output": 1.25,
+      "context": "standard",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-pro",
+      "display_name": "GPT-5.4 Pro",
+      "input": 30,
+      "cached_input": null,
+      "output": 180,
+      "context": "standard_short_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-pro",
+      "display_name": "GPT-5.4 Pro",
+      "input": 60,
+      "cached_input": null,
+      "output": 270,
+      "context": "standard_long_context",
+      "source": "openai"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.3-codex",
+      "display_name": "GPT-5.3 Codex",
+      "input": 1.75,
+      "cached_input": 0.175,
+      "output": 14,
+      "context": "standard",
+      "source": "openai"
+    }
+  ],
+  "aliases": [
+    {
+      "provider": "anthropic",
+      "alias": "fable",
+      "alias_for": "claude-fable-5"
+    },
+    {
+      "provider": "anthropic",
+      "alias": "opus",
+      "alias_for": "claude-opus-4.8"
+    },
+    {
+      "provider": "anthropic",
+      "alias": "sonnet",
+      "alias_for": "claude-sonnet-4.6"
+    },
+    {
+      "provider": "anthropic",
+      "alias": "haiku",
+      "alias_for": "claude-haiku-4.5"
+    }
+  ]
+}

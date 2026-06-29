@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// shared/ の正本を配布元である各 delegate-* skill の scripts/ へ複製する同期スクリプト。
+// shared/ の正本を配布元である各 delegate-* skill へ複製する同期スクリプト。
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -18,6 +18,8 @@ const SHARED_SCRIPTS = [
   'build-response.sh',
   'read-response.sh',
 ]
+
+const SHARED_ASSETS = ['model-token-prices.json']
 
 const DELEGATE_SKILLS = [
   'delegate-explore',
@@ -41,6 +43,12 @@ const pairs = (): Pair[] => {
         src: path.join('shared', script),
       })
     }
+    for (const asset of SHARED_ASSETS) {
+      out.push({
+        dest: path.join('skills', skill, asset),
+        src: path.join('shared', asset),
+      })
+    }
   }
   return out
 }
@@ -51,7 +59,9 @@ const sync = (): void => {
     const destPath = path.join(repoRoot, dest)
     mkdirSync(path.dirname(destPath), { recursive: true })
     writeFileSync(destPath, content)
-    chmodSync(destPath, 0o755)
+    if (dest.endsWith('.sh')) {
+      chmodSync(destPath, 0o755)
+    }
   }
   process.stdout.write(`sync-shared: synced ${pairs().length} file(s)\n`)
 }
@@ -91,12 +101,14 @@ if (!import.meta.vitest) {
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   describe('pairs', () => {
-    it('covers every skill × script under the distribution tree', () => {
+    it('covers every shared file under the distribution tree', () => {
       const result = pairs()
-      expect(result).toHaveLength(DELEGATE_SKILLS.length * SHARED_SCRIPTS.length)
+      expect(result).toHaveLength(
+        DELEGATE_SKILLS.length * (SHARED_SCRIPTS.length + SHARED_ASSETS.length)
+      )
       expect(result.every((pair) => pair.src.startsWith('shared/'))).toBe(true)
       expect(result.every((pair) => pair.dest.startsWith('skills/'))).toBe(true)
-      expect(result.every((pair) => pair.dest.endsWith('.sh'))).toBe(true)
+      expect(result.some((pair) => pair.dest.endsWith('model-token-prices.json'))).toBe(true)
     })
   })
 }
