@@ -29,11 +29,11 @@ allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imageg
 
 この skill は、main agent が画像生成 capability を持たない場合、または画像生成に関する試行錯誤を worker 側へ隔離したい場合に使う。ユーザーが求める成果物が SVG / HTML / CSS / canvas / 既存デザインシステム内のコードで表現する方が適切なら、この skill ではなく通常の実装・編集として扱う。
 
-ユーザーから出力先の明示がない場合、worker には `.temp/imagegen/` 配下へ保存させる。既存画像を編集する場合は、対象ファイルパス、保持すべき要素、変更点、許容されるスタイル変更を request に明記する。
+ユーザーから出力先の明示がない場合、worker には `DELEGATE_IMAGEGEN_OUTPUT_DIR` の既定出力先へ保存させる。既存画像を編集する場合は、対象ファイルパス、保持すべき要素、変更点、許容されるスタイル変更を request に明記する。
 
 ## 実行フロー
 
-1. **準備**: Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。出力先指定がなければ Constraints に `.temp/imagegen/` を書く。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
+1. **準備**: Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。出力先指定がなければ Constraints に `DELEGATE_IMAGEGEN_OUTPUT_DIR` の既定出力先を使う旨を書く。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
    - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-imagegen/scripts/prepare-imagegen.sh "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）
    - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"`
 2. **実行系分岐**:
@@ -57,6 +57,6 @@ worker の report Markdown は次の見出しを基本にする。
 - `DELEGATE_IMAGEGEN_MODEL` → `gpt-5` の順でモデル解決する
 - Codex 限定で起動する。`gpt*` 以外に解決された場合は Claude パスへ落とさず中止する
 - ユーザーに画像生成モデル選択を求めない。必要な場合は環境変数で運用側が切り替える
-- 出力先が明示されていなければ `.temp/imagegen/` 配下に保存する
+- 出力先が明示されていなければ `DELEGATE_IMAGEGEN_OUTPUT_DIR` の既定出力先に保存する
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）
 - main は worker の試行錯誤ログを echo / 再要約しない。生成ファイル一覧と短い結果だけを返す

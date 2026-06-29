@@ -29,7 +29,7 @@ fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 WORK_DIR="${DELEGATE_WORK_DIR:-$(mktemp -d --tmpdir delegate_imagegen_codex_XXXXX)}"
-OUTPUT_DIR="${DELEGATE_IMAGEGEN_OUTPUT_DIR:-.temp/imagegen}"
+OUTPUT_DIR="${DELEGATE_IMAGEGEN_OUTPUT_DIR:-delegate-imagegen-output}"
 case "$OUTPUT_DIR" in
   /*) OUTPUT_PATH="$OUTPUT_DIR" ;;
   *) OUTPUT_PATH="$REPO_ROOT/$OUTPUT_DIR" ;;

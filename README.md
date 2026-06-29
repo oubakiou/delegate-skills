@@ -34,7 +34,7 @@ When delegating, use the dedicated skill for the task type (`delegate-explore`, 
 
 Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
 
-`delegate-imagegen` intentionally has no user-facing model prompt, but operators can set `DELEGATE_IMAGEGEN_MODEL`. If the user does not specify an output directory, generated files go under `.temp/imagegen/`.
+`delegate-imagegen` intentionally has no user-facing model prompt, but operators can set `DELEGATE_IMAGEGEN_MODEL`. If the user does not specify an output directory, generated files go under `delegate-imagegen-output/`.
 
 ## Environment variables
 
@@ -44,7 +44,7 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 | `DELEGATE_WORK_DIR`            | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                   |
 | `DELEGATE_RESPONSE_INLINE_MAX` | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto` |
 | `DELEGATE_METRICS_FILE`        | unset                                  | Optional JSONL proxy-metric telemetry output path     |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR` | `.temp/imagegen`                       | Default output directory for `delegate-imagegen`      |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR` | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`      |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
