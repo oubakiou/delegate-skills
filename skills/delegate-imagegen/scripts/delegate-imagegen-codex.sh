@@ -2,16 +2,25 @@
 set -euo pipefail
 
 # delegate-imagegen 専用の Codex 子プロセス起動ラッパ。
-# Usage: delegate-imagegen-codex.sh <request_file> <response_file>
+# Usage: delegate-imagegen-codex.sh <model> <request_file> <response_file>
 # stdout: response_file のパスのみ（本文は親 context に入れない）
 
-if [ $# -lt 2 ]; then
-  echo "Usage: $0 <request_file> <response_file>" >&2
+if [ $# -lt 3 ]; then
+  echo "Usage: $0 <model> <request_file> <response_file>" >&2
   exit 2
 fi
 
-REQUEST_FILE="$1"
-RESPONSE_FILE="$2"
+MODEL="$1"
+REQUEST_FILE="$2"
+RESPONSE_FILE="$3"
+
+case "$MODEL" in
+  gpt*) ;;
+  *)
+    echo "ERROR: delegate-imagegen requires a gpt-* model for Codex execution: $MODEL" >&2
+    exit 2
+    ;;
+esac
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "ERROR: codex CLI が見つかりません。" >&2
@@ -34,7 +43,7 @@ REAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
 REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_report_XXXXX" --suffix=.md)"
-RESPONDER_SESSION_ID="codex:imagegen:$(basename "$RESPONSE_FILE" .json)"
+RESPONDER_SESSION_ID="codex:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
 write_companion_markdown() {
   (jq -r '.sections | join("\n\n")' "$1" >"${1%.json}.md") >/dev/null 2>&1 || true
@@ -58,6 +67,7 @@ PROMPT_EOF
 
 CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   codex exec \
+  -m "$MODEL" \
   --skip-git-repo-check --ephemeral \
   --ignore-user-config \
   --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}" \

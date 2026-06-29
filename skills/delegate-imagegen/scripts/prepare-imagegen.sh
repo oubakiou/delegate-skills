@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # delegate-imagegen 専用の準備スクリプト。
-# 既存 delegate のモデル解決は使わず、protocol v1 の request/response 準備だけを行う。
+# protocol v1 の request/response 準備に加えて、他 delegate と同じ env → default のモデル解決を行う。
 # Usage: prepare-imagegen.sh <parent_task_type_chain_json> <requester_session_id>
 #   リクエスト本文 Markdown は stdin から渡す。
-# stdout: {"task_type_chain":[...],"request_file":"...","response_file":"..."}（JSON）
+# stdout: {"model":"...","task_type_chain":[...],"request_file":"...","response_file":"..."}（JSON）
 # exit: 2=引数エラー / 3=前提条件不足(npx/jq) / 4=委譲サイクル / 1=md2idx 失敗・空 index/sections
 
 if [ $# -lt 2 ]; then
@@ -14,6 +14,8 @@ if [ $# -lt 2 ]; then
 fi
 
 task_type="imagegen"
+type_env="DELEGATE_IMAGEGEN_MODEL"
+default_model="gpt-5"
 parent_chain="${1:-[]}"
 [ -z "$parent_chain" ] && parent_chain="[]"
 requester_session_id="$2"
@@ -29,6 +31,9 @@ append_metrics() {
     jq -cn \
       --arg kind prepare_imagegen \
       --arg task_type "$task_type" \
+      --arg type_env "$type_env" \
+      --arg default_model "$default_model" \
+      --arg model "$model" \
       --arg requester_session_id "$requester_session_id" \
       --arg request_file "$request_file" \
       --arg response_file "$response_file" \
@@ -41,6 +46,9 @@ append_metrics() {
         kind: $kind,
         ts: $ts,
         task_type: $task_type,
+        type_env: $type_env,
+        default_model: $default_model,
+        model: $model,
         requester_session_id: $requester_session_id,
         task_type_chain: $task_type_chain,
         request_file: $request_file,
@@ -56,6 +64,7 @@ append_metrics() {
 }
 
 "$script_dir/check-md2idx.sh"
+model="$("$script_dir/resolve-model.sh" "$type_env" "$default_model")"
 task_type_chain="$("$script_dir/check-delegate-chain.sh" "$task_type" "$parent_chain")"
 paths="$(printf '%s' "$body" | "$script_dir/build-request.sh" "$task_type" "$task_type_chain" "$requester_session_id")"
 request_file="$(printf '%s' "$paths" | jq -r '.request_file')"
@@ -66,7 +75,8 @@ body_lines="$(printf '%s' "$body" | wc -l | tr -d '[:space:]')"
 append_metrics
 
 jq -n \
+  --arg model "$model" \
   --argjson chain "$task_type_chain" \
   --arg req "$request_file" \
   --arg res "$response_file" \
-  '{task_type_chain: $chain, request_file: $req, response_file: $res}'
+  '{model: $model, task_type_chain: $chain, request_file: $req, response_file: $res}'

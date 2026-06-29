@@ -18,21 +18,21 @@ Both paths launch a child process via a shell wrapper, so the skills work unifor
 
 Hand-off between main and sub is file-based (request/response). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
-`delegate-imagegen` is the exception to the model-branching rule: it is a Codex-only capability bridge for image generation/editing, not a cheaper-model delegation path.
+`delegate-imagegen` resolves a Codex model with the same env/default mechanism as the other delegates, but it remains a Codex-only capability bridge: `DELEGATE_IMAGEGEN_MODEL` selects the child model, `gpt*` routes to Codex, and non-`gpt*` fails closed instead of falling through to Claude.
 
 ## Skills
 
-| skill                | Purpose                                  | Tool permissions          | Default model | env                                                  |
-| -------------------- | ---------------------------------------- | ------------------------- | ------------- | ---------------------------------------------------- |
-| `delegate-explore`   | Read-only code & doc exploration         | read-only                 | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`       |
-| `delegate-implement` | Code implementation & edits (one commit) | Edit/Write/Bash (no push) | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`     |
-| `delegate-chore`     | Fallback chores                          | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`         |
-| `delegate-review`    | Code/doc review (diff findings)          | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`        |
-| `delegate-imagegen`  | Image generation/editing via Codex       | Codex subprocess          | Codex default | `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
+| skill                | Purpose                                  | Tool permissions          | Default model | env                                                                              |
+| -------------------- | ---------------------------------------- | ------------------------- | ------------- | -------------------------------------------------------------------------------- |
+| `delegate-explore`   | Read-only code & doc exploration         | read-only                 | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-implement` | Code implementation & edits (one commit) | Edit/Write/Bash (no push) | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
+| `delegate-chore`     | Fallback chores                          | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
+| `delegate-review`    | Code/doc review (diff findings)          | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
+| `delegate-imagegen`  | Image generation/editing via Codex       | Codex subprocess          | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
 
 Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
 
-`delegate-imagegen` intentionally has no user-facing model selector. If the user does not specify an output directory, generated files go under `.temp/imagegen/`.
+`delegate-imagegen` intentionally has no user-facing model prompt, but operators can set `DELEGATE_IMAGEGEN_MODEL`. If the user does not specify an output directory, generated files go under `.temp/imagegen/`.
 
 ## Environment variables
 
@@ -62,7 +62,7 @@ main agent
   └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
 ```
 
-`delegate-imagegen` uses `<skill>/scripts/prepare-imagegen.sh` and `<skill>/scripts/delegate-imagegen-codex.sh` instead of `prepare.sh` model resolution and the Claude/Codex model branch.
+`delegate-imagegen` uses `<skill>/scripts/prepare-imagegen.sh` and `<skill>/scripts/delegate-imagegen-codex.sh` to preserve image-output defaults. `prepare-imagegen.sh` still resolves `DELEGATE_IMAGEGEN_MODEL` and returns `model`, but imagegen only accepts the `gpt*`/Codex branch.
 
 The canonical copy of each shared script lives in `shared/`; `scripts/sync-shared.ts` copies it into every skill's `scripts/`.
 
