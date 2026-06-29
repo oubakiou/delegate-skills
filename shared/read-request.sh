@@ -9,7 +9,7 @@ set -euo pipefail
 # Usage: read-request.sh <request_file> [selector]
 #   selector:
 #     (省略) | index : 目次（.index）を出力（既定）
-#     meta            : protocol_version/type/task_type/task_type_chain/requester_session_id を JSON で出力
+#     meta            : protocol_version/type/task_type/model/task_type_chain/requester_session_id を JSON で出力
 #     all             : 全 section を区切り付きで出力
 #     <整数N>         : .sections[N] を出力
 # telemetry: DELEGATE_METRICS_FILE が設定されたときだけ JSONL に proxy metric を追記する
@@ -87,10 +87,10 @@ case "$selector" in
     ;;
   meta)
     if [ -z "${DELEGATE_METRICS_FILE:-}" ]; then
-      jq '{protocol_version, type, task_type, task_type_chain, requester_session_id}' "$request_file"
+      jq '{protocol_version, type, task_type, model, task_type_chain, requester_session_id}' "$request_file"
       exit 0
     fi
-    output="$(jq '{protocol_version, type, task_type, task_type_chain, requester_session_id}' "$request_file")"
+    output="$(jq '{protocol_version, type, task_type, model, task_type_chain, requester_session_id}' "$request_file")"
     append_metrics
     printf '%s\n' "$output"
     ;;

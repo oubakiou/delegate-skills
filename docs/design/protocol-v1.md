@@ -41,13 +41,14 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 
 ## リクエストファイル（main → sub）
 
-トップレベルキー: `protocol_version` / `type` / `task_type` / `task_type_chain` / `requester_session_id` / `index` / `sections`
+トップレベルキー: `protocol_version` / `type` / `task_type` / `model` / `task_type_chain` / `requester_session_id` / `index` / `sections`
 
 ```json
 {
   "protocol_version": 1,
   "type": "request",
   "task_type": "implement",
+  "model": "sonnet",
   "task_type_chain": ["implement"],
   "requester_session_id": "...",
   "index": "...",
@@ -56,6 +57,7 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 ```
 
 - `type`: 固定値 `request`（ファイル種別の自己記述）
+- `model`: 依頼先のモデル名。`prepare.sh` で解決した値を格納する
 - `task_type_chain`: 委譲チェーン（先祖の skill 種別 + 自種別）。再帰防止に使う
 - `requester_session_id`: 必須。リクエスト元（親エージェント）のプロセス / セッション ID。多段委譲の追跡・デバッグ用
 - `index` / `sections`: 作業指示の md2idx 出力。Markdown 見出しは Objective / Scope / Context / Acceptance criteria / Verification / Constraints
@@ -65,8 +67,8 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 
 ```bash
 # requester_session_id は必須（トレーサビリティ用）
-npx md2idx request.md | jq --argjson c "$task_type_chain" --arg sid "$REQUESTER_SESSION_ID" \
-  '{protocol_version: 1, type: "request", task_type: "implement", task_type_chain: $c, requester_session_id: $sid}
+npx md2idx request.md | jq --argjson c "$task_type_chain" --arg model "$MODEL" --arg sid "$REQUESTER_SESSION_ID" \
+  '{protocol_version: 1, type: "request", task_type: "implement", model: $model, task_type_chain: $c, requester_session_id: $sid}
    + .' > "$request_file"
 jq -r '.sections | join("\n\n")' "$request_file" >"${request_file%.json}.md"
 ```

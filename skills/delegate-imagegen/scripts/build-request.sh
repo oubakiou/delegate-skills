@@ -7,7 +7,7 @@ set -euo pipefail
 
 # リクエストファイル生成（protocol v1）
 # 命名・md2idx 変換・envelope 付与・response_file 導出を一括で行い、手組みの jq を排する。
-# Usage: build-request.sh <task_type> <task_type_chain_json> <requester_session_id>
+# Usage: build-request.sh <task_type> <model> <task_type_chain_json> <requester_session_id>
 #   リクエスト本文 Markdown は stdin から渡す（中間ファイルはスクリプトが WORK_DIR 内で管理）。
 #   見出しは Objective / Scope / Context / Acceptance criteria / Verification / Constraints。
 # stdout: {"request_file": "...", "response_file": "..."}（JSON）
@@ -15,14 +15,15 @@ set -euo pipefail
 # telemetry: DELEGATE_METRICS_FILE が設定されたときだけ JSONL に proxy metric を追記する
 # exit: 2=引数エラー / 3=前提条件(jq)不足 / 1=md2idx 失敗・空 index/sections
 
-if [ $# -lt 3 ]; then
-  echo "Usage: $0 <task_type> <task_type_chain_json> <requester_session_id>  (request body markdown on stdin)" >&2
+if [ $# -lt 4 ]; then
+  echo "Usage: $0 <task_type> <model> <task_type_chain_json> <requester_session_id>  (request body markdown on stdin)" >&2
   exit 2
 fi
 
 task_type="$1"
-task_type_chain="$2"
-requester_session_id="$3"
+model="$2"
+task_type_chain="$3"
+requester_session_id="$4"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq が見つかりません。" >&2
@@ -46,6 +47,7 @@ append_metrics() {
     jq -cn \
       --arg kind build_request \
       --arg task_type "$task_type" \
+      --arg model "$model" \
       --arg requester_session_id "$requester_session_id" \
       --arg request_file "$request_file" \
       --arg response_file "$response_file" \
@@ -59,6 +61,7 @@ append_metrics() {
         kind: $kind,
         ts: $ts,
         task_type: $task_type,
+        model: $model,
         requester_session_id: $requester_session_id,
         request_file: $request_file,
         response_file: $response_file,
@@ -101,8 +104,9 @@ body_lines="$(wc -l <"$src_md" | tr -d '[:space:]')"
 npx --yes md2idx "$src_md" | jq \
   --argjson chain "$task_type_chain" \
   --arg tt "$task_type" \
+  --arg model "$model" \
   --arg sid "$requester_session_id" \
-  '{protocol_version: 1, type: "request", task_type: $tt, task_type_chain: $chain, requester_session_id: $sid} + .' \
+  '{protocol_version: 1, type: "request", task_type: $tt, model: $model, task_type_chain: $chain, requester_session_id: $sid} + .' \
   >"$request_file"
 
 if ! jq -e '.index != null and (.index | length) > 0 and (.sections | length) > 0' "$request_file" >/dev/null 2>&1; then

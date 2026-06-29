@@ -66,7 +66,7 @@ append_metrics() {
 "$script_dir/check-md2idx.sh"
 model="$("$script_dir/resolve-model.sh" "$type_env" "$default_model")"
 task_type_chain="$("$script_dir/check-delegate-chain.sh" "$task_type" "$parent_chain")"
-paths="$(printf '%s' "$body" | "$script_dir/build-request.sh" "$task_type" "$task_type_chain" "$requester_session_id")"
+paths="$(printf '%s' "$body" | "$script_dir/build-request.sh" "$task_type" "$model" "$task_type_chain" "$requester_session_id")"
 request_file="$(printf '%s' "$paths" | jq -r '.request_file')"
 response_file="$(printf '%s' "$paths" | jq -r '.response_file')"
 body_bytes="$(printf '%s' "$body" | wc -c | tr -d '[:space:]')"

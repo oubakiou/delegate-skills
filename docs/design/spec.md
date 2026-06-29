@@ -153,6 +153,7 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
   "protocol_version": 1,
   "type": "request",
   "task_type": "implement",
+  "model": "sonnet",
   "task_type_chain": ["implement"],
   "requester_session_id": "...",
   "index": "...",
@@ -161,6 +162,7 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 ```
 
 - `type`: 固定値 `request`（ファイル種別の自己記述）
+- `model`: 依頼先のモデル名。`prepare.sh` で解決した値を格納する
 - `task_type_chain`: 委譲チェーン（先祖種別 + 自種別）。再帰防止に使う
 - `requester_session_id`: 必須。リクエスト元（親）のプロセス / セッション ID（追跡・デバッグ用）
 - `index` / `sections`: 指示 Markdown（Objective / Scope / Context / Acceptance criteria / Verification / Constraints）の md2idx 出力
@@ -189,7 +191,7 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 
 ### md2idx（トークン圧縮の核）
 
-両ファイルとも書き手は指示/報告の Markdown を `npx md2idx` に通して `index` / `sections` を生成し、その前に構造化キー（md2idx 出力ではない機械可読フィールド。request なら `protocol_version` / `type` / `task_type` / `task_type_chain` 等、response なら `protocol_version` / `type` / `status` 等）を前置する。response の読み手（main）は `status` → `index` → 必要 section の順で段階読み取りする。ただし段階読みは jq の複数往復を要するため、`read-response.sh auto` は response が小さい（`DELEGATE_RESPONSE_INLINE_MAX`、既定 10KB 未満）ときは status と全 section を 1 回で丸読みし、大きいときのみ段階読みへ誘導する（小さな report では丸読みの方が往復が少なく安い）。一方 request の読み手（sub）は読み飛ばしてよい情報が無く、sub のトークン単価も安いため `read-request.sh all` で丸ごと読む運用を既定とする。`npx md2idx` は前提条件であり、実行不可なら fail-closed（exit 3）。
+両ファイルとも書き手は指示/報告の Markdown を `npx md2idx` に通して `index` / `sections` を生成し、その前に構造化キー（md2idx 出力ではない機械可読フィールド。request なら `protocol_version` / `type` / `task_type` / `model` / `task_type_chain` 等、response なら `protocol_version` / `type` / `status` 等）を前置する。response の読み手（main）は `status` → `index` → 必要 section の順で段階読み取りする。ただし段階読みは jq の複数往復を要するため、`read-response.sh auto` は response が小さい（`DELEGATE_RESPONSE_INLINE_MAX`、既定 10KB 未満）ときは status と全 section を 1 回で丸読みし、大きいときのみ段階読みへ誘導する（小さな report では丸読みの方が往復が少なく安い）。一方 request の読み手（sub）は読み飛ばしてよい情報が無く、sub のトークン単価も安いため `read-request.sh all` で丸ごと読む運用を既定とする。`npx md2idx` は前提条件であり、実行不可なら fail-closed（exit 3）。
 
 ### 任意 telemetry（proxy metric）
 

@@ -51,7 +51,7 @@ write_companion_markdown() {
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
-1. リクエストを読む: ${REQUEST_FILE}（JSON: protocol_version / type / task_type / task_type_chain / requester_session_id / index / sections）
+1. リクエストを読む: ${REQUEST_FILE}（JSON: protocol_version / type / task_type / model / task_type_chain / requester_session_id / index / sections）
    まず \`jq -r .index "${REQUEST_FILE}"\` で目次を読み、必要な section だけ \`jq -r '.sections[N]' "${REQUEST_FILE}"\` で取得する。
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
