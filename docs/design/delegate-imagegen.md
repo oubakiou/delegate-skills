@@ -95,3 +95,9 @@ worker の report Markdown は次の見出しを基本にする。
 - ファイルプロトコル v1: [protocol-v1.md](protocol-v1.md)
 - 多段委譲ポリシー: spec.md [§7](spec.md#7-多段委譲ポリシー再帰防止)
 - exit code / 環境変数 / 脅威モデル: spec.md [§9](spec.md#9-スクリプトと-exit-code) / [§11](spec.md#11-環境変数) / [§12](spec.md#12-脅威モデル割り切り)
+
+## 9. 外部参照
+
+- [OpenAI Developers: Codex CLI](https://developers.openai.com/codex/cli)
+- [OpenAI API Docs: Image generation tool](https://developers.openai.com/api/docs/guides/tools-image-generation)
+- [OpenAI API Docs: Image generation](https://developers.openai.com/api/docs/guides/image-generation)

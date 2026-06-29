@@ -5,8 +5,8 @@
 ## スコープ
 
 - `task_type=xresearch`
-- 既定モデルは `grok-4.3`
-- モデル解決は `DELEGATE_X_RESEARCH_MODEL` → `grok-4.3`
+- 既定モデルは `grok-build`
+- モデル解決は `DELEGATE_X_RESEARCH_MODEL` → `grok-build`
 - 現在の実行系は Grok CLI。Claude / Codex へフォールバックしない
 
 ## 使い分け
@@ -21,7 +21,7 @@ X の状態は削除、編集、非公開化、検索順位変動で変わるた
 
 ## 実行フロー
 
-1. main は `prepare.sh xresearch DELEGATE_X_RESEARCH_MODEL grok-4.3 ...` で request/response を準備する
+1. main は `prepare.sh xresearch DELEGATE_X_RESEARCH_MODEL grok-build ...` で request/response を準備する
 2. 現在は `delegate-x-research-grok.sh "$model" "$request_file" "$response_file"` が Grok CLI を起動する
 3. Grok worker は request_file を段階読みし、X / web search を使って調査する
 4. worker は Summary / Findings / Sources / Method / Limitations / Blockers の report を `npx md2idx | jq` で response_file に書く
@@ -29,15 +29,22 @@ X の状態は削除、編集、非公開化、検索順位変動で変わるた
 
 ## 環境変数
 
-| Variable                        | Default              | Description                          |
-| ------------------------------- | -------------------- | ------------------------------------ |
-| `DELEGATE_X_RESEARCH_MODEL`     | `grok-4.3`           | X 調査 backend に渡すモデル          |
-| `DELEGATE_WORK_DIR`             | mktemp default       | request/response/report/tmp の置き場 |
-| `GROK_DELEGATE_SANDBOX`         | `danger-full-access` | Grok CLI の sandbox profile          |
-| `GROK_DELEGATE_PERMISSION_MODE` | `bypassPermissions`  | Grok CLI の permission mode          |
+| Variable                        | Default             | Description                                |
+| ------------------------------- | ------------------- | ------------------------------------------ |
+| `DELEGATE_X_RESEARCH_MODEL`     | `grok-build`        | X 調査 backend に渡すモデル                |
+| `DELEGATE_WORK_DIR`             | mktemp default      | request/response/report/tmp の置き場       |
+| `GROK_DELEGATE_SANDBOX`         | unset               | 設定時のみ Grok CLI に渡す sandbox profile |
+| `GROK_DELEGATE_PERMISSION_MODE` | `bypassPermissions` | Grok CLI の permission mode                |
 
 ## 失敗時
 
 - `grok` CLI が見つからない場合は exit 3
 - Grok が response_file を生成しない場合は exit 1
 - X へのアクセス不可、ログイン不備、調査対象不足は worker report の Blockers に書き、status は `failed` または `needs_input` にする
+
+## 参照
+
+- [xAI Docs: Grok Build Getting Started](https://docs.x.ai/build/overview)
+- [xAI Docs: Headless & Scripting](https://docs.x.ai/build/cli/headless-scripting)
+- [xAI Docs: Models](https://docs.x.ai/developers/models)
+- [xAI Docs: X Search](https://docs.x.ai/developers/tools/x-search)

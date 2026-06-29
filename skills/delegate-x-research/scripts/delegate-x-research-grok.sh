@@ -19,6 +19,19 @@ if ! command -v grok >/dev/null 2>&1; then
   exit 3
 fi
 
+available_grok_models() {
+  grok models 2>/dev/null | awk '/^[[:space:]]*[-*][[:space:]]+/ {print $2}'
+}
+
+grok_model_available() {
+  available_grok_models | grep -Fx "$1" >/dev/null
+}
+
+if ! grok_model_available "$MODEL" && grok_model_available grok-build; then
+  echo "WARN: Grok CLI model '$MODEL' is unavailable; falling back to 'grok-build'." >&2
+  MODEL="grok-build"
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 WORK_DIR="${DELEGATE_WORK_DIR:-$(mktemp -d --tmpdir delegate_grok_x_XXXXX)}"
 mkdir -p "$WORK_DIR/tmp"
@@ -47,14 +60,22 @@ PROMPT=$(cat <<PROMPT_EOF
 PROMPT_EOF
 )
 
+grok_args=(
+  --no-auto-update
+  -p "$PROMPT"
+  -m "$MODEL"
+  --cwd "$REPO_ROOT"
+  --no-memory
+  --permission-mode "${GROK_DELEGATE_PERMISSION_MODE:-bypassPermissions}"
+  --output-format plain
+)
+
+if [ -n "${GROK_DELEGATE_SANDBOX:-}" ]; then
+  grok_args+=(--sandbox "$GROK_DELEGATE_SANDBOX")
+fi
+
 TMPDIR="$WORK_DIR/tmp" \
-  grok -p "$PROMPT" \
-  -m "$MODEL" \
-  --cwd "$REPO_ROOT" \
-  --no-memory \
-  --sandbox "${GROK_DELEGATE_SANDBOX:-danger-full-access}" \
-  --permission-mode "${GROK_DELEGATE_PERMISSION_MODE:-bypassPermissions}" \
-  --output-format plain >"$LAST_MSG" 2>"$WORK_DIR/grok.stderr" || {
+  grok "${grok_args[@]}" >"$LAST_MSG" 2>"$WORK_DIR/grok.stderr" || {
     cat "$WORK_DIR/grok.stderr" >&2
     exit 1
   }

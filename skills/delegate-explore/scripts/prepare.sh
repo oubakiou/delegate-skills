@@ -75,16 +75,16 @@ append_metrics() {
 }
 
 # 前提条件（npx md2idx 実行可能か）。fail-closed (exit 3)。
-"$script_dir/check-md2idx.sh"
+bash "$script_dir/check-md2idx.sh"
 
 # モデル解決（種別env → 既定）
-model="$("$script_dir/resolve-model.sh" "$type_env" "$default_model")"
+model="$(bash "$script_dir/resolve-model.sh" "$type_env" "$default_model")"
 
 # 多段委譲チェーン（同一種別が二度なら exit 4）。新チェーン（parent + 自種別）を得る。
-task_type_chain="$("$script_dir/check-delegate-chain.sh" "$task_type" "$parent_chain")"
+task_type_chain="$(bash "$script_dir/check-delegate-chain.sh" "$task_type" "$parent_chain")"
 
 # リクエスト生成（先取りした本文を stdin で渡す）
-paths="$(printf '%s' "$body" | "$script_dir/build-request.sh" "$task_type" "$model" "$task_type_chain" "$requester_session_id")"
+paths="$(printf '%s' "$body" | bash "$script_dir/build-request.sh" "$task_type" "$model" "$task_type_chain" "$requester_session_id")"
 request_file="$(printf '%s' "$paths" | jq -r '.request_file')"
 response_file="$(printf '%s' "$paths" | jq -r '.response_file')"
 body_bytes="$(printf '%s' "$body" | wc -c | tr -d '[:space:]')"

@@ -22,7 +22,7 @@ When delegating, use the dedicated skill for the task type (`delegate-explore`, 
 
 `delegate-imagegen` resolves a Codex model with the same env/default mechanism as the other delegates, but it remains a Codex-only capability bridge: `DELEGATE_IMAGEGEN_MODEL` selects the child model, `gpt*` routes to Codex, and non-`gpt*` fails closed instead of falling through to Claude.
 
-`delegate-x-research` resolves `DELEGATE_X_RESEARCH_MODEL` with default `grok-4.3`, then launches the current X research backend, currently Grok CLI, to investigate x.com / X posts, accounts, threads, and reactions. It does not route through Claude or Codex.
+`delegate-x-research` resolves `DELEGATE_X_RESEARCH_MODEL` with default `grok-build`, then launches the current X research backend, currently Grok CLI, to investigate x.com / X posts, accounts, threads, and reactions. It does not route through Claude or Codex.
 
 ## Skills
 
@@ -33,7 +33,7 @@ When delegating, use the dedicated skill for the task type (`delegate-explore`, 
 | `delegate-chore`      | Fallback chores                          | Edit/Write/Bash (no push) | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
 | `delegate-review`     | Code/doc review (diff findings)          | read-only                 | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
 | `delegate-imagegen`   | Image generation/editing via Codex       | Codex subprocess          | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
-| `delegate-x-research` | x.com / X research                       | X research subprocess     | `grok-4.3`    | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
+| `delegate-x-research` | x.com / X research                       | X research subprocess     | `grok-build`  | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
 
 Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
 
@@ -50,7 +50,7 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 | `DELEGATE_RESPONSE_INLINE_MAX` | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto` |
 | `DELEGATE_METRICS_FILE`        | unset                                  | Optional JSONL proxy-metric telemetry output path     |
 | `DELEGATE_IMAGEGEN_OUTPUT_DIR` | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`      |
-| `DELEGATE_X_RESEARCH_MODEL`    | `grok-4.3`                             | Model for `delegate-x-research`                       |
+| `DELEGATE_X_RESEARCH_MODEL`    | `grok-build`                           | Model for `delegate-x-research`                       |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
