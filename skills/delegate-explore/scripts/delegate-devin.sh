@@ -5,9 +5,10 @@ set -euo pipefail
 # 各 delegate-* skill の scripts/delegate-devin.sh は scripts/sync-shared.ts により
 # この正本から自動生成されたコピー。編集は正本に対して行うこと。
 
-# swe-* モデル指定時の Devin CLI 子プロセス起動ラッパ
+# swe-* / devin-* モデル指定時の Devin CLI 子プロセス起動ラッパ
 # 起動骨格は delegate-claude.sh と対称構造。
 # Usage: delegate-devin.sh <model> <task_type> <request_file> <response_file>
+#   <model> は swe-*（そのまま devin CLI に渡す）または devin-*（プレフィックスを剥離して渡す）
 # stdout: response_file のパスのみ（本文は親 context に入れない）
 
 if [ $# -lt 4 ]; then
@@ -19,6 +20,14 @@ MODEL="$1"
 TASK_TYPE="$2"
 REQUEST_FILE="$3"
 RESPONSE_FILE="$4"
+
+# devin-* プレフィックスは剥離して devin CLI に渡す（devin-glm-5.2 → glm-5.2）
+# swe-* は devin CLI がそのまま受理するので剥離しない
+case "$MODEL" in
+  devin-*)
+    MODEL="${MODEL#devin-}"
+    ;;
+esac
 
 if ! command -v devin >/dev/null 2>&1; then
   echo "ERROR: devin CLI が見つかりません。" >&2

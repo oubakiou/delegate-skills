@@ -36,7 +36,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/prepare.sh:*), Ba
    - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"`
 2. **実行系分岐**:
    - `model` が `gpt*`: `bash .claude/skills/delegate-chore/scripts/delegate-codex.sh "$model" chore "$request_file" "$response_file"`
-   - `model` が `swe*`: `bash .claude/skills/delegate-chore/scripts/delegate-devin.sh "$model" chore "$request_file" "$response_file"`
+   - `model` が `swe*` または `devin-*`: `bash .claude/skills/delegate-chore/scripts/delegate-devin.sh "$model" chore "$request_file" "$response_file"`
    - それ以外: `bash .claude/skills/delegate-chore/scripts/delegate-claude.sh "$model" chore "$request_file" "$response_file"`
 
 3. **レスポンス読み取り**: `bash .claude/skills/delegate-chore/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合のみ status を返すので `... "$response_file" index` → 必要 section（`... "$response_file" <N>`）の段階読みに切り替える。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。

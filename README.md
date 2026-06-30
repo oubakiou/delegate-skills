@@ -13,7 +13,7 @@ Delegate routine, mechanical work to a cheaper model without polluting the main 
 
 - Claude family (`sonnet`/`haiku`/`opus`/`fable`) → **Claude subprocess** (`claude -p` via `delegate-claude.sh`)
 - `gpt-*` → **Codex subprocess** (`codex exec` via `delegate-codex.sh`)
-- `swe-*` → **Devin CLI subprocess** (`devin -p` via `delegate-devin.sh`)
+- `swe-*` / `devin-*` → **Devin CLI subprocess** (`devin -p` via `delegate-devin.sh`). `devin-*` is a backend-pinning prefix for non-Cognition models available through Devin CLI (e.g. `devin-glm-5.2` → `glm-5.2`); `swe-*` is passed through as-is.
 
 All three paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, or Devin CLI.
 
@@ -71,7 +71,7 @@ main agent
   │   ├─ check-delegate-chain.sh             Recursion guard for multi-hop delegation (same type twice forbidden → exit 4)
   │   └─ build-request.sh                    Create request_file / response_file with mktemp (sharing ts + random token)
   ├─ model is gpt* → <skill>/scripts/delegate-codex.sh launches a Codex subprocess
-  │  model is swe* → <skill>/scripts/delegate-devin.sh launches a Devin CLI subprocess
+  │  model is swe*|devin-* → <skill>/scripts/delegate-devin.sh launches a Devin CLI subprocess
   │                  otherwise → <skill>/scripts/delegate-claude.sh launches a Claude subprocess (claude -p)
   └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
 ```
@@ -136,7 +136,7 @@ delegate-skills/
 - `jq`
 - When using Claude family models: the `claude` CLI (logged in)
 - When using `gpt-*`: the `codex` CLI (logged in)
-- When using `swe-*`: the `devin` CLI (logged in)
+- When using `swe-*` / `devin-*`: the `devin` CLI (logged in)
 - When using `delegate-x-research` with the current backend: the `grok` CLI (logged in, with access to X research)
 
 ## Development
