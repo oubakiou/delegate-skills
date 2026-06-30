@@ -1,6 +1,6 @@
 # delegate-skills protocol v1
 
-main agent と delegate された subagent / Codex 子プロセスの間のファイルベースプロトコル。実行系（claude -p / Codex）に依存しない。
+main agent と delegate された worker 子プロセスの間のファイルベースプロトコル。実行系（`claude -p` / `codex exec` / `devin -p` / `agent -p`）に依存しない。
 
 > 生成・読み取りは `shared/{build-request,read-request,build-response,read-response}.sh`（各 skill の `scripts/` に同梱）に集約されている。以下の `npx md2idx` / `jq` の手順はこれらが内部で行う処理の仕様であり、運用では手組みの代わりにスクリプトを使う。
 
@@ -91,7 +91,7 @@ jq -r '.sections | join("\n\n")' "$request_file" >"${request_file%.json}.md"
 - `protocol_version`: リクエストと揃える（バージョン差検出・互換性判定用）
 - `type`: 固定値 `response`（ファイル種別の自己記述）
 - `status`: `completed | partial | failed | needs_input`。main が最優先・最安に読む構造化フィールド（md2idx の section ではない）
-- `responder_session_id`: 必須。リクエスト先（子エージェント / Codex 子プロセス）のプロセス / セッション ID。追跡・デバッグ用
+- `responder_session_id`: 必須。リクエスト先 worker 子プロセスのプロセス / セッション ID。追跡・デバッグ用
 - `index` / `sections`: 作業報告の md2idx 出力。標準の Markdown 見出しは Summary / Changed files / Commands / Verification / Findings / Blockers / Error。skill 固有の成果物に合わせて見出しを追加・置換してよい。`delegate-imagegen` は Summary / Generated files / Parameters / Verification / Blockers を使う。検証結果は構造化フィールドに持たず、Verification section に収める。main は `status` の次にこの section だけを必要時に引く（検証ログを main の context に流し込まない）
 
 生成:

@@ -27,7 +27,7 @@ implement の作業を委譲する場合は、この skill の固定フローを
 
 - **既定モデル `sonnet`**: implement は編集の設計判断を要するため、read 中心の作業より判断力のあるモデルを既定にする（spec.md [§3 既定モデルの根拠](spec.md#既定モデルの根拠) と同方針）。`DELEGATE_IMPLEMENT_MODEL` で上書き可
 - **Claude パス**: Edit / Write / Bash による実作業と検証コマンド実行を伴うため、`delegate-claude.sh`（`claude -p` 子プロセス）で worker を起動する
-- **制約**: 編集は可、ただし **push はしない**（push・PR は親エージェントが直接扱う）。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の三分岐)）
+- **制約**: 編集は可、ただし **push はしない**（push・PR は親エージェントが直接扱う）。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の四分岐)）
 
 ## 4. 発火条件
 

@@ -9,13 +9,14 @@
 
 ## 概要
 
-main agent（高価なモデル）の context を汚さず、定型的・機械的な作業を安価なモデルへ委譲する。委譲先は**モデル名で三分岐**する:
+main agent（高価なモデル）の context を汚さず、定型的・機械的な作業を安価なモデルへ委譲する。委譲先は**モデル名で四分岐**する:
 
 - Claude 系（`sonnet`/`haiku`/`opus`/`fable`）→ **Claude 子プロセス**（`claude -p`、`delegate-claude.sh`）
 - `gpt-*` → **Codex 子プロセス**（`codex exec`、`delegate-codex.sh`）
 - `swe-*` / `devin-*` → **Devin CLI 子プロセス**（`devin -p`、`delegate-devin.sh`）。`devin-*` は非 Cognition モデルを Devin CLI 経由で指定するバックエンド固定プレフィックス（例: `devin-glm-5.2` → `glm-5.2`）。`swe-*` はそのまま渡す。
+- `composer-*` / `cursor-*` → **Cursor agent CLI 子プロセス**（`agent -p`、`delegate-cursor.sh`）。`composer-*` は agent CLI の slug をそのまま渡す（例: `composer-2.5`、`composer-2.5-fast`）。`cursor-*` は agent CLI 経由のバックエンド固定プレフィックス（例: `cursor-glm-5.2-high` → `glm-5.2-high`）。
 
-いずれのパスもシェルラッパ経由で子プロセスを起動するため、requester が Claude Code でも Codex でも Devin CLI でも同じように動作する。main↔sub の受け渡しはファイルベース（リクエスト/レスポンス）で、両方とも [md2idx](https://github.com/oubakiou/md2idx) 形式（`index` + `sections`）を採用し段階読み取りでトークンを節約する。
+いずれのパスもシェルラッパ経由で子プロセスを起動するため、requester が Claude Code / Codex / Devin CLI / Cursor でも同じように動作する。main↔sub の受け渡しはファイルベース（リクエスト/レスポンス）で、両方とも [md2idx](https://github.com/oubakiou/md2idx) 形式（`index` + `sections`）を採用し段階読み取りでトークンを節約する。
 
 `delegate-imagegen` は画像生成向けだが、モデル解決は他 delegate と同じ形に揃える。`DELEGATE_IMAGEGEN_MODEL` で子モデルを選び、`gpt*` は Codex、非 `gpt*` は Claude へフォールバックせず中止する。
 
@@ -67,6 +68,7 @@ main agent
   ├─ request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
   ├─ model が gpt* → <skill>/scripts/delegate-codex.sh で Codex 子プロセス
   │  model が swe*|devin-* → <skill>/scripts/delegate-devin.sh で Devin CLI 子プロセス
+  │  model が composer*|cursor-* → <skill>/scripts/delegate-cursor.sh で Cursor agent CLI 子プロセス
   │                 それ以外 → <skill>/scripts/delegate-claude.sh で Claude 子プロセス（claude -p）
   └─ jq で response の status → index → 必要 section を段階読み取り → 検証
 ```
@@ -80,6 +82,7 @@ main agent
 - Claude 系モデルを使う場合: `claude` CLI（ログイン済み）
 - `gpt-*` を使う場合: `codex` CLI（ログイン済み）
 - `swe-*` / `devin-*` を使う場合: `devin` CLI（ログイン済み）
+- `composer-*` / `cursor-*` を使う場合: `agent` CLI（ログイン済み、または `CURSOR_API_KEY` 設定済み）
 - 現在の backend で `delegate-x-research` を使う場合: `grok` CLI（ログイン済み、X 調査へアクセス可能）
 
 ## 開発

@@ -27,7 +27,7 @@ review の作業を委譲する場合は、この skill の固定フローを使
 
 - **既定モデル `opus`**: review は指摘品質が成果物に直結し、判断比重が高いため最も高性能なモデルを既定にする（spec.md [§3 既定モデルの根拠](spec.md#既定モデルの根拠) と同方針）。`DELEGATE_REVIEW_MODEL` で上書き可
 - **Claude パス**: `delegate-claude.sh`（`claude -p` 子プロセス）で worker を起動する。`git diff` / `git log` / `git show` / `git status` を使うが運用は read-only に限定する
-- **制約**: ファイル編集・git の書き込み操作・push はしない。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の三分岐)）
+- **制約**: ファイル編集・git の書き込み操作・push はしない。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の四分岐)）
 
 ## 4. 発火条件
 

@@ -8,7 +8,8 @@
   "sources": {
     "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
     "openai": "https://developers.openai.com/api/docs/pricing",
-    "cognition": "https://docs.devin.ai/desktop/models"
+    "cognition": "https://docs.devin.ai/desktop/models",
+    "cursor": "https://cursor.com/docs/models-and-pricing"
   },
   "models": [
     {
@@ -126,6 +127,46 @@
       "output": 4.4,
       "context": "standard",
       "source": "cognition"
+    },
+    {
+      "provider": "cursor",
+      "model": "composer-2.5",
+      "display_name": "Composer 2.5",
+      "input": 0.5,
+      "cached_input": 0.2,
+      "output": 2.5,
+      "context": "standard",
+      "source": "cursor"
+    },
+    {
+      "provider": "cursor",
+      "model": "composer-2.5-fast",
+      "display_name": "Composer 2.5 Fast",
+      "input": 3,
+      "cached_input": null,
+      "output": 15,
+      "context": "standard",
+      "source": "cursor"
+    },
+    {
+      "provider": "cursor",
+      "model": "glm-5.2-high",
+      "display_name": "GLM 5.2 High",
+      "input": 1.4,
+      "cached_input": 0.26,
+      "output": 4.4,
+      "context": "standard",
+      "source": "cursor"
+    },
+    {
+      "provider": "cursor",
+      "model": "glm-5.2-max",
+      "display_name": "GLM 5.2 Max",
+      "input": null,
+      "cached_input": null,
+      "output": null,
+      "pricing_status": "not_listed_in_source",
+      "source": "cursor"
     }
   ],
   "aliases": [

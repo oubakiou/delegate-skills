@@ -14,8 +14,9 @@ Delegate routine, mechanical work to a cheaper model without polluting the main 
 - Claude family (`sonnet`/`haiku`/`opus`/`fable`) → **Claude subprocess** (`claude -p` via `delegate-claude.sh`)
 - `gpt-*` → **Codex subprocess** (`codex exec` via `delegate-codex.sh`)
 - `swe-*` / `devin-*` → **Devin CLI subprocess** (`devin -p` via `delegate-devin.sh`). `devin-*` is a backend-pinning prefix for non-Cognition models available through Devin CLI (e.g. `devin-glm-5.2` → `glm-5.2`); `swe-*` is passed through as-is.
+- `composer-*` / `cursor-*` → **Cursor agent CLI subprocess** (`agent -p` via `delegate-cursor.sh`). `composer-*` uses the agent CLI slug as-is (e.g. `composer-2.5`, `composer-2.5-fast`). `cursor-*` is a backend-pinning prefix for non-Composer models through the agent CLI (e.g. `cursor-glm-5.2-high` → `glm-5.2-high`).
 
-All three paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, or Devin CLI.
+All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor.
 
 Hand-off between main and sub is file-based (request/response). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
@@ -74,6 +75,7 @@ main agent
   │   └─ build-request.sh                    Create request_file / response_file with mktemp (sharing ts + random token)
   ├─ model is gpt* → <skill>/scripts/delegate-codex.sh launches a Codex subprocess
   │  model is swe*|devin-* → <skill>/scripts/delegate-devin.sh launches a Devin CLI subprocess
+  │  model is composer*|cursor-* → <skill>/scripts/delegate-cursor.sh launches a Cursor agent CLI subprocess
   │                  otherwise → <skill>/scripts/delegate-claude.sh launches a Claude subprocess (claude -p)
   └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
 ```
@@ -115,6 +117,7 @@ delegate-skills/
     delegate-codex.sh
     delegate-claude.sh
     delegate-devin.sh
+    delegate-cursor.sh
     prepare.sh
     build-request.sh
     read-request.sh
@@ -139,6 +142,7 @@ delegate-skills/
 - When using Claude family models: the `claude` CLI (logged in)
 - When using `gpt-*`: the `codex` CLI (logged in)
 - When using `swe-*` / `devin-*`: the `devin` CLI (logged in)
+- When using `composer-*` / `cursor-*`: the `agent` CLI (logged in or `CURSOR_API_KEY` set)
 - When using `delegate-x-research` with the current backend: the `grok` CLI (logged in, with access to X research)
 
 ## Development
