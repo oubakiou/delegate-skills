@@ -5,7 +5,7 @@
   "retrieved_at": "2026-06-30",
   "usage": "Reference data for cost analysis and reporting. It is not used as a cost gate.",
   "null_price": "No explicit price row was found in the listed source at retrieved_at.",
-  "sources": {
+  "pricing_sources": {
     "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
     "openai": "https://developers.openai.com/api/docs/pricing",
     "cognition": "https://docs.devin.ai/desktop/models",
@@ -13,185 +13,185 @@
   },
   "models": [
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "model": "claude-fable-5",
       "display_name": "Claude Fable 5",
       "input": 10,
       "cached_input": 1,
       "output": 50,
-      "source": "anthropic"
+      "pricing_source": "anthropic"
     },
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "model": "claude-opus-4.8",
       "display_name": "Claude Opus 4.8",
       "input": 5,
       "cached_input": 0.5,
       "output": 25,
-      "source": "anthropic"
+      "pricing_source": "anthropic"
     },
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "model": "claude-sonnet-4.6",
       "display_name": "Claude Sonnet 4.6",
       "input": 3,
       "cached_input": 0.3,
       "output": 15,
-      "source": "anthropic"
+      "pricing_source": "anthropic"
     },
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "model": "claude-haiku-4.5",
       "display_name": "Claude Haiku 4.5",
       "input": 1,
       "cached_input": 0.1,
       "output": 5,
-      "source": "anthropic"
+      "pricing_source": "anthropic"
     },
     {
-      "provider": "openai",
+      "model_provider": "openai",
       "model": "gpt-5",
       "display_name": "GPT-5",
       "input": null,
       "cached_input": null,
       "output": null,
       "pricing_status": "not_listed_in_source",
-      "source": "openai"
+      "pricing_source": "openai"
     },
     {
-      "provider": "openai",
+      "model_provider": "openai",
       "model": "gpt-5.5",
       "display_name": "GPT-5.5",
       "input": 5,
       "cached_input": 0.5,
       "output": 30,
       "context": "standard_short_context",
-      "source": "openai"
+      "pricing_source": "openai"
     },
     {
-      "provider": "openai",
+      "model_provider": "openai",
       "model": "gpt-5.4",
       "display_name": "GPT-5.4",
       "input": 2.5,
       "cached_input": 0.25,
       "output": 15,
       "context": "standard_short_context",
-      "source": "openai"
+      "pricing_source": "openai"
     },
     {
-      "provider": "openai",
+      "model_provider": "openai",
       "model": "gpt-5.4-mini",
       "display_name": "GPT-5.4 Mini",
       "input": 0.75,
       "cached_input": 0.075,
       "output": 4.5,
       "context": "standard",
-      "source": "openai"
+      "pricing_source": "openai"
     },
     {
-      "provider": "openai",
+      "model_provider": "openai",
       "model": "gpt-5.4-nano",
       "display_name": "GPT-5.4 Nano",
       "input": 0.2,
       "cached_input": 0.02,
       "output": 1.25,
       "context": "standard",
-      "source": "openai"
+      "pricing_source": "openai"
     },
     {
-      "provider": "cognition",
+      "model_provider": "cognition",
       "model": "swe-1.6",
       "display_name": "SWE-1.6",
       "input": 0,
       "cached_input": 0,
       "output": 0,
       "context": "standard",
-      "source": "cognition"
+      "pricing_source": "cognition"
     },
     {
-      "provider": "cognition",
+      "model_provider": "cognition",
       "model": "swe-1.6-fast",
       "display_name": "SWE-1.6 Fast",
       "input": 0.3,
       "cached_input": 0.03,
       "output": 1.5,
       "context": "standard",
-      "source": "cognition"
+      "pricing_source": "cognition"
     },
     {
-      "provider": "zai",
+      "model_provider": "zai",
       "model": "glm-5.2",
-      "display_name": "GLM-5.2",
+      "display_name": "GLM-5.2(cognition)",
       "input": 1.4,
       "cached_input": 0.26,
       "output": 4.4,
       "context": "standard",
-      "source": "cognition"
+      "pricing_source": "cognition"
     },
     {
-      "provider": "cursor",
+      "model_provider": "cursor",
       "model": "composer-2.5",
       "display_name": "Composer 2.5",
       "input": 0.5,
       "cached_input": 0.2,
       "output": 2.5,
       "context": "standard",
-      "source": "cursor"
+      "pricing_source": "cursor"
     },
     {
-      "provider": "cursor",
+      "model_provider": "cursor",
       "model": "composer-2.5-fast",
       "display_name": "Composer 2.5 Fast",
       "input": 3,
       "cached_input": null,
       "output": 15,
       "context": "standard",
-      "source": "cursor"
+      "pricing_source": "cursor"
     },
     {
-      "provider": "cursor",
+      "model_provider": "zai",
       "model": "glm-5.2-high",
-      "display_name": "GLM 5.2 High",
+      "display_name": "GLM 5.2(cursor)",
       "input": 1.4,
       "cached_input": 0.26,
       "output": 4.4,
       "context": "standard",
-      "source": "cursor"
+      "pricing_source": "cursor"
     },
     {
-      "provider": "cursor",
+      "model_provider": "zai",
       "model": "glm-5.2-max",
       "display_name": "GLM 5.2 Max",
       "input": null,
       "cached_input": null,
       "output": null,
       "pricing_status": "not_listed_in_source",
-      "source": "cursor"
+      "pricing_source": "cursor"
     }
   ],
   "aliases": [
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "alias": "fable",
       "alias_for": "claude-fable-5"
     },
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "alias": "opus",
       "alias_for": "claude-opus-4.8"
     },
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "alias": "sonnet",
       "alias_for": "claude-sonnet-4.6"
     },
     {
-      "provider": "anthropic",
+      "model_provider": "anthropic",
       "alias": "haiku",
       "alias_for": "claude-haiku-4.5"
     },
     {
-      "provider": "cognition",
+      "model_provider": "cognition",
       "alias": "swe",
       "alias_for": "swe-1.6"
     }
