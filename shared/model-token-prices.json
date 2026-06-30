@@ -7,7 +7,8 @@
   "null_price": "No explicit price row was found in the listed source at retrieved_at.",
   "sources": {
     "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
-    "openai": "https://developers.openai.com/api/docs/pricing"
+    "openai": "https://developers.openai.com/api/docs/pricing",
+    "cognition": "https://docs.devin.ai/desktop/models"
   },
   "models": [
     {
@@ -165,6 +166,26 @@
       "output": 14,
       "context": "standard",
       "source": "openai"
+    },
+    {
+      "provider": "cognition",
+      "model": "swe-1.6",
+      "display_name": "SWE-1.6",
+      "input": null,
+      "cached_input": null,
+      "output": null,
+      "pricing_status": "not_listed_in_source",
+      "source": "cognition"
+    },
+    {
+      "provider": "cognition",
+      "model": "swe-1.6-fast",
+      "display_name": "SWE-1.6 Fast",
+      "input": null,
+      "cached_input": null,
+      "output": null,
+      "pricing_status": "not_listed_in_source",
+      "source": "cognition"
     }
   ],
   "aliases": [
@@ -187,6 +208,11 @@
       "provider": "anthropic",
       "alias": "haiku",
       "alias_for": "claude-haiku-4.5"
+    },
+    {
+      "provider": "cognition",
+      "alias": "swe",
+      "alias_for": "swe-1.6"
     }
   ]
 }

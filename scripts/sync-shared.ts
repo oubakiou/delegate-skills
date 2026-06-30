@@ -12,6 +12,7 @@ const SHARED_SCRIPTS = [
   'check-delegate-chain.sh',
   'delegate-codex.sh',
   'delegate-claude.sh',
+  'delegate-devin.sh',
   'prepare.sh',
   'build-request.sh',
   'read-request.sh',

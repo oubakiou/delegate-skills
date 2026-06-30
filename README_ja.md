@@ -9,12 +9,13 @@
 
 ## 概要
 
-main agent（高価なモデル）の context を汚さず、定型的・機械的な作業を安価なモデルへ委譲する。委譲先は**モデル名で二分岐**する:
+main agent（高価なモデル）の context を汚さず、定型的・機械的な作業を安価なモデルへ委譲する。委譲先は**モデル名で三分岐**する:
 
 - Claude 系（`sonnet`/`haiku`/`opus`/`fable`）→ **Claude 子プロセス**（`claude -p`、`delegate-claude.sh`）
 - `gpt-*` → **Codex 子プロセス**（`codex exec`、`delegate-codex.sh`）
+- `swe-*` → **Devin CLI 子プロセス**（`devin -p`、`delegate-devin.sh`）
 
-どちらのパスもシェルラッパ経由で子プロセスを起動するため、requester が Claude Code でも Codex でも同じように動作する。main↔sub の受け渡しはファイルベース（リクエスト/レスポンス）で、両方とも [md2idx](https://github.com/oubakiou/md2idx) 形式（`index` + `sections`）を採用し段階読み取りでトークンを節約する。
+いずれのパスもシェルラッパ経由で子プロセスを起動するため、requester が Claude Code でも Codex でも Devin CLI でも同じように動作する。main↔sub の受け渡しはファイルベース（リクエスト/レスポンス）で、両方とも [md2idx](https://github.com/oubakiou/md2idx) 形式（`index` + `sections`）を採用し段階読み取りでトークンを節約する。
 
 `delegate-imagegen` は画像生成向けだが、モデル解決は他 delegate と同じ形に揃える。`DELEGATE_IMAGEGEN_MODEL` で子モデルを選び、`gpt*` は Codex、非 `gpt*` は Claude へフォールバックせず中止する。
 
@@ -63,6 +64,7 @@ main agent
   ├─ <skill>/scripts/check-delegate-chain.sh 多段委譲の再帰防止（同一種別2度禁止 → exit 4）
   ├─ request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
   ├─ model が gpt* → <skill>/scripts/delegate-codex.sh で Codex 子プロセス
+  │  model が swe* → <skill>/scripts/delegate-devin.sh で Devin CLI 子プロセス
   │                 それ以外 → <skill>/scripts/delegate-claude.sh で Claude 子プロセス（claude -p）
   └─ jq で response の status → index → 必要 section を段階読み取り → 検証
 ```
@@ -75,6 +77,7 @@ main agent
 - `jq`
 - Claude 系モデルを使う場合: `claude` CLI（ログイン済み）
 - `gpt-*` を使う場合: `codex` CLI（ログイン済み）
+- `swe-*` を使う場合: `devin` CLI（ログイン済み）
 - 現在の backend で `delegate-x-research` を使う場合: `grok` CLI（ログイン済み、X 調査へアクセス可能）
 
 ## 開発

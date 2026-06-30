@@ -44,13 +44,27 @@ if [ -f "$GROK_ZSHRC" ] && ! grep -Fq 'export PATH="$HOME/.grok/bin:$PATH"' "$GR
   } >> "$GROK_ZSHRC"
 fi
 
+# Devin CLIはnpmからインストールできない
+curl -fsSL https://cli.devin.ai/install.sh | bash
 
 echo "デフォルトskillをインストールします"
 gh auth login
+
 gh skill install anthropics/skills skill-creator --agent claude-code --scope project
+gh skill install anthropics/skills skill-creator --agent codex --scope project
+
 gh skill install oubakiou/mdxg-redline md-review --agent claude-code --scope project
-gh skill install oubakiou/skills guarded-webfetch-codex --agent claude-code --scope project
-gh skill install oubakiou/skills guarded-websearch-codex --agent claude-code --scope project
+gh skill install oubakiou/mdxg-redline md-review --agent codex --scope project
+
+for agent in claude-code codex; do
+  for skill in \
+    guarded-webfetch-codex \
+    guarded-websearch-codex \
+    dataviz-svg \
+  ; do
+    gh skill install oubakiou/skills "$skill" --agent "$agent" --scope project --force
+  done
+done
 
 echo "delegate skillをClaude CodeとCodexにインストールします"
 for agent in claude-code codex; do

@@ -9,8 +9,8 @@ set -euo pipefail
 # Usage: resolve-model.sh <種別env名> <skill固有デフォルト>
 #   例: resolve-model.sh DELEGATE_IMPLEMENT_MODEL sonnet
 # 解決順: $種別env → 引数デフォルト
-# 出力: Claude エイリアス(sonnet|haiku|opus|fable) または gpt-* モデルID をそのまま echo
-#   実行系の分岐（gpt* → Codex / それ以外 → claude -p）は呼び出し側が出力を見て行う
+# 出力: Claude エイリアス(sonnet|haiku|opus|fable) / gpt-* モデルID / swe-* モデルID をそのまま echo
+#   実行系の分岐（gpt* → Codex / swe* → Devin / それ以外 → claude -p）は呼び出し側が出力を見て行う
 
 if [ $# -lt 2 ]; then
   echo "Usage: $0 <TYPE_ENV_NAME> <DEFAULT_MODEL>" >&2

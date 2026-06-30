@@ -9,7 +9,7 @@ description: >
   単一の短いファイル確認や rg 一発で済む調査には使わない。結果はファイル経由で受け取り、
   index → 必要 section の順で段階的に読む。コード変更を伴う場合は delegate-implement を使うこと。
   explore の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
-allowed-tools: Bash(bash .claude/skills/delegate-explore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-claude.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
+allowed-tools: Bash(bash .claude/skills/delegate-explore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-claude.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-devin.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
 ---
 
 # delegate-explore
@@ -38,6 +38,7 @@ explore は読む量が大きいほど効果が出る。複数ファイル・長
    - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"`
 2. **実行系分岐**:
    - `model` が `gpt*`: `bash .claude/skills/delegate-explore/scripts/delegate-codex.sh "$model" explore "$request_file" "$response_file"`
+   - `model` が `swe*`: `bash .claude/skills/delegate-explore/scripts/delegate-devin.sh "$model" explore "$request_file" "$response_file"`
    - それ以外: `bash .claude/skills/delegate-explore/scripts/delegate-claude.sh "$model" explore "$request_file" "$response_file"`
 
 3. **レスポンス読み取り**: `bash .claude/skills/delegate-explore/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合のみ status を返すので `... "$response_file" index` → 必要 section（`... "$response_file" <N>`）の段階読みに切り替える。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
