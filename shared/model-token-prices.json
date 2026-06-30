@@ -69,52 +69,12 @@
     },
     {
       "provider": "openai",
-      "model": "gpt-5.5",
-      "display_name": "GPT-5.5",
-      "input": 10,
-      "cached_input": 1,
-      "output": 45,
-      "context": "standard_long_context",
-      "source": "openai"
-    },
-    {
-      "provider": "openai",
-      "model": "gpt-5.5-pro",
-      "display_name": "GPT-5.5 Pro",
-      "input": 30,
-      "cached_input": null,
-      "output": 180,
-      "context": "standard_short_context",
-      "source": "openai"
-    },
-    {
-      "provider": "openai",
-      "model": "gpt-5.5-pro",
-      "display_name": "GPT-5.5 Pro",
-      "input": 60,
-      "cached_input": null,
-      "output": 270,
-      "context": "standard_long_context",
-      "source": "openai"
-    },
-    {
-      "provider": "openai",
       "model": "gpt-5.4",
       "display_name": "GPT-5.4",
       "input": 2.5,
       "cached_input": 0.25,
       "output": 15,
       "context": "standard_short_context",
-      "source": "openai"
-    },
-    {
-      "provider": "openai",
-      "model": "gpt-5.4",
-      "display_name": "GPT-5.4",
-      "input": 5,
-      "cached_input": 0.5,
-      "output": 22.5,
-      "context": "standard_long_context",
       "source": "openai"
     },
     {
@@ -134,36 +94,6 @@
       "input": 0.2,
       "cached_input": 0.02,
       "output": 1.25,
-      "context": "standard",
-      "source": "openai"
-    },
-    {
-      "provider": "openai",
-      "model": "gpt-5.4-pro",
-      "display_name": "GPT-5.4 Pro",
-      "input": 30,
-      "cached_input": null,
-      "output": 180,
-      "context": "standard_short_context",
-      "source": "openai"
-    },
-    {
-      "provider": "openai",
-      "model": "gpt-5.4-pro",
-      "display_name": "GPT-5.4 Pro",
-      "input": 60,
-      "cached_input": null,
-      "output": 270,
-      "context": "standard_long_context",
-      "source": "openai"
-    },
-    {
-      "provider": "openai",
-      "model": "gpt-5.3-codex",
-      "display_name": "GPT-5.3 Codex",
-      "input": 1.75,
-      "cached_input": 0.175,
-      "output": 14,
       "context": "standard",
       "source": "openai"
     },

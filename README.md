@@ -59,6 +59,8 @@ Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
 [`shared/model-token-prices.json`](shared/model-token-prices.json) contains a manually curated token price snapshot for supported delegate model families. `scripts/sync-shared.ts` bundles a copy into each skill directory. It is reference data for cost analysis and reporting only; delegate-skills does not use it as a cost gate.
 
+![Model token prices](docs/assets/model-token-prices.svg)
+
 ## Architecture
 
 Each skill bundles its own copy of the shared scripts (self-contained). `gh skill install` places them under `.claude/skills/<skill>/scripts/...` for Claude Code and under the same relative layout at `.agents/skills/<skill>/scripts/...` for Codex.
