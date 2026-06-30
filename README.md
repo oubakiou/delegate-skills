@@ -62,6 +62,10 @@ Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
 ![Model token prices](docs/assets/model-token-prices.svg)
 
+Models with input prices at or below $1 or output prices at or below $5 per 1M tokens:
+
+![Low-cost model token prices](docs/assets/model-token-prices-low-cost.svg)
+
 ## Architecture
 
 Each skill bundles its own copy of the shared scripts (self-contained). `gh skill install` places them under `.claude/skills/<skill>/scripts/...` for Claude Code and under the same relative layout at `.agents/skills/<skill>/scripts/...` for Codex.
