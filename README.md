@@ -56,6 +56,17 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
+Documented model names for `DELEGATE_<TYPE>_MODEL`:
+
+| Runtime          | Model names                                                                      | Notes                                                                     |
+| ---------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`                                               | Aliases for Claude family models                                          |
+| Codex CLI        | `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`                    | `delegate-imagegen` only accepts the `gpt*` / Codex branch                |
+| Devin CLI        | `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`                                       | `devin-*` strips the prefix before passing the model to Devin CLI         |
+| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` strips the prefix before passing the model to Cursor agent CLI |
+
+The list above is documented support, not a hard allowlist. The target CLI must also expose the requested model. `delegate-x-research` uses `DELEGATE_X_RESEARCH_MODEL` instead, with documented model `grok-build`.
+
 ## Model price reference
 
 [`shared/model-token-prices.json`](shared/model-token-prices.json) contains a manually curated token price snapshot for supported delegate model families. `scripts/sync-shared.ts` bundles a copy into each skill directory. It is reference data for cost analysis and reporting only; delegate-skills does not use it as a cost gate.
