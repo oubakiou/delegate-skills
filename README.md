@@ -88,10 +88,11 @@ main agent
   │   ├─ resolve-model.sh                    Model resolution (type env → default)
   │   ├─ check-delegate-chain.sh             Recursion guard for multi-hop delegation (same type twice forbidden → exit 4)
   │   └─ build-request.sh                    Create request_file / response_file with mktemp (sharing ts + random token)
-  ├─ model is gpt* → <skill>/scripts/delegate-codex.sh launches a Codex subprocess
-  │  model is swe*|devin-* → <skill>/scripts/delegate-devin.sh launches a Devin CLI subprocess
-  │  model is composer*|cursor-* → <skill>/scripts/delegate-cursor.sh launches a Cursor agent CLI subprocess
-  │                  otherwise → <skill>/scripts/delegate-claude.sh launches a Claude subprocess (claude -p)
+  ├─ <skill>/scripts/dispatch.sh             Deterministic backend branch by model-name prefix
+  │   ├─ model is gpt* → delegate-codex.sh launches a Codex subprocess
+  │   ├─ model is swe*|devin-* → delegate-devin.sh launches a Devin CLI subprocess
+  │   ├─ model is composer*|cursor-* → delegate-cursor.sh launches a Cursor agent CLI subprocess
+  │   └─ otherwise → delegate-claude.sh launches a Claude subprocess (claude -p)
   └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
 ```
 
@@ -133,6 +134,7 @@ delegate-skills/
     delegate-claude.sh
     delegate-devin.sh
     delegate-cursor.sh
+    dispatch.sh
     prepare.sh
     build-request.sh
     read-request.sh

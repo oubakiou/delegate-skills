@@ -6,15 +6,14 @@ description: >
   「どこで定義/記載されているか」「どう動くか」「どこから参照されているか」などのコード調査に加え、
   仕様書・README・設計ドキュメント等の Markdown/テキストの内容確認・要約・該当箇所特定にも使う。
   複数ファイルや長めの文書を読む必要があり、親エージェントの context を汚さずに安く処理したいときに使う。
-  単一の短いファイル確認や rg 一発で済む調査には使わない。結果はファイル経由で受け取り、
-  index → 必要 section の順で段階的に読む。コード変更を伴う場合は delegate-implement を使うこと。
+  単一の短いファイル確認や rg 一発で済む調査には使わない。コード変更を伴う場合は delegate-implement を使うこと。
   explore の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
-allowed-tools: Bash(bash .claude/skills/delegate-explore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-codex.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-claude.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-devin.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/delegate-cursor.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/build-response.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Read
+allowed-tools: Bash(bash .claude/skills/delegate-explore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/dispatch.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-response.sh:*), Bash(jq:*), Read
 ---
 
 # delegate-explore
 
-read-only の探索・読解を委譲する。コード（定義・参照・挙動の調査）とドキュメント（仕様書・README・設計資料等の内容確認・要約・該当箇所特定）の両方を対象とする。task_type=`explore`、既定モデル `haiku`。Claude パスは `delegate-claude.sh`（`claude -p` 子プロセス）。
+read-only の探索・読解を委譲する。コード（定義・参照・挙動の調査）とドキュメント（仕様書・README・設計資料等の内容確認・要約・該当箇所特定）の両方を対象とする。task_type=`explore`、既定モデル `haiku`。実行系分岐（Codex / Devin / Cursor / Claude）は `dispatch.sh` が行う。
 
 ## スクリプトパス
 
@@ -33,16 +32,11 @@ explore は読む量が大きいほど効果が出る。複数ファイル・長
 
 ## 実行フロー
 
-1. **準備（集約）**: 前提チェック→モデル解決→チェーン確認→リクエスト生成を `prepare.sh` 1 本に畳む。Objective / Scope / Context / Acceptance criteria の Markdown を stdin で渡す。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
+1. **準備（集約）**: 前提チェック→モデル解決→チェーン確認→リクエスト生成を `prepare.sh` 1 本に畳む。Objective / Scope / Context / Acceptance criteria の Markdown を stdin で渡す。request は terse に書く: Context にファイル内容を貼らず、パス（必要なら行範囲）で参照させる（main の出力＝課金トークンを増やさないため）。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
    - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-explore/scripts/prepare.sh explore DELEGATE_EXPLORE_MODEL haiku "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）
    - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"`
-2. **実行系分岐**:
-   - `model` が `gpt*`: `bash .claude/skills/delegate-explore/scripts/delegate-codex.sh "$model" explore "$request_file" "$response_file"`
-   - `model` が `swe*` または `devin-*`: `bash .claude/skills/delegate-explore/scripts/delegate-devin.sh "$model" explore "$request_file" "$response_file"`
-   - `model` が `composer*` または `cursor-*`: `bash .claude/skills/delegate-explore/scripts/delegate-cursor.sh "$model" explore "$request_file" "$response_file"`
-   - それ以外: `bash .claude/skills/delegate-explore/scripts/delegate-claude.sh "$model" explore "$request_file" "$response_file"`
-
-3. **レスポンス読み取り**: `bash .claude/skills/delegate-explore/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合のみ status を返すので `... "$response_file" index` → 必要 section（`... "$response_file" <N>`）の段階読みに切り替える。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
+2. **実行**: `bash .claude/skills/delegate-explore/scripts/dispatch.sh "$model" explore "$request_file" "$response_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude）は dispatch.sh が行う。stdout は response_file のパスのみ。
+3. **レスポンス読み取り**: `bash .claude/skills/delegate-explore/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合は status + index + Summary section を返すので、必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
 
 ## 制約
 

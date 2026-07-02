@@ -10,7 +10,7 @@ set -euo pipefail
 #   selector:
 #     (省略) | status : .status を出力（既定・最安ゲート）
 #     auto            : サイズゲート。小さい（既定 10KB 未満）なら status + 全 section を 1 回で丸読み、
-#                       大きいなら status のみ返し index → 必要 section の段階読みへ誘導する
+#                       大きいなら status + index + Summary section のみ返し、他は <N> の段階読みへ誘導する
 #     index           : 目次（.index）
 #     meta            : protocol_version/type/status/responder_session_id を JSON で出力
 #     all             : 全 section を区切り付きで出力
@@ -98,6 +98,14 @@ case "$selector" in
     ;;
   auto)
     # 小さい response は段階読み（status→index→section の jq 複数往復）より丸読みが安い。
+    # 大きい response は main に全 section を流し込まず、status + index + Summary だけ返して
+    # 残りをオンデマンド（<N>）に回すことで main（高価なモデル）の入力を抑える。
+    auto_large_jq='(.sections | to_entries | map(select(.value | split("\n")[0] | test("^#+\\s*Summary\\s*$"))) | first) as $s
+      | "status: \(.status)\n===== index =====\n\(.index)\n"
+        + (if $s == null
+           then "large response: \(.sections | length) sections（Summary section 無し。必要 section のみ <N> で取得）"
+           else "===== section[\($s.key)] (Summary) =====\n\($s.value)\n（他 section は必要分のみ <N> で取得）"
+           end)'
     threshold="${DELEGATE_RESPONSE_INLINE_MAX:-10240}"
     size="$(wc -c <"$response_file" | tr -d '[:space:]')"
     if [ "$size" -lt "$threshold" ]; then
@@ -111,11 +119,11 @@ case "$selector" in
       printf '%s\n' "$output"
     else
       if [ -z "${DELEGATE_METRICS_FILE:-}" ]; then
-        jq -r '"status: \(.status)\nlarge response: \(.sections | length) sections（index → 必要 section で段階読みへ）"' "$response_file"
+        jq -r "$auto_large_jq" "$response_file"
         exit 0
       fi
       inline=false
-      output="$(jq -r '"status: \(.status)\nlarge response: \(.sections | length) sections（index → 必要 section で段階読みへ）"' "$response_file")"
+      output="$(jq -r "$auto_large_jq" "$response_file")"
       append_metrics
       printf '%s\n' "$output"
     fi

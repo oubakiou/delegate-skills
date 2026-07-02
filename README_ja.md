@@ -77,15 +77,17 @@ input が 100 万 token あたり $1 以下、または output が 100 万 token
 
 ```
 main agent
-  ├─ <skill>/scripts/check-md2idx.sh         前提条件チェック（npx md2idx, fail-closed）
-  ├─ <skill>/scripts/resolve-model.sh        モデル解決（種別env → デフォルト）
-  ├─ <skill>/scripts/check-delegate-chain.sh 多段委譲の再帰防止（同一種別2度禁止 → exit 4）
-  ├─ request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
-  ├─ model が gpt* → <skill>/scripts/delegate-codex.sh で Codex 子プロセス
-  │  model が swe*|devin-* → <skill>/scripts/delegate-devin.sh で Devin CLI 子プロセス
-  │  model が composer*|cursor-* → <skill>/scripts/delegate-cursor.sh で Cursor agent CLI 子プロセス
-  │                 それ以外 → <skill>/scripts/delegate-claude.sh で Claude 子プロセス（claude -p）
-  └─ jq で response の status → index → 必要 section を段階読み取り → 検証
+  ├─ <skill>/scripts/prepare.sh              前提チェック → モデル解決 → チェーン確認 → リクエスト生成
+  │   ├─ check-md2idx.sh                     前提条件チェック（npx md2idx, fail-closed）
+  │   ├─ resolve-model.sh                    モデル解決（種別env → デフォルト）
+  │   ├─ check-delegate-chain.sh             多段委譲の再帰防止（同一種別2度禁止 → exit 4）
+  │   └─ build-request.sh                    request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
+  ├─ <skill>/scripts/dispatch.sh             モデル名プレフィックスによる決定論的な実行系分岐
+  │   ├─ model が gpt* → delegate-codex.sh で Codex 子プロセス
+  │   ├─ model が swe*|devin-* → delegate-devin.sh で Devin CLI 子プロセス
+  │   ├─ model が composer*|cursor-* → delegate-cursor.sh で Cursor agent CLI 子プロセス
+  │   └─ それ以外 → delegate-claude.sh で Claude 子プロセス（claude -p）
+  └─ <skill>/scripts/read-response.sh auto で読み取り（大きい response は段階読み）→ 検証
 ```
 
 共有スクリプト/アセットの正本は `shared/` にあり、`scripts/sync-shared.ts` が各 skill へコピーする。プロトコルの詳細は [docs/design/protocol-v1.md](docs/design/protocol-v1.md) を参照。

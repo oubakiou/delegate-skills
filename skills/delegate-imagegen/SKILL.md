@@ -7,7 +7,7 @@ description: >
   main agent 側で画像生成手段を直接使えない、またはプロンプト試行錯誤・生成パラメータ・失敗ログを隔離したい場合に使う。
   主目的は token cost 削減ではなく capability bridge と context isolation。DELEGATE_IMAGEGEN_MODEL で Codex モデルを切り替える。
   imagegen の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
-allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imagegen.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/resolve-model.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/delegate-imagegen-codex.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/check-md2idx.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/check-delegate-chain.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/build-request.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/read-response.sh:*), Bash(npx md2idx:*), Bash(jq:*), Bash(mktemp:*), Bash(date:*), Bash(test -f:*), Bash(ls:*), Bash(file:*), Read
+allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imagegen.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/delegate-imagegen-codex.sh:*), Bash(bash .claude/skills/delegate-imagegen/scripts/read-response.sh:*), Bash(jq:*), Bash(test -f:*), Bash(ls:*), Bash(file:*), Read
 ---
 
 # delegate-imagegen
@@ -39,7 +39,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imageg
 2. **実行系分岐**:
    - `model` が `gpt*`: `bash .claude/skills/delegate-imagegen/scripts/delegate-imagegen-codex.sh "$model" "$request_file" "$response_file"`
    - それ以外: 画像生成 capability bridge として扱えないため中止する
-3. **レスポンス読み取り**: `bash .claude/skills/delegate-imagegen/scripts/read-response.sh "$response_file" auto`。`auto` が大きな response と判定した場合は `... "$response_file" index` → Generated files / Verification / Blockers section（`... "$response_file" <N>`）の段階読みに切り替える。読了後、worker の本文を再要約しない。main のユーザー向け応答は生成ファイル一覧と短い結果だけに留める。
+3. **レスポンス読み取り**: `bash .claude/skills/delegate-imagegen/scripts/read-response.sh "$response_file" auto`。`auto` が大きな response と判定した場合は status + index + Summary section を返すので、Generated files / Verification / Blockers など必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を再要約しない。main のユーザー向け応答は生成ファイル一覧と短い結果だけに留める。
 4. **検証フェーズ**: `Generated files` のパスが存在することを main 側で確認する。必要に応じて画像ファイルを開いて、Acceptance criteria と明らかに矛盾しないか確認する。
 
 ## Worker report

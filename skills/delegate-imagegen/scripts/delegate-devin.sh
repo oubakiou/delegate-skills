@@ -51,12 +51,12 @@ write_companion_markdown() {
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
-1. リクエストを読む: ${REQUEST_FILE}（JSON: protocol_version / type / task_type / model / task_type_chain / requester_session_id / index / sections）
-   まず \`jq -r .index "${REQUEST_FILE}"\` で目次を読み、必要な section だけ \`jq -r '.sections[N]' "${REQUEST_FILE}"\` で取得する。
+1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
 4. 作業報告 Markdown を stdin で \`bash ${script_dir}/build-response.sh <status> ${RESPONDER_SESSION_ID} "${RESPONSE_FILE}"\` に渡して書く。status は completed | partial | failed | needs_input のいずれか。report の見出しは
    Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
+   report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
 5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。
 PROMPT_EOF
 )
