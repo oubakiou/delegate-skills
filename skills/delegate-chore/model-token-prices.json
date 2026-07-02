@@ -150,22 +150,12 @@
     },
     {
       "model_provider": "zai",
-      "model": "glm-5.2-high",
+      "model": "glm-5.2",
       "display_name": "GLM 5.2(cursor)",
       "input": 1.4,
       "cached_input": 0.26,
       "output": 4.4,
       "context": "standard",
-      "pricing_source": "cursor"
-    },
-    {
-      "model_provider": "zai",
-      "model": "glm-5.2-max",
-      "display_name": "GLM 5.2 Max",
-      "input": null,
-      "cached_input": null,
-      "output": null,
-      "pricing_status": "not_listed_in_source",
       "pricing_source": "cursor"
     }
   ],
