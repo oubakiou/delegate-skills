@@ -5,22 +5,99 @@
 [![English](https://img.shields.io/badge/Language-English-blue?style=for-the-badge)](./README.md)
 [![日本語](https://img.shields.io/badge/言語-日本語-lightgrey?style=for-the-badge)](./README_ja.md)
 
-**A skill set for LLM agents that delegates implementation, exploration, review, and chores to a cheaper-model subagent — compressing token cost.**
+**A skill set for LLM agents that delegates implementation, exploration, review, and chores to a subagent running a cheaper model or a model from another vendor (Claude → Codex, etc.) — compressing token cost.**
 
-## Overview
+Keep an expensive model as the main agent and offload routine "read, investigate, fix" work to a cheaper-model child process. For example, when the main agent is Claude Fable 5 (input \$10 / output \$50 per 1M tokens), delegating code exploration to Claude Haiku 4.5 (\$1 / \$5) cuts the token cost of that work to 1/10. Delegation targets are not limited to Claude models: models available through Codex (`gpt-*`), Devin CLI, and Cursor agent CLI can be selected by model name alone. Results come back through files and are read incrementally, so the main agent's context stays small.
 
-Delegate routine, mechanical work to a cheaper model without polluting the main agent's (expensive model) context. The delegation target **branches on the model name**:
+## Features
 
-- Claude family (`sonnet`/`haiku`/`opus`/`fable`) → **Claude subprocess** (`claude -p` via `delegate-claude.sh`)
-- `gpt-*` → **Codex subprocess** (`codex exec` via `delegate-codex.sh`)
-- `swe-*` / `devin-*` → **Devin CLI subprocess** (`devin -p` via `delegate-devin.sh`). `devin-*` is a backend-pinning prefix for non-Cognition models available through Devin CLI (e.g. `devin-glm-5.2` → `glm-5.2`); `swe-*` is passed through as-is.
-- `composer-*` / `cursor-*` → **Cursor agent CLI subprocess** (`agent -p` via `delegate-cursor.sh`). `composer-*` uses the agent CLI slug as-is (e.g. `composer-2.5`, `composer-2.5-fast`). `cursor-*` is a backend-pinning prefix for non-Composer models through the agent CLI (e.g. `cursor-glm-5.2-high` → `glm-5.2-high`).
+- **Token cost compression** — delegate read/write-heavy routine work to cheaper models, reserving the expensive model's consumption for decision-making and final responsibility
+- **Context isolation** — bulk file reading and trial-and-error logs stay in the child process; the main agent reads only the result's index → required sections
+- **Multi-CLI support** — works whether the requester is Claude Code, Codex, Devin CLI, or Cursor, and delegation targets across the same four backends are selected by model name alone
+- **Capability bridge** — bridges capabilities the main agent lacks, such as image generation (`delegate-imagegen`) and x.com research (`delegate-x-research`), through child processes
+- **Fail-safe design** — recursion guard for multi-hop delegation, fail-closed on missing preconditions, and tool-permission limits such as no-push / read-only for delegation targets
 
-All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor.
+## Quick start
 
-Hand-off between main and sub is file-based (request/response). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
+### Prerequisites
 
-When delegating, use the dedicated skill for the task type (`delegate-explore`, `delegate-implement`, `delegate-review`, `delegate-chore`, `delegate-imagegen`, `delegate-x-research`) rather than bypassing into a generic subagent.
+- Node.js and `md2idx` (`npx md2idx` must be runnable; a global install via `npm install -g md2idx` is recommended since every skill uses it heavily)
+- `jq`
+- When using Claude family models: the `claude` CLI (logged in)
+- When using `gpt-*`: the `codex` CLI (logged in)
+- When using `swe-*` / `devin-*`: the `devin` CLI (logged in)
+- When using `composer-*` / `cursor-*`: the Cursor agent CLI (command name `agent`; logged in or `CURSOR_API_KEY` set)
+- When using `delegate-x-research` with the current backend: the `grok` CLI (logged in, with access to X research)
+
+### Installation
+
+#### gh skill (GitHub CLI v2.90.0+)
+
+```bash
+# Install an individual skill for Claude Code
+gh skill install oubakiou/delegate-skills delegate-explore --agent claude-code --scope project
+
+# For Codex
+gh skill install oubakiou/delegate-skills delegate-explore --agent codex --scope project
+
+# Install all delegate skills at once
+for skill in delegate-explore delegate-implement delegate-chore delegate-review delegate-imagegen delegate-x-research; do
+  gh skill install oubakiou/delegate-skills "$skill" --agent claude-code --scope project
+done
+```
+
+#### skills CLI ([vercel-labs/skills](https://github.com/vercel-labs/skills))
+
+```bash
+# Pick skills / agents interactively
+npx skills add oubakiou/delegate-skills
+
+# List available skills
+npx skills add oubakiou/delegate-skills --list
+
+# Install a specific skill for a specific agent non-interactively
+npx skills add oubakiou/delegate-skills --skill delegate-explore -a claude-code -y
+```
+
+### Try it
+
+No extra configuration is needed after installation. Ask the main agent as usual, and it delegates automatically based on each skill's description.
+
+```text
+Find out where authentication is implemented in this repository
+```
+
+→ The main agent triggers `delegate-explore`, and a `haiku` child process does the investigation. The main agent reads only the result file's index → required sections.
+
+You can also delegate explicitly by naming a skill.
+
+```text
+Review this branch's diff with delegate-review
+```
+
+To make the main agent delegate more aggressively, add one line to your project's CLAUDE.md / AGENTS.md.
+
+```markdown
+- To save tokens, actively delegate tasks to subagents using the delegate-\* skills
+```
+
+## How it works
+
+Delegate routine, mechanical work to a cheaper model without polluting the main agent's (expensive model) context. The execution backend is **determined by the model-name prefix**:
+
+| Model name                            | Backend                     | Launch                             |
+| ------------------------------------- | --------------------------- | ---------------------------------- |
+| `sonnet` / `haiku` / `opus` / `fable` | Claude subprocess           | `claude -p` (`delegate-claude.sh`) |
+| `gpt-*`                               | Codex subprocess            | `codex exec` (`delegate-codex.sh`) |
+| `swe-*` / `devin-*`                   | Devin CLI subprocess        | `devin -p` (`delegate-devin.sh`)   |
+| `composer-*` / `cursor-*`             | Cursor agent CLI subprocess | `agent -p` (`delegate-cursor.sh`)  |
+
+What the prefixes mean:
+
+- `swe-*` and `composer-*` are each CLI's native model names and are passed through as-is (e.g. `swe-1.6`, `composer-2.5`)
+- `devin-*` and `cursor-*` are backend-pinning prefixes that fix "use this CLI"; the prefix is stripped and the remainder is passed as the model name (e.g. `devin-glm-5.2` → `glm-5.2` on Devin CLI, `cursor-glm-5.2-high` → `glm-5.2-high` on Cursor agent CLI)
+
+All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
 `delegate-imagegen` resolves a Codex model with the same env/default mechanism as the other delegates, but it remains a Codex-only capability bridge: `DELEGATE_IMAGEGEN_MODEL` selects the child model, `gpt*` routes to Codex, and non-`gpt*` fails closed instead of falling through to Claude.
 
@@ -73,98 +150,17 @@ The list above is documented support, not a hard allowlist. The target CLI must 
 
 ![Model token prices](docs/assets/model-token-prices.svg)
 
-Models with input prices at or below $1 or output prices at or below $5 per 1M tokens:
+Models with input prices at or below \$1 or output prices at or below \$5 per 1M tokens:
 
 ![Low-cost model token prices](docs/assets/model-token-prices-low-cost.svg)
 
 ## Architecture
 
-Each skill bundles its own copy of the shared scripts (self-contained). `gh skill install` places them under `.claude/skills/<skill>/scripts/...` for Claude Code and under the same relative layout at `.agents/skills/<skill>/scripts/...` for Codex.
-
-```
-main agent
-  ├─ <skill>/scripts/prepare.sh              Precondition check → model resolution → chain check → request generation
-  │   ├─ check-md2idx.sh                     Precondition check (npx md2idx, fail-closed)
-  │   ├─ resolve-model.sh                    Model resolution (type env → default)
-  │   ├─ check-delegate-chain.sh             Recursion guard for multi-hop delegation (same type twice forbidden → exit 4)
-  │   └─ build-request.sh                    Create request_file / response_file with mktemp (sharing ts + random token)
-  ├─ <skill>/scripts/dispatch.sh             Deterministic backend branch by model-name prefix
-  │   ├─ model is gpt* → delegate-codex.sh launches a Codex subprocess
-  │   ├─ model is swe*|devin-* → delegate-devin.sh launches a Devin CLI subprocess
-  │   ├─ model is composer*|cursor-* → delegate-cursor.sh launches a Cursor agent CLI subprocess
-  │   └─ otherwise → delegate-claude.sh launches a Claude subprocess (claude -p)
-  └─ Read the response with <skill>/scripts/read-response.sh auto, then stepwise if large → verify
-```
-
-`delegate-imagegen` uses `<skill>/scripts/prepare-imagegen.sh` and `<skill>/scripts/delegate-imagegen-codex.sh` to preserve image-output defaults. `prepare-imagegen.sh` still resolves `DELEGATE_IMAGEGEN_MODEL` and returns `model`, but imagegen only accepts the `gpt*`/Codex branch.
-
-`delegate-x-research` uses the shared `prepare.sh` and `<skill>/scripts/delegate-x-research-grok.sh`; the current wrapper calls `grok -p -m "$model"` and writes the worker report through the same response protocol.
-
-The canonical copy of each shared script/asset lives in `shared/`; `scripts/sync-shared.ts` copies it into every skill.
-
-See [docs/design/protocol-v1.md](docs/design/protocol-v1.md) for the protocol details.
-
-## Directory layout
-
-```
-delegate-skills/
-  fixtures/
-    metrics/                        # fixed telemetry scenarios and baseline
-      baseline.json
-      scriptable-chore/{request.md,response.md}
-      read-heavy-chore/{request.md,response.md}
-      mixed-chore/{request.md,response.md}
-  skills/                          # gh skill install source (canonical SKILL.md)
-    delegate-explore/
-      SKILL.md
-      scripts/                     # copied from shared/ by sync-shared.ts
-    delegate-implement/{SKILL.md, scripts/}
-    delegate-chore/{SKILL.md, scripts/}
-    delegate-review/{SKILL.md, scripts/}
-    delegate-imagegen/{SKILL.md, scripts/}
-    delegate-x-research/{SKILL.md, scripts/}
-  .claude/skills/<skill>/scripts/  # Claude Code gh skill install layout
-  .agents/skills/<skill>/scripts/  # Codex gh skill install layout
-  shared/                          # canonical shared scripts/assets (type/runtime-agnostic)
-    model-token-prices.json
-    resolve-model.sh
-    check-md2idx.sh
-    check-delegate-chain.sh
-    delegate-codex.sh
-    delegate-claude.sh
-    delegate-devin.sh
-    delegate-cursor.sh
-    dispatch.sh
-    prepare.sh
-    build-request.sh
-    read-request.sh
-    build-response.sh
-    read-response.sh
-  scripts/
-    sync-shared.ts                 # shared/ → each skill (+ in-source test)
-    summarize-metrics.ts           # summarize telemetry JSONL
-    run-metrics-fixtures.sh        # run fixed metrics fixtures
-    check-metrics-baseline.sh      # detect fixture baseline drift
-  docs/
-    design/
-      spec.md
-      protocol-v1.md
-  README.md
-```
-
-## Prerequisites
-
-- Node.js and `md2idx` (`npx md2idx` must be runnable; a global install via `npm install -g md2idx` is recommended since every skill uses it heavily)
-- `jq`
-- When using Claude family models: the `claude` CLI (logged in)
-- When using `gpt-*`: the `codex` CLI (logged in)
-- When using `swe-*` / `devin-*`: the `devin` CLI (logged in)
-- When using `composer-*` / `cursor-*`: the `agent` CLI (logged in or `CURSOR_API_KEY` set)
-- When using `delegate-x-research` with the current backend: the `grok` CLI (logged in, with access to X research)
+See [docs/design/spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md#p:2).
 
 ## Development
 
-See [docs/design/development.md](docs/design/development.md) for the development workflow (setup, `vp` formatting/lint/test, the `shared/` sync pattern, and git hooks).
+See [docs/design/development.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fdevelopment.md).
 
 ## License
 

@@ -2,6 +2,79 @@
 
 delegate-skills の開発ワークフロー。仕様は [spec.md](spec.md)、プロトコルは [protocol-v1.md](protocol-v1.md) を参照。
 
+## アーキテクチャ
+
+各 skill は共有スクリプトのコピーを同梱する（self-contained）。`gh skill install` は Claude Code 向けには `.claude/skills/<skill>/scripts/...`、Codex 向けには同じ相対構成の `.agents/skills/<skill>/scripts/...` に配置する:
+
+```
+main agent
+  ├─ <skill>/scripts/prepare.sh              前提チェック → モデル解決 → チェーン確認 → リクエスト生成
+  │   ├─ check-md2idx.sh                     前提条件チェック（npx md2idx, fail-closed）
+  │   ├─ resolve-model.sh                    モデル解決（種別env → デフォルト）
+  │   ├─ check-delegate-chain.sh             多段委譲の再帰防止（同一種別2度禁止 → exit 4）
+  │   └─ build-request.sh                    request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
+  ├─ <skill>/scripts/dispatch.sh             モデル名プレフィックスによる決定論的な実行系分岐
+  │   ├─ model が gpt* → delegate-codex.sh で Codex 子プロセス
+  │   ├─ model が swe*|devin-* → delegate-devin.sh で Devin CLI 子プロセス
+  │   ├─ model が composer*|cursor-* → delegate-cursor.sh で Cursor agent CLI 子プロセス
+  │   └─ それ以外 → delegate-claude.sh で Claude 子プロセス（claude -p）
+  └─ <skill>/scripts/read-response.sh auto で読み取り（大きい response は段階読み）→ 検証
+```
+
+`delegate-imagegen` は画像出力まわりの既定値を保つため `<skill>/scripts/prepare-imagegen.sh` と `<skill>/scripts/delegate-imagegen-codex.sh` を使う。`prepare-imagegen.sh` も `DELEGATE_IMAGEGEN_MODEL` を解決して `model` を返すが、imagegen は `gpt*`/Codex 分岐のみ受け付ける。
+
+`delegate-x-research` は共有の `prepare.sh` と `<skill>/scripts/delegate-x-research-grok.sh` を使う。現在のラッパは `grok -p -m "$model"` を呼び、worker のレポートを同じレスポンスプロトコルで書き出す。
+
+共有スクリプト/アセットの正本は `shared/` にあり、`scripts/sync-shared.ts` が各 skill へコピーする。
+
+## ディレクトリ構成
+
+```
+delegate-skills/
+  fixtures/
+    metrics/                        # テレメトリの固定シナリオとベースライン
+      baseline.json
+      scriptable-chore/{request.md,response.md}
+      read-heavy-chore/{request.md,response.md}
+      mixed-chore/{request.md,response.md}
+  skills/                          # gh skill install のソース（正本の SKILL.md）
+    delegate-explore/
+      SKILL.md
+      scripts/                     # sync-shared.ts が shared/ からコピー
+    delegate-implement/{SKILL.md, scripts/}
+    delegate-chore/{SKILL.md, scripts/}
+    delegate-review/{SKILL.md, scripts/}
+    delegate-imagegen/{SKILL.md, scripts/}
+    delegate-x-research/{SKILL.md, scripts/}
+  .claude/skills/<skill>/scripts/  # Claude Code 向け gh skill install 配置
+  .agents/skills/<skill>/scripts/  # Codex 向け gh skill install 配置
+  shared/                          # 共有スクリプト/アセットの正本（種別・実行系非依存）
+    model-token-prices.json
+    resolve-model.sh
+    check-md2idx.sh
+    check-delegate-chain.sh
+    delegate-codex.sh
+    delegate-claude.sh
+    delegate-devin.sh
+    delegate-cursor.sh
+    dispatch.sh
+    prepare.sh
+    build-request.sh
+    read-request.sh
+    build-response.sh
+    read-response.sh
+  scripts/
+    sync-shared.ts                 # shared/ → 各 skill（+ in-source test）
+    summarize-metrics.ts           # テレメトリ JSONL の集計
+    run-metrics-fixtures.sh        # 固定 metrics fixtures の実行
+    check-metrics-baseline.sh      # fixture ベースラインのドリフト検知
+  docs/
+    design/
+      spec.md
+      protocol-v1.md
+  README.md
+```
+
 ## セットアップ
 
 devcontainer 前提。初回はリポジトリ root で `local_setup.sh` を実行する。
