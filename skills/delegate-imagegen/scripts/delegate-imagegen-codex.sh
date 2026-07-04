@@ -2,39 +2,78 @@
 set -euo pipefail
 
 # delegate-imagegen 専用の Codex 子プロセス起動ラッパ。
-# Usage: delegate-imagegen-codex.sh <model> <request_file> <response_file>
+# Usage: delegate-imagegen-codex.sh <model> <request_file> <response_file> [run_dir] [observe_file]
 # stdout: response_file のパスのみ（本文は親 context に入れない）
 
 if [ $# -lt 3 ]; then
-  echo "Usage: $0 <model> <request_file> <response_file>" >&2
+  echo "Usage: $0 <model> <request_file> <response_file> [run_dir] [observe_file]" >&2
   exit 2
 fi
 
 MODEL="$1"
 REQUEST_FILE="$2"
 RESPONSE_FILE="$3"
+RUN_DIR="${4:-${RESPONSE_FILE%_res.json}}"
+OBSERVE_FILE="${5:-${RESPONSE_FILE%_res.json}_observe.json}"
+WORK_DIR="$RUN_DIR"
+mkdir -p "$WORK_DIR/tmp"
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/observe-json.sh"
+
+backend="codex"
+dispatch_pid="$$"
+stdout_capture="$WORK_DIR/worker-stdout.capture"
+stderr_capture="$WORK_DIR/worker-stderr.capture"
+: >"$stdout_capture"
+: >"$stderr_capture"
+
+if [ ! -s "$OBSERVE_FILE" ]; then
+  delegate_observe_init "$OBSERVE_FILE" "$WORK_DIR" imagegen "$MODEL" "$backend" "$REQUEST_FILE" "$RESPONSE_FILE" ""
+fi
+
+finish_without_child() {
+  local exit_code="$1"
+  local message="$2"
+
+  printf '%s\n' "$message" >"$stderr_capture"
+  delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$exit_code" || true
+
+  local response_present=false
+  if [ -s "$RESPONSE_FILE" ]; then
+    response_present=true
+    delegate_observe_write_companion_markdown "$RESPONSE_FILE"
+  else
+    delegate_observe_response_missing "$OBSERVE_FILE" "$WORK_DIR"
+  fi
+
+  delegate_observe_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid" "$stdout_capture" "$stderr_capture"
+  delegate_observe_import_streams "$OBSERVE_FILE" "$WORK_DIR" "$stdout_capture" "$stderr_capture"
+  delegate_observe_dispatch_end "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid" "$exit_code" "$response_present"
+  printf '%s\n' "$RESPONSE_FILE"
+  exit "$exit_code"
+}
+
+delegate_observe_dispatch_start "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid"
 
 case "$MODEL" in
   gpt*) ;;
   *)
-    echo "ERROR: delegate-imagegen requires a gpt-* model for Codex execution: $MODEL" >&2
-    exit 2
+    finish_without_child 2 "ERROR: delegate-imagegen requires a gpt-* model for Codex execution: $MODEL"
     ;;
 esac
 
 if ! command -v codex >/dev/null 2>&1; then
-  echo "ERROR: codex CLI が見つかりません。" >&2
-  exit 3
+  finish_without_child 3 "ERROR: codex CLI が見つかりません。"
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-WORK_DIR="${DELEGATE_WORK_DIR:-$(mktemp -d --tmpdir delegate_imagegen_codex_XXXXX)}"
 OUTPUT_DIR="${DELEGATE_IMAGEGEN_OUTPUT_DIR:-delegate-imagegen-output}"
 case "$OUTPUT_DIR" in
   /*) OUTPUT_PATH="$OUTPUT_DIR" ;;
   *) OUTPUT_PATH="$REPO_ROOT/$OUTPUT_DIR" ;;
 esac
-mkdir -p "$WORK_DIR/tmp" "$OUTPUT_PATH"
+mkdir -p "$OUTPUT_PATH"
 
 CODEX_HOME_ISOLATED="$WORK_DIR/codex-home"
 mkdir -p "$CODEX_HOME_ISOLATED"
@@ -44,12 +83,6 @@ REAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
 REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_report_XXXXX" --suffix=.md)"
 RESPONDER_SESSION_ID="codex:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
-
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-write_companion_markdown() {
-  (jq -r '.sections | join("\n\n")' "$1" >"${1%.json}.md") >/dev/null 2>&1 || true
-}
 
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の画像生成ワーカー（task_type=imagegen）です。protocol v1 に従ってください。
@@ -67,6 +100,13 @@ PROMPT=$(cat <<PROMPT_EOF
 PROMPT_EOF
 )
 
+cleanup() {
+  if [ -n "${child_pid:-}" ] && kill -0 "$child_pid" 2>/dev/null; then
+    kill "$child_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
 CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   codex exec \
   -m "$MODEL" \
@@ -75,16 +115,35 @@ CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}" \
   --output-last-message "$LAST_MSG" \
   -C "$REPO_ROOT" \
-  "$PROMPT" >/dev/null 2>"$WORK_DIR/codex.stderr" || {
-    cat "$WORK_DIR/codex.stderr" >&2
-    exit 1
-  }
+  "$PROMPT" >"$stdout_capture" 2>"$stderr_capture" &
+child_pid=$!
 
-if [ ! -s "$RESPONSE_FILE" ]; then
-  echo "ERROR: 子 Codex が response_file を生成しませんでした: $RESPONSE_FILE" >&2
-  exit 1
+if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then
+  child_status=0
+else
+  child_status=$?
 fi
 
-write_companion_markdown "$RESPONSE_FILE"
+if [ ! -s "$RESPONSE_FILE" ]; then
+  response_status="$child_status"
+  [ "$response_status" -eq 0 ] && response_status=1
+  if ! delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$response_status"; then
+    if [ -s "$stderr_capture" ]; then
+      cat "$stderr_capture" >&2
+    fi
+  fi
+else
+  delegate_observe_write_companion_markdown "$RESPONSE_FILE"
+  response_status="$child_status"
+fi
+
+response_present=false
+if [ -s "$RESPONSE_FILE" ]; then
+  response_present=true
+else
+  delegate_observe_response_missing "$OBSERVE_FILE" "$WORK_DIR"
+fi
+delegate_observe_dispatch_end "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid" "$response_status" "$response_present"
 
 printf '%s\n' "$RESPONSE_FILE"
+exit "$response_status"

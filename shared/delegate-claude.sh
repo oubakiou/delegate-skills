@@ -7,11 +7,11 @@ set -euo pipefail
 
 # Claude 系モデル指定時の claude -p 子プロセス起動ラッパ
 # 起動骨格は delegate-codex.sh と対称構造。
-# Usage: delegate-claude.sh <model> <task_type> <request_file> <response_file>
+# Usage: delegate-claude.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]
 # stdout: response_file のパスのみ（本文は親 context に入れない）
 
 if [ $# -lt 4 ]; then
-  echo "Usage: $0 <model> <task_type> <request_file> <response_file>" >&2
+  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]" >&2
   exit 2
 fi
 
@@ -19,25 +19,43 @@ MODEL="$1"
 TASK_TYPE="$2"
 REQUEST_FILE="$3"
 RESPONSE_FILE="$4"
+RUN_DIR="${5:-${RESPONSE_FILE%_res.json}}"
+OBSERVE_FILE="${6:-${RESPONSE_FILE%_res.json}_observe.json}"
 
-if ! command -v claude >/dev/null 2>&1; then
-  echo "ERROR: claude CLI が見つかりません。" >&2
-  exit 3
-fi
-
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-# 既定の作業ディレクトリは mktemp に委ねる（TMPDIR、無ければ /tmp）。DELEGATE_WORK_DIR で上書き可
-WORK_DIR="${DELEGATE_WORK_DIR:-$(mktemp -d --tmpdir delegate_claude_XXXXX)}"
+WORK_DIR="$RUN_DIR"
 mkdir -p "$WORK_DIR/tmp"
 
 RESPONDER_SESSION_ID="claude:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/observe-json.sh"
+backend="$(delegate_observe_backend_from_model "$MODEL")"
+stdout_capture="$WORK_DIR/worker-stdout.capture"
+stderr_capture="$WORK_DIR/worker-stderr.capture"
+: >"$stdout_capture"
+: >"$stderr_capture"
 
-write_companion_markdown() {
-  # JSON が protocol の正本で、Markdown は人間の監査・デバッグ用の派生物に留める。
-  (jq -r '.sections | join("\n\n")' "$1" >"${1%.json}.md") >/dev/null 2>&1 || true
+if [ ! -s "$OBSERVE_FILE" ]; then
+  delegate_observe_init "$OBSERVE_FILE" "$WORK_DIR" "$TASK_TYPE" "$MODEL" "$backend" "$REQUEST_FILE" "$RESPONSE_FILE" ""
+fi
+
+finish_without_child() {
+  local exit_code="$1"
+  local message="$2"
+
+  printf '%s\n' "$message" >"$stderr_capture"
+  delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$exit_code" || true
+  delegate_observe_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$$" "$stdout_capture" "$stderr_capture"
+  delegate_observe_import_streams "$OBSERVE_FILE" "$WORK_DIR" "$stdout_capture" "$stderr_capture"
+  printf '%s\n' "$RESPONSE_FILE"
+  exit "$exit_code"
 }
+
+if ! command -v claude >/dev/null 2>&1; then
+  finish_without_child 3 "ERROR: claude CLI が見つかりません。"
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
@@ -51,6 +69,13 @@ PROMPT=$(cat <<PROMPT_EOF
 5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。
 PROMPT_EOF
 )
+
+cleanup() {
+  if [ -n "${child_pid:-}" ] && kill -0 "$child_pid" 2>/dev/null; then
+    kill "$child_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
 claude_args=(
   -p "$PROMPT"
@@ -68,16 +93,27 @@ esac
 
 cd "$REPO_ROOT"
 TMPDIR="$WORK_DIR/tmp" claude "${claude_args[@]}" \
-  >/dev/null 2>"$WORK_DIR/claude.stderr" || {
-    cat "$WORK_DIR/claude.stderr" >&2
-    exit 1
-  }
+  >"$stdout_capture" 2>"$stderr_capture" &
+child_pid=$!
 
-if [ ! -s "$RESPONSE_FILE" ]; then
-  echo "ERROR: 子 Claude が response_file を生成しませんでした: $RESPONSE_FILE" >&2
-  exit 1
+if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then
+  child_status=0
+else
+  child_status=$?
 fi
 
-write_companion_markdown "$RESPONSE_FILE"
+if [ ! -s "$RESPONSE_FILE" ]; then
+  response_status="$child_status"
+  [ "$response_status" -eq 0 ] && response_status=1
+  if ! delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$response_status"; then
+    if [ -s "$stderr_capture" ]; then
+      cat "$stderr_capture" >&2
+    fi
+  fi
+else
+  delegate_observe_write_companion_markdown "$RESPONSE_FILE"
+  response_status="$child_status"
+fi
 
 printf '%s\n' "$RESPONSE_FILE"
+exit "$response_status"

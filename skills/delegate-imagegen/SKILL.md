@@ -35,9 +35,9 @@ allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imageg
 
 1. **準備**: Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。出力先指定がなければ Constraints に `DELEGATE_IMAGEGEN_OUTPUT_DIR` の既定出力先を使う旨を書く。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
    - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-imagegen/scripts/prepare-imagegen.sh "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）
-   - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"`
+   - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"` / `run_dir="$(printf '%s' "$out" | jq -r .run_dir)"` / `observe_file="$(printf '%s' "$out" | jq -r .observe_file)"`
 2. **実行系分岐**:
-   - `model` が `gpt*`: `bash .claude/skills/delegate-imagegen/scripts/delegate-imagegen-codex.sh "$model" "$request_file" "$response_file"`
+   - `model` が `gpt*`: `bash .claude/skills/delegate-imagegen/scripts/delegate-imagegen-codex.sh "$model" "$request_file" "$response_file" "$run_dir" "$observe_file"`。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを `jq` で読む。
    - それ以外: 画像生成 capability bridge として扱えないため中止する
 3. **レスポンス読み取り**: `bash .claude/skills/delegate-imagegen/scripts/read-response.sh "$response_file" auto`。`auto` が大きな response と判定した場合は status + index + Summary section を返すので、Generated files / Verification / Blockers など必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を再要約しない。main のユーザー向け応答は生成ファイル一覧と短い結果だけに留める。
 4. **検証フェーズ**: `Generated files` のパスが存在することを main 側で確認する。必要に応じて画像ファイルを開いて、Acceptance criteria と明らかに矛盾しないか確認する。

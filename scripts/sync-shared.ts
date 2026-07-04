@@ -14,6 +14,7 @@ const SHARED_SCRIPTS = [
   'delegate-claude.sh',
   'delegate-devin.sh',
   'delegate-cursor.sh',
+  'observe-json.sh',
   'dispatch.sh',
   'prepare.sh',
   'build-request.sh',

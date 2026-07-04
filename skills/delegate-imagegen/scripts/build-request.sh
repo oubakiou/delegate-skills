@@ -10,7 +10,7 @@ set -euo pipefail
 # Usage: build-request.sh <task_type> <model> <task_type_chain_json> <requester_session_id>
 #   リクエスト本文 Markdown は stdin から渡す（中間ファイルはスクリプトが WORK_DIR 内で管理）。
 #   見出しは Objective / Scope / Context / Acceptance criteria / Verification / Constraints。
-# stdout: {"request_file": "...", "response_file": "..."}（JSON）
+# stdout: {"request_file": "...", "response_file": "...", "run_dir": "...", "observe_file": "..."}（JSON）
 # 置き場: DELEGATE_WORK_DIR（無ければ TMPDIR、無ければ /tmp）
 # telemetry: DELEGATE_METRICS_FILE が設定されたときだけ JSONL に proxy metric を追記する
 # exit: 2=引数エラー / 3=前提条件(jq)不足 / 1=md2idx 失敗・空 index/sections
@@ -94,6 +94,9 @@ request_file="${work_dir}/delegate_${task_type}_${ts}_${request_token}_req.json"
 mv "$request_tmp" "$request_file"
 # 乱数トークンを共有して response を導出（末尾の `_req` / `_res` だけを差し替える）
 response_file="${request_file%_req.json}_res.json"
+run_dir="${response_file%_res.json}"
+observe_file="${response_file%_res.json}_observe.json"
+mkdir -p "$run_dir"
 src_md="$(mktemp --tmpdir="$work_dir" "delegate_${task_type}_${ts}_reqsrc_XXXXX" --suffix=.md)"
 
 cat >"$src_md"
@@ -121,4 +124,9 @@ request_bytes="$(wc -c <"$request_file" | tr -d '[:space:]')"
 sections="$(jq '.sections | length' "$request_file")"
 append_metrics
 
-jq -n --arg req "$request_file" --arg res "$response_file" '{request_file: $req, response_file: $res}'
+jq -n \
+  --arg req "$request_file" \
+  --arg res "$response_file" \
+  --arg run_dir "$run_dir" \
+  --arg observe_file "$observe_file" \
+  '{request_file: $req, response_file: $res, run_dir: $run_dir, observe_file: $observe_file}'
