@@ -39,6 +39,32 @@ work_dir="${DELEGATE_WORK_DIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$work_dir"
 work_dir="$(cd "$work_dir" && pwd)"
 
+positive_int_or_zero() {
+  case "${1:-0}" in
+    '' | *[!0-9]*) printf '%s' 0 ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+cleanup_old_run_dirs() {
+  local retention_days
+  retention_days="$(positive_int_or_zero "${DELEGATE_RUN_RETENTION_DAYS:-0}")"
+  [ "$retention_days" -gt 0 ] || return 0
+
+  while IFS= read -r -d '' candidate_dir; do
+    local observe_candidate phase
+    observe_candidate="${candidate_dir}_observe.json"
+    phase=""
+    if [ -f "$observe_candidate" ]; then
+      phase="$(jq -r '.state.phase // empty' "$observe_candidate" 2>/dev/null || true)"
+    fi
+    [ "$phase" = "running" ] && continue
+    rm -rf -- "$candidate_dir"
+  done < <(find "$work_dir" -mindepth 1 -maxdepth 1 -type d -name 'delegate_*' -mtime +"$retention_days" -print0 2>/dev/null)
+}
+
+cleanup_old_run_dirs
+
 append_metrics() {
   [ -n "${DELEGATE_METRICS_FILE:-}" ] || return 0
   (

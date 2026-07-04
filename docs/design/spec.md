@@ -176,7 +176,7 @@ response_file="${request_file%_req.json}_res.json"
 
 - request_file と response_file は `ts`（タイムスタンプ）とランダムトークンを共有し、末尾の `_req`/`_res` だけが異なる → 同一秒に並列実行してもファイル名から両者の対応関係を一意特定できる
 - 乱数の出所は request の mktemp 1 箇所。一意性も保たれる
-- クリーンアップ: ファイルは残す（監査・デバッグ用）。既定では mktemp の置き場（`TMPDIR`、無ければ `/tmp`）に蓄積するため不要分は手動で削除する。`DELEGATE_WORK_DIR` で置き場を固定できる
+- クリーンアップ: request / response / observe JSON は残す（監査・デバッグ用）。run ごとの scratch directory は `DELEGATE_RUN_RETENTION_DAYS` に正の整数を指定した場合だけ、request 準備時に同じ `DELEGATE_WORK_DIR` 配下の古い directory を削除する。`state.phase == "running"` の observe JSON を持つ directory は active とみなして削除しない。既定では自動削除しない
 - **main 事前確保の利点**: main は sub の最終メッセージをパースせずに response_file パスを決定的に知れる。sub の返答が崩れてもパスを見失わない
 
 ### 人間向け Markdown 派生物
@@ -230,6 +230,16 @@ request / response と同じペアトークンから `<pair>_observe.json` と `
       "ts": "2026-07-04T12:34:57Z",
       "backend": "claude",
       "dispatcher_pid": 12345
+    },
+    {
+      "kind": "stall_timeout",
+      "ts": "2026-07-04T12:42:57Z",
+      "backend": "claude",
+      "child_pid": 12346,
+      "timeout_seconds": 300,
+      "idle_seconds": 300,
+      "stdout_bytes": 0,
+      "stderr_bytes": 84
     }
   ],
   "streams": {
@@ -239,12 +249,13 @@ request / response と同じペアトークンから `<pair>_observe.json` と `
 }
 ```
 
-- `state.phase`: `prepared | running | ended`
+- `state.phase`: `prepared | running | stalled | ended`
 - `state.dispatcher_pid`: `dispatch.sh` または専用 wrapper の管理プロセス PID。子 CLI の kill 対象ではない
 - `heartbeat.child_pid`: 実際の子 CLI PID。子 CLI 起動前の preflight failure では dispatcher PID が入る場合がある
 - `state.duration_ms`: 終了時だけ設定する。実行中 timeout は `state.started_at` と現在時刻から利用側が計算する
 - `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes`: capture file の現在サイズ。content を読まずに低コストで stream 進捗を判定する
 - `heartbeat.last_stream_change_at`: 直近 heartbeat で stdout/stderr bytes が増えた時刻
+- `events[].kind == "stall_timeout"`: `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` 有効時、stdout/stderr bytes が指定秒数増えず wrapper が子 CLI を kill したことを示す。wrapper は exit code `124` を返し、response 未生成なら failed response を書く
 - `streams.*.content`: 終了時または preflight failure 時の状況把握用。既定で末尾 `DELEGATE_OBSERVE_STREAM_MAX_BYTES` bytes だけを残し、超過時は `truncated: true` と総 bytes を記録する
 
 observe JSON の更新は `observe-json.sh` に集約し、observe file basename 派生の lock を `run_dir` 配下に置く。`flock(1)` があれば使い、無ければ `mkdir` ベースの lock fallback を使う。更新は temporary file に書いてから `mv` する atomic replace とする。
@@ -255,6 +266,8 @@ watchdog の通常判定例:
 jq -e '.state.phase == "ended" and .state.exit_code == 0 and .state.response_present == true' "$observe_file"
 jq '{phase: .state.phase, started_at: .state.started_at, heartbeat: .heartbeat.ts, stdout_bytes: .heartbeat.stdout_bytes, stderr_bytes: .heartbeat.stderr_bytes, last_stream_change_at: .heartbeat.last_stream_change_at}' "$observe_file"
 ```
+
+内部 stall watchdog は既定では無効で、`DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` に正の整数を指定したときだけ動く。判定は heartbeat が更新する byte counter と `last_stream_change_at` だけを使い、通常経路では stdout/stderr content を読まない。CLI が長時間 silent でも正常な backend では、この値を未設定または十分大きくする。
 
 ### リクエストファイル（main → sub）
 
@@ -426,16 +439,18 @@ delegate-skills/
 
 ## 11. 環境変数
 
-| 環境変数                              | 既定                                     | 説明                                                             |
-| ------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`               | skill 毎                                 | 種別別のモデル上書き                                             |
-| `DELEGATE_WORK_DIR`                   | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                            |
-| `DELEGATE_RESPONSE_INLINE_MAX`        | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値  |
-| `DELEGATE_METRICS_FILE`               | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先 |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL` | `10`（秒）                               | observe JSON の heartbeat 更新間隔                               |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`   | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限             |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`        | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                 |
-| `DELEGATE_X_RESEARCH_MODEL`           | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル             |
+| 環境変数                                 | 既定                                     | 説明                                                             |
+| ---------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                             |
+| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                            |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値  |
+| `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先 |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                               |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する    |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限             |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する     |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                 |
+| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル             |
 
 ## 12. 脅威モデル・割り切り
 

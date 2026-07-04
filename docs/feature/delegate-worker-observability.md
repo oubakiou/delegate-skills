@@ -115,20 +115,22 @@ backend 名は model prefix ではなく実行系名に固定する。`sonnet` /
 
 response_file は protocol v1 の最終成果物専用に保ち、進捗・生存確認・dispatch 結果・stdout / stderr は `<pair>_observe.json` に集約する。親や watchdog は `jq` で必要なフィールドだけを読む。
 
-| フィールド       | 内容                                                                                                      | 更新主体                     |
-| ---------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `run`            | `task_type`, `model`, `backend`, `request_file`, `response_file`, `run_dir` などの固定情報                | `prepare.sh` / `dispatch.sh` |
-| `state`          | `phase`, `dispatcher_pid`, `started_at`, `ended_at`, `exit_code`, `duration_ms`, `response_present`       | `dispatch.sh`                |
-| `heartbeat`      | `ts`, `child_pid`, `backend`, `stdout_bytes`, `stderr_bytes`, `last_stream_change_at`                     | wrapper helper               |
-| `events`         | `run_created`, `dispatch_start`, `response_missing`, `dispatch_end`, `failed_response_written` などの履歴 | `observe-json.sh`            |
-| `streams.stdout` | stdout の `bytes`, `truncated`, `content`                                                                 | wrapper helper               |
-| `streams.stderr` | stderr の `bytes`, `truncated`, `content`                                                                 | wrapper helper               |
+| フィールド       | 内容                                                                                                                       | 更新主体                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `run`            | `task_type`, `model`, `backend`, `request_file`, `response_file`, `run_dir` などの固定情報                                 | `prepare.sh` / `dispatch.sh` |
+| `state`          | `phase`, `dispatcher_pid`, `started_at`, `ended_at`, `exit_code`, `duration_ms`, `response_present`                        | `dispatch.sh`                |
+| `heartbeat`      | `ts`, `child_pid`, `backend`, `stdout_bytes`, `stderr_bytes`, `last_stream_change_at`                                      | wrapper helper               |
+| `events`         | `run_created`, `dispatch_start`, `stall_timeout`, `response_missing`, `dispatch_end`, `failed_response_written` などの履歴 | `observe-json.sh`            |
+| `streams.stdout` | stdout の `bytes`, `truncated`, `content`                                                                                  | wrapper helper               |
+| `streams.stderr` | stderr の `bytes`, `truncated`, `content`                                                                                  | wrapper helper               |
 
 `observe-json.sh` はすべての observe JSON 更新を `jq` で定型化し、直接 `jq` コマンドを各ラッパに散らさない。更新は observe file ごとの lock を `flock` で取得し、lock 内で read-modify-write する。書き込みは `tmp` ファイルへ出力してから `mv` する atomic replace にする。atomic replace は部分書き込み対策、`flock` は heartbeat / dispatch / stream 取り込みの同時更新で field を落とさないための read-modify-write 直列化として扱う。
 
 lock file は observe file basename 派生の `<pair>_observe.lock` とし、`run_dir` 配下に置く。heartbeat background process、dispatch start/end、stream import、failed response event はすべて `observe-json.sh` 経由で同じ lock を使う。`flock(1)` を利用できない環境では `mkdir` ベースの lock fallback を検討対象にする。
 
 heartbeat の更新間隔は `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL` で指定し、未設定時は 10 秒とする。heartbeat 更新時は capture file の現在サイズを `stdout_bytes` / `stderr_bytes` に記録し、前回 heartbeat からどちらかの bytes が増えた場合に `last_stream_change_at` を更新する。これにより watchdog は content を読まずに「ラッパは生きているが CLI 出力が進んでいない」状態を検出できる。CLI が進捗を stdout/stderr に出さない場合でも、絶対 timeout は `state.started_at` と現在時刻から利用側が計算する。
+
+内部 stall watchdog は `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` に正の整数を指定した場合だけ有効にする。指定秒数 stdout/stderr bytes が増えなければ wrapper が子 CLI を kill し、`stall_timeout` event、`state.phase = "stalled"`、exit code `124`、response 未生成時の failed response を残す。既定値は `0` で無効とし、silent な CLI の正常動作を誤 kill しない。
 
 `state.duration_ms` は終了時に `dispatch_end` が書く値とし、実行中の timeout 判定には使わない。実行中の経過時間は `state.started_at` を読み、利用側が現在時刻との差分で計算する。
 
@@ -276,7 +278,27 @@ jq -r '.events[] | select(.kind == "dispatch_end")' "$observe_file"
 
 成果物: 公開仕様と配布コピーが実装と一致
 
-### Step 7: (未着手) archive 化
+### Step 7: (完了) stall watchdog
+
+- `delegate_observe_wait_with_heartbeat` が `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` を読む
+- 指定秒数 `last_stream_change_at` が進まない場合、子 CLI を kill して exit code `124` を返す
+- observe JSON に `stall_timeout` event と `state.phase = "stalled"` を書く
+- response 未生成時は既存の failed response 生成経路に乗せる
+- 通常監視では stdout/stderr content を読まず、byte counter と timestamp だけを見る
+
+成果物: 停滞した子 CLI を観測だけでなく自動回復まで閉じる
+
+### Step 8: (完了) run_dir retention
+
+- `DELEGATE_RUN_RETENTION_DAYS` を追加し、既定は `0`（無効）にする
+- request 準備時に同じ `DELEGATE_WORK_DIR` 配下の古い `delegate_*` run directory を削除する
+- `state.phase == "running"` の observe JSON を持つ directory は削除しない
+- request / response / observe JSON は監査・デバッグ用に残す
+- README / README_ja / spec に env と運用を追記する
+
+成果物: repo-local WORK_DIR の scratch 肥大を任意設定で抑制できる
+
+### Step 9: (未着手) archive 化
 
 - 実装完了後、永続情報が design docs に移っていることを確認する
 - 本ドキュメントを `docs/archive/delegate-worker-observability.archive.md` に移す

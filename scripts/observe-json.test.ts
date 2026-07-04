@@ -9,6 +9,7 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 interface ObserveJson {
   schema_version: number
   state: {
+    phase?: string
     dispatcher_pid?: number
     pid?: number
     exit_code?: number
@@ -17,7 +18,13 @@ interface ObserveJson {
     child_pid?: number
     pid?: number
   }
-  events: { kind: string; dispatcher_pid?: number }[]
+  events: {
+    kind: string
+    dispatcher_pid?: number
+    child_pid?: number
+    timeout_seconds?: number
+    idle_seconds?: number
+  }[]
   streams: {
     stdout: { bytes: number; truncated: boolean; content: string }
     stderr: { bytes: number; truncated: boolean; content: string }
@@ -124,6 +131,20 @@ const expectCappedStreams = (observe: ObserveJson): void => {
   expect(observe.streams.stderr.content).toBe('7890')
 }
 
+const splitStatusAndObserve = (output: string): { status: number; observe: ObserveJson } => {
+  const [statusLine, ...jsonLines] = output.trimEnd().split('\n')
+  const status = Number(statusLine.replace(/^STATUS:/, ''))
+  return { observe: parseObserveJson(jsonLines.join('\n')), status }
+}
+
+const findRequiredEvent = (observe: ObserveJson, kind: string): ObserveJson['events'][number] => {
+  const index = observe.events.findIndex((candidate) => candidate.kind === kind)
+  if (index === -1) {
+    throw new Error(`missing ${kind} event`)
+  }
+  return observe.events[index]
+}
+
 describe('observe-json.sh', () => {
   it('records dispatcher and child pid with dispatch events', () => {
     const workDir = makeWorkDir()
@@ -198,5 +219,64 @@ describe('observe-json.sh', () => {
     expect(
       existsSync(path.join(workDir, 'run', 'delegate_chore_20260704_120000_abcde_res.md'))
     ).toBe(true)
+  })
+
+  it('kills a stalled child and records a stall timeout event', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      stdout_capture="$run_dir/worker-stdout.capture"
+      stderr_capture="$run_dir/worker-stderr.capture"
+      mkdir -p "$run_dir"
+      : >"$stdout_capture"
+      : >"$stderr_capture"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      delegate_observe_dispatch_start "$observe" "$run_dir" claude 12345
+      sleep 20 >"$stdout_capture" 2>"$stderr_capture" &
+      child_pid=$!
+      if DELEGATE_OBSERVE_HEARTBEAT_INTERVAL=1 DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS=1 delegate_observe_wait_with_heartbeat "$observe" "$run_dir" claude "$child_pid" "$stdout_capture" "$stderr_capture"; then
+        status=0
+      else
+        status=$?
+      fi
+      delegate_observe_dispatch_end "$observe" "$run_dir" claude 12345 "$status" false
+      printf 'STATUS:%s\\n' "$status"
+      cat "$observe"
+      `
+    )
+    const { status, observe } = splitStatusAndObserve(output)
+    const stallEvent = findRequiredEvent(observe, 'stall_timeout')
+
+    expect(status).toBe(124)
+    expect(observe.state.phase).toBe('stalled')
+    expect(stallEvent.timeout_seconds).toBe(1)
+    expect(stallEvent.idle_seconds).toBeGreaterThanOrEqual(1)
+  })
+
+  it('removes old run directories while keeping running runs during build-request', () => {
+    const workDir = makeWorkDir()
+    runBash(
+      `
+      set -euo pipefail
+      old_dir="${workDir}/delegate_chore_20260701_120000_oldaa"
+      running_dir="${workDir}/delegate_chore_20260701_120000_runaa"
+      mkdir -p "$old_dir" "$running_dir"
+      printf '{"state":{"phase":"ended"}}' >"\${old_dir}_observe.json"
+      printf '{"state":{"phase":"running"}}' >"\${running_dir}_observe.json"
+      touch -d '3 days ago' "$old_dir" "$running_dir"
+      DELEGATE_WORK_DIR="${workDir}" DELEGATE_RUN_RETENTION_DAYS=1 bash shared/build-request.sh chore haiku '[]' requester <<'MD'
+# Objective
+test
+MD
+      `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+
+    expect(existsSync(path.join(workDir, 'delegate_chore_20260701_120000_oldaa'))).toBe(false)
+    expect(existsSync(path.join(workDir, 'delegate_chore_20260701_120000_runaa'))).toBe(true)
   })
 })

@@ -122,20 +122,23 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 
 ## Environment variables
 
-| Variable                              | Default                                | Description                                           |
-| ------------------------------------- | -------------------------------------- | ----------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`               | per skill                              | Per-type model override                               |
-| `DELEGATE_WORK_DIR`                   | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                   |
-| `DELEGATE_RESPONSE_INLINE_MAX`        | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto` |
-| `DELEGATE_METRICS_FILE`               | unset                                  | Optional JSONL proxy-metric telemetry output path     |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL` | `10` seconds                           | Worker observe JSON heartbeat interval                |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`   | `65536` bytes (`0` = unlimited)        | Max stdout/stderr content stored in observe JSON      |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`        | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`      |
-| `DELEGATE_X_RESEARCH_MODEL`           | `grok-build`                           | Model for `delegate-x-research`                       |
+| Variable                                 | Default                                | Description                                                       |
+| ---------------------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`                  | per skill                              | Per-type model override                                           |
+| `DELEGATE_WORK_DIR`                      | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                               |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto`             |
+| `DELEGATE_METRICS_FILE`                  | unset                                  | Optional JSONL proxy-metric telemetry output path                 |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                           | Worker observe JSON heartbeat interval                            |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                         | Kill a child after this many seconds without stream byte growth   |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)        | Max stdout/stderr content stored in observe JSON                  |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                         | Delete old per-run scratch directories during request preparation |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`                  |
+| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                           | Model for `delegate-x-research`                                   |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
 For reproducible local debugging and external watchdogs, set `DELEGATE_WORK_DIR=.temp/delegate/work` so request, response, observe JSON, and per-run scratch files stay under a repo-local ignored directory.
+Set `DELEGATE_RUN_RETENTION_DAYS` to prune old per-run scratch directories in that work directory; request, response, and observe JSON files are kept for audit/debugging.
 
 Documented model names for `DELEGATE_<TYPE>_MODEL`:
 
