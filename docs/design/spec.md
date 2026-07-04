@@ -194,6 +194,10 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 
 request / response と同じペアトークンから `<pair>_observe.json` と `<pair>/` run_dir を導出する。`prepare.sh` は `request_file` / `response_file` に加えて `run_dir` / `observe_file` を stdout JSON で返し、親は通常経路では observe JSON 全体や stdout/stderr content を読まず、`jq` で必要な小さい field だけを読む。
 
+`dispatch.sh` と各 delegate wrapper は `run_dir` を必ず受け取り、wrapper-local な scratch file（隔離 home、last-message、stdout/stderr capture file、observe lock、`tmp/` 等）をすべてその配下に置く。共有 `DELEGATE_WORK_DIR` 直下には置かず、同じ `DELEGATE_WORK_DIR` で複数 delegate が並行しても run ごとの scratch と observe JSON が混ざらないことを契約とする。
+
+observe JSON に記録する `backend` は model prefix ではなく実行系名（`claude` / `codex` / `devin` / `cursor`）に固定する。モデル名は `run.model` に持つ。
+
 ```json
 {
   "schema_version": 1,
@@ -311,6 +315,15 @@ jq '{phase: .state.phase, started_at: .state.started_at, heartbeat: .heartbeat.t
 - `responder_session_id`: 必須。リクエスト先（子）のプロセス / セッション ID（追跡・デバッグ用）
 - `index` / `sections`: 報告 Markdown（Summary / Changed files / Commands / Verification / Findings / Blockers / Error）の md2idx 出力。検証結果は構造化フィールドに持たず、報告 Markdown の Verification section に収め、main は `status` の次にこの section だけを必要時に引く
 - JSON 書き出し後、人間向けに `${response_file%.json}.md` を補助生成する
+
+### failed response（wrapper 生成）
+
+子 CLI が異常終了し、かつ response_file が未生成の場合、wrapper は protocol v1 の短い failed response を best-effort で生成する。親の読み取り経路を `read-response.sh auto` に統一しつつ、secret や巨大ログの混入を避ける。
+
+- `status: failed`
+- `responder_session_id: wrapper:<backend>:<response basename>`
+- report は Summary / Error / Logs の短い section に留め、stderr の全文は埋め込まず observe JSON path と短い要約だけを載せる
+- `npx md2idx` や `jq` が使えない段階では failed response 生成に固執せず、observe event と stderr 保存を優先して既存の stderr exit に fallback する
 
 ### md2idx（トークン圧縮の核）
 
