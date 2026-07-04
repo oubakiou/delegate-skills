@@ -69,6 +69,8 @@ resolve-model.sh <種別env名> <skill固有デフォルト>
 
 env に入れる値は Claude エイリアス（claude -p の --model 引数対応）、`gpt-*` モデルID（Codex へ渡す）、`swe-*` モデルID（Devin CLI へそのまま渡す）、`devin-*` モデルID（Devin CLI へ渡す際にプレフィックスを剥離）、`composer-*` モデルID（agent CLI へそのまま渡す）、`cursor-*` モデルID（agent CLI へ渡す際にプレフィックスを剥離）の6系統に限定する。
 
+`prepare.sh` / `prepare-imagegen.sh` は解決した `model` に加え、解決元を `model_source: "env" | "default"` として stdout JSON と observe JSON の `run.model_source` に記録する。種別 env が未設定または空文字の場合は `default`、非空の場合は `env` とする。
+
 ## 5. 実行系の四分岐
 
 `resolve-model.sh` の出力プレフィックスで選ぶ。分岐は決定論的なので main agent には委ねず、`dispatch.sh` が行う。
@@ -204,6 +206,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
   "run": {
     "task_type": "implement",
     "model": "sonnet",
+    "model_source": "default",
     "backend": "claude",
     "request_file": "..._req.json",
     "response_file": "..._res.json",
@@ -254,6 +257,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 ```
 
 - `state.phase`: `prepared | running | stalled | ended`
+- `run.model_source`: `env | default`。`prepare.sh` / `prepare-imagegen.sh` 経由で初期化された observe JSON に入り、wrapper が直接初期化した fallback 経路では省略される場合がある
 - `state.dispatcher_pid`: `dispatch.sh` または専用 wrapper の管理プロセス PID。子 CLI の kill 対象ではない
 - `heartbeat.child_pid`: 実際の子 CLI PID。子 CLI 起動前の preflight failure では dispatcher PID が入る場合がある
 - `state.duration_ms`: 終了時だけ設定する。実行中 timeout は `state.started_at` と現在時刻から利用側が計算する

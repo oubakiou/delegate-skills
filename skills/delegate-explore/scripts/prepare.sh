@@ -11,7 +11,7 @@ set -euo pipefail
 # Usage: prepare.sh <task_type> <type_env_name> <default_model> <parent_task_type_chain_json> <requester_session_id>
 #   リクエスト本文 Markdown は stdin から渡す（見出しは build-request.sh と同じ）。
 #   parent_task_type_chain_json は top-level 起動なら空 or "[]" でよい。
-# stdout: {"model":"...","task_type_chain":[...],"request_file":"...","response_file":"...","run_dir":"...","observe_file":"..."}（JSON）
+# stdout: {"model":"...","model_source":"env|default","task_type_chain":[...],"request_file":"...","response_file":"...","run_dir":"...","observe_file":"..."}（JSON）
 # telemetry: DELEGATE_METRICS_FILE が設定されたときだけ JSONL に proxy metric を追記する
 # exit: 2=引数エラー / 3=前提条件不足(npx/jq) / 4=委譲サイクル / 1=md2idx 失敗・空 index/sections
 
@@ -46,6 +46,7 @@ append_metrics() {
       --arg type_env "$type_env" \
       --arg default_model "$default_model" \
       --arg model "$model" \
+      --arg model_source "$model_source" \
       --arg requester_session_id "$requester_session_id" \
       --arg request_file "$request_file" \
       --arg response_file "$response_file" \
@@ -63,6 +64,7 @@ append_metrics() {
         type_env: $type_env,
         default_model: $default_model,
         model: $model,
+        model_source: $model_source,
         requester_session_id: $requester_session_id,
         task_type_chain: $task_type_chain,
         request_file: $request_file,
@@ -83,6 +85,11 @@ append_metrics() {
 bash "$script_dir/check-md2idx.sh"
 
 # モデル解決（種別env → 既定）
+if [ -n "${!type_env:-}" ]; then
+  model_source="env"
+else
+  model_source="default"
+fi
 model="$(bash "$script_dir/resolve-model.sh" "$type_env" "$default_model")"
 
 # 多段委譲チェーン（同一種別が二度なら exit 4）。新チェーン（parent + 自種別）を得る。
@@ -98,14 +105,15 @@ body_bytes="$(printf '%s' "$body" | wc -c | tr -d '[:space:]')"
 body_chars="$(printf '%s' "$body" | wc -m | tr -d '[:space:]')"
 body_lines="$(printf '%s' "$body" | wc -l | tr -d '[:space:]')"
 backend="$(delegate_observe_backend_for "$task_type" "$model")"
-delegate_observe_init "$observe_file" "$run_dir" "$task_type" "$model" "$backend" "$request_file" "$response_file" "$requester_session_id"
+delegate_observe_init "$observe_file" "$run_dir" "$task_type" "$model" "$backend" "$request_file" "$response_file" "$requester_session_id" "$model_source"
 append_metrics
 
 jq -n \
   --arg model "$model" \
+  --arg model_source "$model_source" \
   --argjson chain "$task_type_chain" \
   --arg req "$request_file" \
   --arg res "$response_file" \
   --arg run_dir "$run_dir" \
   --arg observe_file "$observe_file" \
-  '{model: $model, task_type_chain: $chain, request_file: $req, response_file: $res, run_dir: $run_dir, observe_file: $observe_file}'
+  '{model: $model, model_source: $model_source, task_type_chain: $chain, request_file: $req, response_file: $res, run_dir: $run_dir, observe_file: $observe_file}'

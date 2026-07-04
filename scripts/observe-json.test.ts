@@ -8,6 +8,9 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 interface ObserveJson {
   schema_version: number
+  run: {
+    model_source?: string
+  }
   state: {
     phase?: string
     dispatcher_pid?: number
@@ -168,6 +171,70 @@ describe('observe-json.sh', () => {
       `
     )
     expectDispatchObserve(parseObserveJson(output))
+  })
+
+  it('records model source when observe init receives it', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore gpt-5.4-mini codex req.json res.json requester env
+      cat "$observe"
+      `
+    )
+
+    expect(parseObserveJson(output).run.model_source).toBe('env')
+  })
+
+  it('returns model source in prepare output and observe JSON', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      DELEGATE_WORK_DIR="${workDir}" DELEGATE_CHORE_MODEL=gpt-5.4-mini bash shared/prepare.sh chore DELEGATE_CHORE_MODEL haiku '[]' requester <<'MD'
+# Objective
+test
+MD
+      `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+    const prepared = parseJson(output)
+    if (!isRecord(prepared) || typeof prepared.observe_file !== 'string') {
+      throw new Error('invalid prepare output')
+    }
+    const observe = readObserveJson(prepared.observe_file)
+
+    expect(prepared.model).toBe('gpt-5.4-mini')
+    expect(prepared.model_source).toBe('env')
+    expect(observe.run.model_source).toBe('env')
+  })
+
+  it('marks prepare model source as default when the type env is unset', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      unset DELEGATE_CHORE_MODEL
+      DELEGATE_WORK_DIR="${workDir}" bash shared/prepare.sh chore DELEGATE_CHORE_MODEL haiku '[]' requester <<'MD'
+# Objective
+test
+MD
+      `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+    const prepared = parseJson(output)
+    if (!isRecord(prepared) || typeof prepared.observe_file !== 'string') {
+      throw new Error('invalid prepare output')
+    }
+    const observe = readObserveJson(prepared.observe_file)
+
+    expect(prepared.model).toBe('haiku')
+    expect(prepared.model_source).toBe('default')
+    expect(observe.run.model_source).toBe('default')
   })
 
   it('imports stream content through jq rawfile and applies byte cap', () => {

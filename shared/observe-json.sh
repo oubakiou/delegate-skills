@@ -71,6 +71,7 @@ delegate_observe_init() {
   local request_file="$6"
   local response_file="$7"
   local requester_session_id="$8"
+  local model_source="${9:-}"
 
   delegate_observe_with_lock \
     "$observe_file" \
@@ -83,7 +84,8 @@ delegate_observe_init() {
     "$backend" \
     "$request_file" \
     "$response_file" \
-    "$requester_session_id"
+    "$requester_session_id" \
+    "$model_source"
 }
 
 delegate_observe_init_inner() {
@@ -95,6 +97,7 @@ delegate_observe_init_inner() {
   local request_file="$6"
   local response_file="$7"
   local requester_session_id="$8"
+  local model_source="${9:-}"
 
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -110,6 +113,7 @@ delegate_observe_init_inner() {
     --arg response_file "$response_file" \
     --arg run_dir "$run_dir" \
     --arg requester_session_id "$requester_session_id" \
+    --arg model_source "$model_source" \
     '{
       schema_version: 1,
       run: {
@@ -151,7 +155,8 @@ delegate_observe_init_inner() {
         stdout: {bytes: 0, truncated: false, content: ""},
         stderr: {bytes: 0, truncated: false, content: ""}
       }
-    }' >"$tmp"
+    }
+    | if $model_source == "" then . else .run.model_source = $model_source end' >"$tmp"
 
   mv "$tmp" "$observe_file"
 }
