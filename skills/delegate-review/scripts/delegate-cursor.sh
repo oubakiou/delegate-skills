@@ -7,12 +7,12 @@ set -euo pipefail
 
 # composer-* / cursor-* モデル指定時の Cursor agent CLI 子プロセス起動ラッパ
 # 起動骨格は delegate-claude.sh と対称構造。
-# Usage: delegate-cursor.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]
+# Usage: delegate-cursor.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]
 #   <model> は composer-*（そのまま agent CLI に渡す）または cursor-*（プレフィックスを剥離して渡す）
 # stdout: response_file のパスのみ（本文は親 context に入れない）
 
 if [ $# -lt 4 ]; then
-  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]" >&2
+  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]" >&2
   exit 2
 fi
 
@@ -23,6 +23,9 @@ REQUEST_FILE="$3"
 RESPONSE_FILE="$4"
 RUN_DIR="${5:-${RESPONSE_FILE%_res.json}}"
 OBSERVE_FILE="${6:-${RESPONSE_FILE%_res.json}_observe.json}"
+SESSION_MODE="${7:-}"
+RESUME_ARG="${8:-}"
+SESSION_HOME="${9:-}"
 
 # cursor-* プレフィックスは剥離して agent CLI に渡す（cursor-glm-5.2-high → glm-5.2-high）
 # composer-* は Cursor 専用モデルなのでそのまま渡す
@@ -66,15 +69,54 @@ finish_without_child() {
   delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$exit_code" || true
   delegate_observe_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$$" "$stdout_capture" "$stderr_capture"
   delegate_observe_import_streams "$OBSERVE_FILE" "$WORK_DIR" "$stdout_capture" "$stderr_capture"
+  if declare -F record_run_context >/dev/null; then
+    record_run_context
+  fi
   printf '%s\n' "$RESPONSE_FILE"
   exit "$exit_code"
 }
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+WORKTREE_ROOT="$REPO_ROOT"
+
+record_run_context() {
+  if [ "$SESSION_MODE" = "resumable" ] || [ "$SESSION_MODE" = "followup" ]; then
+    delegate_observe_run_context_update "$OBSERVE_FILE" "$WORK_DIR" "$REPO_ROOT" "$WORKTREE_ROOT" || true
+  fi
+}
+
+CURSOR_CHAT_ID=""
+case "$SESSION_MODE" in
+  "")
+    ;;
+  resumable)
+    ;;
+  followup)
+    if [ -z "$RESUME_ARG" ]; then
+      finish_without_child 5 "ERROR: follow-up requires resume_id."
+    fi
+    CURSOR_CHAT_ID="$RESUME_ARG"
+    ;;
+  *)
+    finish_without_child 2 "ERROR: session_mode must be empty, resumable, or followup: $SESSION_MODE"
+    ;;
+esac
 
 if ! command -v agent >/dev/null 2>&1; then
   finish_without_child 3 "ERROR: agent CLI が見つかりません。"
 fi
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [ "$SESSION_MODE" = "resumable" ]; then
+  if ! CURSOR_CHAT_ID="$(TMPDIR="$WORK_DIR/tmp" agent create-chat 2>"$WORK_DIR/cursor-create-chat.stderr")" || [ -z "$CURSOR_CHAT_ID" ]; then
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor create-chat failed" || true
+    finish_without_child 5 "ERROR: agent create-chat failed."
+  fi
+  CURSOR_CHAT_ID="$(printf '%s\n' "$CURSOR_CHAT_ID" | tail -n 1 | tr -d '\r')"
+  if [ -z "$CURSOR_CHAT_ID" ]; then
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor create-chat did not return a chat id" || true
+    finish_without_child 5 "ERROR: agent create-chat did not return a chat id."
+  fi
+fi
 
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
@@ -95,6 +137,10 @@ agent_args=(
   --force
   --model "$MODEL"
 )
+
+if [ -n "$CURSOR_CHAT_ID" ]; then
+  agent_args+=(--resume "$CURSOR_CHAT_ID")
+fi
 
 agent_args+=("$PROMPT")
 
@@ -131,6 +177,13 @@ fi
 
 measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" cursor_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" cursor_json "$measured_usage" || true
+
+if [ "$SESSION_MODE" = "resumable" ]; then
+  delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$CURSOR_CHAT_ID" cursor_create_chat resumable "" || true
+elif [ "$SESSION_MODE" = "followup" ]; then
+  delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$CURSOR_CHAT_ID" cursor_create_chat resumable "" || true
+fi
+record_run_context
 
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"

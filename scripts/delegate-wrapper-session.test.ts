@@ -8,6 +8,7 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 interface FakeCliLog {
   args: string[]
+  command: string | null
   cwd: string
   env: {
     CLAUDE_CONFIG_DIR: string | null
@@ -62,20 +63,50 @@ const stringOrNullValue = (value: unknown): string | null => {
 
 const readUnknownJson = (filePath: string): unknown => JSON.parse(readFileSync(filePath, 'utf8'))
 
+const asLogRecords = (value: unknown): unknown[] => {
+  if (Array.isArray(value)) {
+    return value
+  }
+  return [value]
+}
+
 const readLog = (filePath: string): FakeCliLog => {
   const value = readUnknownJson(filePath)
-  if (!isRecord(value) || !Array.isArray(value.args) || !isRecord(value.env)) {
+  const records = asLogRecords(value)
+  const record = records[records.length - 1]
+  if (!isRecord(record) || !Array.isArray(record.args) || !isRecord(record.env)) {
     throw new Error('invalid fake CLI log')
   }
   return {
-    args: value.args.map(String),
-    cwd: stringOrNullValue(value.cwd) ?? '',
+    args: record.args.map(String),
+    command: stringOrNullValue(record.command),
+    cwd: stringOrNullValue(record.cwd) ?? '',
     env: {
-      CLAUDE_CONFIG_DIR: stringOrNullValue(value.env.CLAUDE_CONFIG_DIR),
-      CODEX_HOME: stringOrNullValue(value.env.CODEX_HOME),
-      TMPDIR: stringOrNullValue(value.env.TMPDIR),
+      CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
+      CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
+      TMPDIR: stringOrNullValue(record.env.TMPDIR),
     },
   }
+}
+
+const readLogs = (filePath: string): FakeCliLog[] => {
+  const value = readUnknownJson(filePath)
+  const records = asLogRecords(value)
+  return records.map((record) => {
+    if (!isRecord(record) || !Array.isArray(record.args) || !isRecord(record.env)) {
+      throw new Error('invalid fake CLI log')
+    }
+    return {
+      args: record.args.map(String),
+      command: stringOrNullValue(record.command),
+      cwd: stringOrNullValue(record.cwd) ?? '',
+      env: {
+        CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
+        CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
+        TMPDIR: stringOrNullValue(record.env.TMPDIR),
+      },
+    }
+  })
 }
 
 const parseBackendSession = (value: unknown): BackendSession | null => {
@@ -170,21 +201,81 @@ if (process.env.FAKE_CODEX_NO_THREAD !== '1') {
 console.log(JSON.stringify({type: 'turn.completed', usage: {input_tokens: 1, output_tokens: 1}}))
 `
 
-const fakeScript = (name: 'claude' | 'codex'): string => {
+const devinFakeScript = (): string => `#!/usr/bin/env node
+import fs from 'node:fs'
+const args = process.argv.slice(2)
+const prompt = args[args.indexOf('-p') + 1] || ''
+const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
+const responseFile = responseMatches[responseMatches.length - 1]
+if (responseFile) {
+  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+}
+const exportIndex = args.indexOf('--export')
+if (exportIndex !== -1 && process.env.FAKE_DEVIN_NO_SESSION !== '1') {
+  fs.writeFileSync(args[exportIndex + 1], JSON.stringify({session_id: 'devin-session-1', final_metrics: {prompt_tokens: 1, completion_tokens: 1}}))
+}
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
+`
+
+const cursorFakeScript = (): string => `#!/usr/bin/env node
+import fs from 'node:fs'
+const args = process.argv.slice(2)
+const entry = {args, command: 'agent', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}
+let logs = []
+try {
+  logs = JSON.parse(fs.readFileSync(process.env.FAKE_CLI_LOG, 'utf8'))
+  if (!Array.isArray(logs)) logs = [logs]
+} catch {}
+logs.push(entry)
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify(logs))
+if (args[0] === 'create-chat') {
+  if (process.env.FAKE_CURSOR_CREATE_CHAT_FAIL === '1') {
+    process.exit(7)
+  }
+  if (process.env.FAKE_CURSOR_NO_CHAT !== '1') {
+    console.log('cursor-chat-1')
+  }
+  process.exit(0)
+}
+const prompt = args[args.length - 1] || ''
+const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
+const responseFile = responseMatches[responseMatches.length - 1]
+if (responseFile) {
+  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+}
+console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_tokens: 1}}))
+`
+
+type Backend = 'claude' | 'codex' | 'devin' | 'cursor'
+
+const fakeScript = (name: Backend): string => {
   if (name === 'claude') {
     return claudeFakeScript()
   }
-  return codexFakeScript()
+  if (name === 'codex') {
+    return codexFakeScript()
+  }
+  if (name === 'devin') {
+    return devinFakeScript()
+  }
+  return cursorFakeScript()
 }
 
-const writeFakeCli = (binDir: string, name: 'claude' | 'codex'): void => {
-  const scriptPath = path.join(binDir, name)
-  writeFileSync(scriptPath, fakeScript(name))
+const cliName = (backend: Backend): string => {
+  if (backend === 'cursor') {
+    return 'agent'
+  }
+  return backend
+}
+
+const writeFakeCli = (binDir: string, backend: Backend): void => {
+  const scriptPath = path.join(binDir, cliName(backend))
+  writeFileSync(scriptPath, fakeScript(backend))
   chmodSync(scriptPath, 0o755)
 }
 
 const makeFixturePaths = (
-  backend: 'claude' | 'codex'
+  backend: Backend
 ): Omit<Fixture, 'env'> & {
   binDir: string
   homeDir: string
@@ -205,7 +296,7 @@ const makeFixturePaths = (
 
 const writeFixtureFiles = (
   paths: Omit<Fixture, 'env'> & { binDir: string; homeDir: string },
-  backend: 'claude' | 'codex'
+  backend: Backend
 ): void => {
   mkdirSync(paths.binDir, { recursive: true })
   mkdirSync(paths.runDir, { recursive: true })
@@ -227,14 +318,18 @@ const fixtureEnv = (
   PATH: `${paths.binDir}:${process.env.PATH ?? ''}`,
 })
 
-const makeFixture = (backend: 'claude' | 'codex'): Fixture => {
+const makeFixture = (backend: Backend): Fixture => {
   const paths = makeFixturePaths(backend)
   writeFixtureFiles(paths, backend)
   return { ...paths, env: fixtureEnv(paths) }
 }
 
 const runWrapper = (
-  scriptName: 'delegate-claude.sh' | 'delegate-codex.sh',
+  scriptName:
+    | 'delegate-claude.sh'
+    | 'delegate-codex.sh'
+    | 'delegate-devin.sh'
+    | 'delegate-cursor.sh',
   args: string[],
   env: NodeJS.ProcessEnv
 ): { status: number } => {
@@ -273,6 +368,26 @@ const codexArgs = (fixture: Fixture, modeArgs: string[] = []): string[] => [
   ...modeArgs,
 ]
 
+const devinArgs = (fixture: Fixture, modeArgs: string[] = []): string[] => [
+  'devin-glm-5.2',
+  'implement',
+  fixture.requestFile,
+  fixture.responseFile,
+  fixture.runDir,
+  fixture.observeFile,
+  ...modeArgs,
+]
+
+const cursorArgs = (fixture: Fixture, modeArgs: string[] = []): string[] => [
+  'cursor-glm-5.2-high',
+  'implement',
+  fixture.requestFile,
+  fixture.responseFile,
+  fixture.runDir,
+  fixture.observeFile,
+  ...modeArgs,
+]
+
 const runClaude = (
   fixture: Fixture,
   modeArgs: string[] = [],
@@ -284,6 +399,18 @@ const runCodex = (
   modeArgs: string[] = [],
   env: NodeJS.ProcessEnv = fixture.env
 ): { status: number } => runWrapper('delegate-codex.sh', codexArgs(fixture, modeArgs), env)
+
+const runDevin = (
+  fixture: Fixture,
+  modeArgs: string[] = [],
+  env: NodeJS.ProcessEnv = fixture.env
+): { status: number } => runWrapper('delegate-devin.sh', devinArgs(fixture, modeArgs), env)
+
+const runCursor = (
+  fixture: Fixture,
+  modeArgs: string[] = [],
+  env: NodeJS.ProcessEnv = fixture.env
+): { status: number } => runWrapper('delegate-cursor.sh', cursorArgs(fixture, modeArgs), env)
 
 interface ExpectWrapperRun {
   fixture: Fixture
@@ -364,6 +491,65 @@ const expectCodexFollowup = ({ log, observe, result, sessionHome }: ExpectFollow
   expect(log.cwd).toBe(repoRoot)
   expect(log.env.CODEX_HOME).toBe(sessionHome)
   expect(requireBackendSession(observe).resume_id).toBe('thread-1')
+}
+
+const expectDevinResumable = ({ log, observe, result }: ExpectWrapperRun): void => {
+  const backendSession = requireBackendSession(observe)
+  const runContext = requireRunContext(observe)
+  expect(result.status).toBe(0)
+  expect(log.args).toContain('--export')
+  expect(log.args).not.toContain('--resume')
+  expect(backendSession.persistence).toBe('resumable')
+  expect(backendSession.resume_id).toBe('devin-session-1')
+  expect(backendSession.resume_source).toBe('devin_atif_export')
+  expect(backendSession.home_dir).toBeNull()
+  expect(runContext.repo_root).toBe(repoRoot)
+}
+
+const expectDevinFollowup = ({ log, observe, result }: ExpectWrapperRun): void => {
+  expect(result.status).toBe(0)
+  expect(log.args).toContain('--resume')
+  expect(log.args).toContain('devin-session-1')
+  expect(log.args).toContain('--export')
+  expect(requireBackendSession(observe).resume_id).toBe('devin-session-1')
+}
+
+const expectCursorResumableArgs = (
+  createChatLog: FakeCliLog,
+  log: FakeCliLog,
+  result: { status: number }
+): void => {
+  expect(result.status).toBe(0)
+  expect(createChatLog.args).toEqual(['create-chat'])
+  expect(log.args).toContain('--resume')
+  expect(log.args).toContain('cursor-chat-1')
+}
+
+const expectCursorResumableObserve = (observe: ObserveJson): void => {
+  const backendSession = requireBackendSession(observe)
+  const runContext = requireRunContext(observe)
+  expect(backendSession.persistence).toBe('resumable')
+  expect(backendSession.resume_id).toBe('cursor-chat-1')
+  expect(backendSession.resume_source).toBe('cursor_create_chat')
+  expect(backendSession.home_dir).toBeNull()
+  expect(runContext.worktree_root).toBe(repoRoot)
+}
+
+const expectCursorResumable = ({
+  log,
+  observe,
+  result,
+  createChatLog,
+}: ExpectWrapperRun & { createChatLog: FakeCliLog }): void => {
+  expectCursorResumableArgs(createChatLog, log, result)
+  expectCursorResumableObserve(observe)
+}
+
+const expectCursorFollowup = ({ log, observe, result }: ExpectWrapperRun): void => {
+  expect(result.status).toBe(0)
+  expect(log.args).toContain('--resume')
+  expect(log.args).toContain('cursor-chat-1')
+  expect(requireBackendSession(observe).resume_id).toBe('cursor-chat-1')
 }
 
 const prepareClaudeSessionHome = (workDir: string): string => {
@@ -486,5 +672,112 @@ describe('delegate-codex.sh session modes', () => {
     const observe = readObserve(fixture.observeFile)
 
     expectUnavailable(result, observe)
+  })
+})
+
+describe('delegate-devin.sh session modes', () => {
+  it('keeps normal runs without --resume', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--export')
+    expect(log.args).not.toContain('--resume')
+  })
+
+  it('records export session_id for resumable runs', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, ['resumable', '', ''])
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expectDevinResumable({ fixture, log, observe, result })
+  })
+
+  it('resumes follow-up runs with --resume', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, ['followup', 'devin-session-1', ''])
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expectDevinFollowup({ fixture, log, observe, result })
+  })
+
+  it('fails closed before launching Devin when resume_id is missing', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, ['followup', '', ''])
+
+    expectFailedWithoutChild(fixture, result)
+  })
+
+  it('records unavailable persistence when export session_id is absent', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_DEVIN_NO_SESSION: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectUnavailable(result, observe)
+  })
+})
+
+describe('delegate-cursor.sh session modes', () => {
+  it('keeps normal runs without create-chat or --resume', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).not.toContain('create-chat')
+    expect(log.args).not.toContain('--resume')
+  })
+
+  it('creates a chat and starts resumable runs with --resume', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['resumable', '', ''])
+    const logs = readLogs(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expectCursorResumable({
+      createChatLog: logs[0],
+      fixture,
+      log: logs[1],
+      observe,
+      result,
+    })
+  })
+
+  it('resumes follow-up runs with --resume', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['followup', 'cursor-chat-1', ''])
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expectCursorFollowup({ fixture, log, observe, result })
+  })
+
+  it('fails closed before launching Cursor when resume_id is missing', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['followup', '', ''])
+
+    expectFailedWithoutChild(fixture, result)
+  })
+
+  it('fails closed and records unavailable persistence when create-chat fails', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CURSOR_CREATE_CHAT_FAIL: '1',
+    })
+    const logs = readLogs(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(5)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(logs).toHaveLength(1)
+    expect(logs[0].args).toEqual(['create-chat'])
+    expect(requireBackendSession(observe).persistence).toBe('unavailable')
   })
 })

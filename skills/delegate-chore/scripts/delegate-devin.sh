@@ -7,12 +7,12 @@ set -euo pipefail
 
 # swe-* / devin-* モデル指定時の Devin CLI 子プロセス起動ラッパ
 # 起動骨格は delegate-claude.sh と対称構造。
-# Usage: delegate-devin.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]
+# Usage: delegate-devin.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]
 #   <model> は swe-*（そのまま devin CLI に渡す）または devin-*（プレフィックスを剥離して渡す）
 # stdout: response_file のパスのみ（本文は親 context に入れない）
 
 if [ $# -lt 4 ]; then
-  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]" >&2
+  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]" >&2
   exit 2
 fi
 
@@ -23,6 +23,9 @@ REQUEST_FILE="$3"
 RESPONSE_FILE="$4"
 RUN_DIR="${5:-${RESPONSE_FILE%_res.json}}"
 OBSERVE_FILE="${6:-${RESPONSE_FILE%_res.json}_observe.json}"
+SESSION_MODE="${7:-}"
+RESUME_ARG="${8:-}"
+SESSION_HOME="${9:-}"
 
 # devin-* プレフィックスは剥離して devin CLI に渡す（devin-glm-5.2 → glm-5.2）
 # swe-* は devin CLI がそのまま受理するので剥離しない
@@ -59,15 +62,47 @@ finish_without_child() {
   delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$exit_code" || true
   delegate_observe_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$$" "$stdout_capture" "$stderr_capture"
   delegate_observe_import_streams "$OBSERVE_FILE" "$WORK_DIR" "$stdout_capture" "$stderr_capture"
+  if declare -F record_run_context >/dev/null; then
+    record_run_context
+  fi
   printf '%s\n' "$RESPONSE_FILE"
   exit "$exit_code"
 }
 
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+WORKTREE_ROOT="$REPO_ROOT"
+
+record_run_context() {
+  if [ "$SESSION_MODE" = "resumable" ] || [ "$SESSION_MODE" = "followup" ]; then
+    delegate_observe_run_context_update "$OBSERVE_FILE" "$WORK_DIR" "$REPO_ROOT" "$WORKTREE_ROOT" || true
+  fi
+}
+
+extract_devin_session_id() {
+  if [ ! -s "$devin_export" ]; then
+    return 1
+  fi
+  jq -r '.session_id // .session.id // empty' "$devin_export"
+}
+
+case "$SESSION_MODE" in
+  "")
+    ;;
+  resumable)
+    ;;
+  followup)
+    if [ -z "$RESUME_ARG" ]; then
+      finish_without_child 5 "ERROR: follow-up requires resume_id."
+    fi
+    ;;
+  *)
+    finish_without_child 2 "ERROR: session_mode must be empty, resumable, or followup: $SESSION_MODE"
+    ;;
+esac
+
 if ! command -v devin >/dev/null 2>&1; then
   finish_without_child 3 "ERROR: devin CLI が見つかりません。"
 fi
-
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
@@ -90,6 +125,10 @@ devin_args=(
   --permission-mode dangerous
   --export "$devin_export"
 )
+
+if [ "$SESSION_MODE" = "followup" ]; then
+  devin_args+=(--resume "$RESUME_ARG")
+fi
 
 cleanup() {
   if [ -n "${child_pid:-}" ] && kill -0 "$child_pid" 2>/dev/null; then
@@ -124,6 +163,18 @@ fi
 
 measured_usage="$(delegate_observe_usage_from_devin_export "$devin_export" "$ORIGINAL_MODEL" "$backend" || delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" devin_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" devin_atif_export "$measured_usage" || true
+
+if [ "$SESSION_MODE" = "resumable" ]; then
+  devin_session_id="$(extract_devin_session_id || true)"
+  if [ -n "$devin_session_id" ]; then
+    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$devin_session_id" devin_atif_export resumable "" || true
+  else
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Devin export session_id was not found" || true
+  fi
+elif [ "$SESSION_MODE" = "followup" ]; then
+  delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$RESUME_ARG" devin_atif_export resumable "" || true
+fi
+record_run_context
 
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"
