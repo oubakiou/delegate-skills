@@ -229,6 +229,272 @@ delegate_observe_usage_parse_failed() {
   delegate_observe_event_json "$observe_file" "$run_dir" "$event_json"
 }
 
+delegate_observe_lineage_update() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local lineage_id="$3"
+  local followup_of="${4:-}"
+
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_lineage_update_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$lineage_id" \
+    "$followup_of"
+}
+
+delegate_observe_lineage_update_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local lineage_id="$3"
+  local followup_of="$4"
+  local tmp
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_lineage_XXXXX" --suffix=.json)"
+
+  jq \
+    --arg lineage_id "$lineage_id" \
+    --arg followup_of "$followup_of" \
+    '.lineage = {
+      lineage_id: $lineage_id,
+      followup_of: (if $followup_of == "" then null else $followup_of end)
+    }' \
+    "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
+delegate_observe_backend_session_update() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local backend="$3"
+  local model="$4"
+  local resume_id="$5"
+  local resume_source="$6"
+  local persistence="$7"
+  local home_dir="${8:-}"
+
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_backend_session_update_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$backend" \
+    "$model" \
+    "$resume_id" \
+    "$resume_source" \
+    "$persistence" \
+    "$home_dir"
+}
+
+delegate_observe_backend_session_update_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local backend="$3"
+  local model="$4"
+  local resume_id="$5"
+  local resume_source="$6"
+  local persistence="$7"
+  local home_dir="$8"
+  local tmp
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_backend_session_XXXXX" --suffix=.json)"
+
+  jq \
+    --arg backend "$backend" \
+    --arg model "$model" \
+    --arg resume_id "$resume_id" \
+    --arg resume_source "$resume_source" \
+    --arg persistence "$persistence" \
+    --arg home_dir "$home_dir" \
+    '.backend_session = {
+      backend: $backend,
+      model: $model,
+      resume_id: (if $resume_id == "" then null else $resume_id end),
+      resume_source: (if $resume_source == "" then null else $resume_source end),
+      persistence: $persistence,
+      home_dir: (if $home_dir == "" then null else $home_dir end)
+    }' \
+    "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
+delegate_observe_resume_unavailable() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local backend="$3"
+  local model="$4"
+  local reason="$5"
+  local home_dir="${6:-}"
+
+  delegate_observe_backend_session_update "$observe_file" "$run_dir" "$backend" "$model" "" "" unavailable "$home_dir"
+
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local event_json
+  event_json="$(jq -cn \
+    --arg ts "$now" \
+    --arg backend "$backend" \
+    --arg model "$model" \
+    --arg reason "$reason" \
+    '{kind: "resume_unavailable", ts: $ts, backend: $backend, model: $model, reason: $reason}')"
+  delegate_observe_event_json "$observe_file" "$run_dir" "$event_json"
+}
+
+delegate_observe_run_context_update() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local repo_root="$3"
+  local worktree_root="$4"
+
+  local repo_real worktree_real git_head git_branch dirty
+  repo_real="$(realpath "$repo_root")"
+  worktree_real="$(realpath "$worktree_root")"
+  git_head="$(git -C "$worktree_real" rev-parse HEAD)"
+  git_branch="$(git -C "$worktree_real" branch --show-current 2>/dev/null || true)"
+  if ! git -C "$worktree_real" diff --quiet --ignore-submodules -- || ! git -C "$worktree_real" diff --cached --quiet --ignore-submodules --; then
+    dirty=true
+  else
+    dirty=false
+  fi
+
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_run_context_update_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$repo_real" \
+    "$worktree_real" \
+    "$git_head" \
+    "$git_branch" \
+    "$dirty"
+}
+
+delegate_observe_run_context_update_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local repo_root="$3"
+  local worktree_root="$4"
+  local git_head="$5"
+  local git_branch="$6"
+  local dirty="$7"
+  local tmp
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_run_context_XXXXX" --suffix=.json)"
+
+  jq \
+    --arg repo_root "$repo_root" \
+    --arg worktree_root "$worktree_root" \
+    --arg git_head "$git_head" \
+    --arg git_branch "$git_branch" \
+    --argjson dirty "$dirty" \
+    '.run_context = {
+      repo_root: $repo_root,
+      worktree_root: $worktree_root,
+      git_head: $git_head,
+      git_branch: (if $git_branch == "" then null else $git_branch end),
+      dirty: $dirty
+    }' \
+    "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
+delegate_observe_followup_fail() {
+  printf 'follow-up unavailable: %s\n' "$1" >&2
+  return 1
+}
+
+delegate_observe_backend_supports_resume() {
+  case "$1" in
+    claude | codex | devin | cursor) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+delegate_observe_validate_followup() {
+  local previous_observe_file="$1"
+  local expected_backend="$2"
+  local expected_model="$3"
+  local expected_repo_root="$4"
+  local expected_worktree_root="$5"
+
+  if [ ! -s "$previous_observe_file" ]; then
+    delegate_observe_followup_fail "previous observe JSON is missing"
+    return $?
+  fi
+
+  local repo_real worktree_real
+  repo_real="$(realpath "$expected_repo_root")"
+  worktree_real="$(realpath "$expected_worktree_root")"
+
+  local previous
+  if ! previous="$(jq -e -c \
+    '{
+      backend: .backend_session.backend,
+      model: .backend_session.model,
+      resume_id: .backend_session.resume_id,
+      persistence: .backend_session.persistence,
+      repo_root: .run_context.repo_root,
+      worktree_root: .run_context.worktree_root,
+      git_head: .run_context.git_head
+    }' "$previous_observe_file")"; then
+    delegate_observe_followup_fail "previous observe JSON is invalid"
+    return $?
+  fi
+
+  local backend model resume_id persistence repo_root worktree_root git_head
+  backend="$(jq -r '.backend // empty' <<<"$previous")"
+  model="$(jq -r '.model // empty' <<<"$previous")"
+  resume_id="$(jq -r '.resume_id // empty' <<<"$previous")"
+  persistence="$(jq -r '.persistence // empty' <<<"$previous")"
+  repo_root="$(jq -r '.repo_root // empty' <<<"$previous")"
+  worktree_root="$(jq -r '.worktree_root // empty' <<<"$previous")"
+  git_head="$(jq -r '.git_head // empty' <<<"$previous")"
+
+  if ! delegate_observe_backend_supports_resume "$backend"; then
+    delegate_observe_followup_fail "unsupported backend: ${backend:-missing}"
+    return $?
+  fi
+  if [ "$persistence" != "resumable" ]; then
+    delegate_observe_followup_fail "backend_session.persistence is not resumable"
+    return $?
+  fi
+  if [ -z "$resume_id" ]; then
+    delegate_observe_followup_fail "backend_session.resume_id is missing"
+    return $?
+  fi
+  if [ -z "$repo_root" ] || [ -z "$worktree_root" ] || [ -z "$git_head" ]; then
+    delegate_observe_followup_fail "run_context required field is missing"
+    return $?
+  fi
+  if [ "$backend" != "$expected_backend" ]; then
+    delegate_observe_followup_fail "backend mismatch: expected $expected_backend, got $backend"
+    return $?
+  fi
+  if [ "$model" != "$expected_model" ]; then
+    delegate_observe_followup_fail "model mismatch: expected $expected_model, got $model"
+    return $?
+  fi
+  if [ "$repo_root" != "$repo_real" ]; then
+    delegate_observe_followup_fail "repo_root mismatch: expected $repo_real, got $repo_root"
+    return $?
+  fi
+  if [ "$worktree_root" != "$worktree_real" ]; then
+    delegate_observe_followup_fail "worktree_root mismatch: expected $worktree_real, got $worktree_root"
+    return $?
+  fi
+
+  local current_head
+  if ! current_head="$(git -C "$worktree_real" rev-parse HEAD)"; then
+    delegate_observe_followup_fail "current git_head is unavailable"
+    return $?
+  fi
+  if [ "$git_head" != "$current_head" ] && ! git -C "$worktree_real" merge-base --is-ancestor "$git_head" "$current_head"; then
+    delegate_observe_followup_fail "git_head is not current HEAD or its ancestor"
+    return $?
+  fi
+}
+
 delegate_observe_count_section_chars() {
   local file="$1"
   if [ ! -s "$file" ]; then

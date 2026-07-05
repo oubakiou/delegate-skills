@@ -8,8 +8,27 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 interface ObserveJson {
   schema_version: number
+  backend_session?: {
+    backend?: string
+    home_dir?: string | null
+    model?: string
+    persistence?: string
+    resume_id?: string | null
+    resume_source?: string | null
+  }
+  lineage?: {
+    followup_of?: string | null
+    lineage_id?: string
+  }
   run: {
     model_source?: string
+  }
+  run_context?: {
+    dirty?: boolean
+    git_branch?: string | null
+    git_head?: string
+    repo_root?: string
+    worktree_root?: string
   }
   state: {
     phase?: string
@@ -66,6 +85,33 @@ const runBash = (script: string, env: NodeJS.ProcessEnv = {}): string =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
+
+const errorOutputPart = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (Buffer.isBuffer(value)) {
+    return value.toString('utf8')
+  }
+  return ''
+}
+
+const runBashStatus = (
+  script: string,
+  env: NodeJS.ProcessEnv = {}
+): { output: string; status: number } => {
+  try {
+    const output = runBash(script, env)
+    return { output, status: 0 }
+  } catch (error) {
+    if (isRecord(error) && typeof error.status === 'number') {
+      const stdout = errorOutputPart(error.stdout)
+      const stderr = errorOutputPart(error.stderr)
+      return { output: `${stdout}${stderr}`, status: error.status }
+    }
+    throw error
+  }
+}
 
 const parseJson = (content: string): unknown => {
   const value: unknown = JSON.parse(content)
@@ -212,6 +258,33 @@ const expectEstimatedUsage = (observe: ObserveJson): void => {
   expect(usage.output_tokens).toBe(1)
   expect(usage.total_tokens).toBe(3)
 }
+
+const requireBackendSession = (
+  observe: ObserveJson
+): NonNullable<ObserveJson['backend_session']> => {
+  if (!observe.backend_session) {
+    throw new Error('missing backend_session')
+  }
+  return observe.backend_session
+}
+
+const requireRunContext = (observe: ObserveJson): NonNullable<ObserveJson['run_context']> => {
+  if (!observe.run_context) {
+    throw new Error('missing run_context')
+  }
+  return observe.run_context
+}
+
+const makeResumableObserve = (workDir: string, overrides = ''): string => `
+  source shared/observe-json.sh
+  run_dir="${workDir}/run"
+  observe="$run_dir/run_observe.json"
+  mkdir -p "$run_dir"
+  delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+  delegate_observe_backend_session_update "$observe" "$run_dir" codex gpt-5.5 thread-1 codex_json resumable "$run_dir/codex-home"
+  delegate_observe_run_context_update "$observe" "$run_dir" "${repoRoot}" "${repoRoot}"
+  ${overrides}
+`
 
 describe('observe-json.sh', () => {
   it('records dispatcher and child pid with dispatch events', () => {
@@ -463,7 +536,260 @@ MD
       expect(observe.events.map((event) => event.kind)).toContain('usage_parse_failed')
     })
   })
+})
 
+describe('session reuse metadata merge', () => {
+  it('merges lineage, backend session, and realpath run context', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" implement gpt-5.5 codex req.json res.json requester
+        delegate_observe_lineage_update "$observe" "$run_dir" lineage-1 previous-observe.json
+        delegate_observe_backend_session_update "$observe" "$run_dir" codex gpt-5.5 thread-1 codex_json resumable "$run_dir/codex-home"
+        delegate_observe_run_context_update "$observe" "$run_dir" "${repoRoot}/." "${repoRoot}/."
+        cat "$observe"
+        `
+    )
+    const observe = parseObserveJson(output)
+    const runContext = requireRunContext(observe)
+
+    expect(observe.lineage).toEqual({
+      followup_of: 'previous-observe.json',
+      lineage_id: 'lineage-1',
+    })
+    expect(observe.backend_session).toEqual({
+      backend: 'codex',
+      home_dir: `${workDir}/run/codex-home`,
+      model: 'gpt-5.5',
+      persistence: 'resumable',
+      resume_id: 'thread-1',
+      resume_source: 'codex_json',
+    })
+    expect(runContext.repo_root).toBe(repoRoot)
+    expect(runContext.worktree_root).toBe(repoRoot)
+    expect(runContext.git_head).toMatch(/^[0-9a-f]{40}$/)
+    expect(typeof runContext.dirty).toBe('boolean')
+  })
+
+  it('records unavailable resume metadata and event', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" implement gpt-5.5 codex req.json res.json requester
+        delegate_observe_resume_unavailable "$observe" "$run_dir" codex gpt-5.5 "missing thread.started"
+        cat "$observe"
+        `
+    )
+    const observe = parseObserveJson(output)
+    const backendSession = requireBackendSession(observe)
+
+    expect(backendSession.persistence).toBe('unavailable')
+    expect(backendSession.resume_id).toBeNull()
+    expect(observe.events.map((event) => event.kind)).toContain('resume_unavailable')
+  })
+})
+
+describe('session reuse metadata validation', () => {
+  it('validates resumable follow-up metadata', () => {
+    const workDir = makeWorkDir()
+    const { status, output } = runBashStatus(
+      `
+        set -euo pipefail
+        ${makeResumableObserve(workDir)}
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+
+    expect(status).toBe(0)
+    expect(output).toBe('')
+  })
+
+  it('fails closed when previous observe JSON is missing', () => {
+    const workDir = makeWorkDir()
+    const { status, output } = runBashStatus(
+      `
+        set -euo pipefail
+        source shared/observe-json.sh
+        delegate_observe_validate_followup "${workDir}/missing.json" codex gpt-5.5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+
+    expect(status).not.toBe(0)
+    expect(output).toContain('previous observe JSON is missing')
+  })
+
+  it('fails closed when resume handle is missing', () => {
+    const workDir = makeWorkDir()
+    const { status, output } = runBashStatus(
+      `
+        set -euo pipefail
+        ${makeResumableObserve(
+          workDir,
+          'jq \'.backend_session.resume_id = null\' "$observe" >"$run_dir/tmp.json" && mv "$run_dir/tmp.json" "$observe"'
+        )}
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+
+    expect(status).not.toBe(0)
+    expect(output).toContain('backend_session.resume_id is missing')
+  })
+
+  it('fails closed when persistence is not resumable', () => {
+    const workDir = makeWorkDir()
+    const { status, output } = runBashStatus(
+      `
+        set -euo pipefail
+        ${makeResumableObserve(
+          workDir,
+          'jq \'.backend_session.persistence = "ephemeral"\' "$observe" >"$run_dir/tmp.json" && mv "$run_dir/tmp.json" "$observe"'
+        )}
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+
+    expect(status).not.toBe(0)
+    expect(output).toContain('backend_session.persistence is not resumable')
+  })
+
+  it('fails closed on backend and model mismatches', () => {
+    const workDir = makeWorkDir()
+    const backendResult = runBashStatus(
+      `
+        set -euo pipefail
+        ${makeResumableObserve(workDir)}
+        delegate_observe_validate_followup "$observe" claude gpt-5.5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+    const modelResult = runBashStatus(
+      `
+        set -euo pipefail
+        source shared/observe-json.sh
+        observe="${workDir}/run/run_observe.json"
+        delegate_observe_validate_followup "$observe" codex gpt-5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+
+    expect(backendResult.status).not.toBe(0)
+    expect(backendResult.output).toContain('backend mismatch')
+    expect(modelResult.status).not.toBe(0)
+    expect(modelResult.output).toContain('model mismatch')
+  })
+
+  it('fails closed on repo and worktree mismatches', () => {
+    const workDir = makeWorkDir()
+    const otherRoot = `${workDir}/other`
+    mkdirSync(otherRoot)
+    const repoResult = runBashStatus(
+      `
+        set -euo pipefail
+        ${makeResumableObserve(workDir)}
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "${otherRoot}" "${repoRoot}"
+        `
+    )
+    const worktreeResult = runBashStatus(
+      `
+        set -euo pipefail
+        source shared/observe-json.sh
+        observe="${workDir}/run/run_observe.json"
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "${repoRoot}" "${otherRoot}"
+        `
+    )
+
+    expect(repoResult.status).not.toBe(0)
+    expect(repoResult.output).toContain('repo_root mismatch')
+    expect(worktreeResult.status).not.toBe(0)
+    expect(worktreeResult.output).toContain('worktree_root mismatch')
+  })
+
+  it('fails closed when run context required fields are missing', () => {
+    const workDir = makeWorkDir()
+    const { status, output } = runBashStatus(
+      `
+        set -euo pipefail
+        ${makeResumableObserve(
+          workDir,
+          'jq \'del(.run_context.git_head)\' "$observe" >"$run_dir/tmp.json" && mv "$run_dir/tmp.json" "$observe"'
+        )}
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+
+    expect(status).not.toBe(0)
+    expect(output).toContain('run_context required field is missing')
+  })
+
+  it('allows identical and ancestor git heads but rejects unrelated heads', () => {
+    const workDir = makeWorkDir()
+    const gitDir = `${workDir}/git-repo`
+    const output = runBash(
+      `
+        set -euo pipefail
+        source shared/observe-json.sh
+        git_dir="${gitDir}"
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$git_dir" "$run_dir"
+        git -C "$git_dir" init -q
+        git -C "$git_dir" config user.email test@example.com
+        git -C "$git_dir" config user.name Test
+        printf base >"$git_dir/file.txt"
+        git -C "$git_dir" add file.txt
+        git -C "$git_dir" commit -q -m base
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+        delegate_observe_backend_session_update "$observe" "$run_dir" codex gpt-5.5 thread-1 codex_json resumable "$run_dir/codex-home"
+        delegate_observe_run_context_update "$observe" "$run_dir" "$git_dir" "$git_dir"
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "$git_dir" "$git_dir"
+        printf descendant >>"$git_dir/file.txt"
+        git -C "$git_dir" add file.txt
+        git -C "$git_dir" commit -q -m descendant
+        delegate_observe_validate_followup "$observe" codex gpt-5.5 "$git_dir" "$git_dir"
+        git -C "$git_dir" checkout -q --orphan unrelated
+        git -C "$git_dir" rm -q -rf .
+        printf unrelated >"$git_dir/other.txt"
+        git -C "$git_dir" add other.txt
+        git -C "$git_dir" commit -q -m unrelated
+        if delegate_observe_validate_followup "$observe" codex gpt-5.5 "$git_dir" "$git_dir" 2>"$run_dir/error.txt"; then
+          printf 'unexpected-success'
+        else
+          cat "$run_dir/error.txt"
+        fi
+        `
+    )
+
+    expect(output).toContain('git_head is not current HEAD or its ancestor')
+    expect(output).not.toContain('unexpected-success')
+  })
+
+  it('fails closed for unsupported backend instead of falling back', () => {
+    const workDir = makeWorkDir()
+    const { status, output } = runBashStatus(
+      `
+        set -euo pipefail
+        ${makeResumableObserve(
+          workDir,
+          'jq \'.backend_session.backend = "grok"\' "$observe" >"$run_dir/tmp.json" && mv "$run_dir/tmp.json" "$observe"'
+        )}
+        delegate_observe_validate_followup "$observe" grok gpt-5.5 "${repoRoot}" "${repoRoot}"
+        `
+    )
+
+    expect(status).not.toBe(0)
+    expect(output).toContain('unsupported backend: grok')
+  })
+})
+
+describe('observe-json.sh lifecycle helpers', () => {
   it('writes failed response and companion markdown through the shared helper', () => {
     const workDir = makeWorkDir()
     runBash(
