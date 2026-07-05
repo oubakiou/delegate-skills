@@ -149,14 +149,31 @@ worker の token usage は run 終了時に observe JSON の `usage.measurement:
 
 `DELEGATE_<TYPE>_MODEL` で指定できるドキュメント済みモデル名:
 
-| 実行系           | モデル名                                                                         | 補足                                                     |
-| ---------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`                                               | Claude 系モデルの alias                                  |
-| Codex CLI        | `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`                    | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける |
-| Devin CLI        | `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`                                       | `devin-*` は prefix を剥がして Devin CLI に渡す          |
-| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` は prefix を剥がして Cursor agent CLI に渡す  |
+| 実行系           | モデル名                                                                                                                           | 補足                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`                                                                                                 | Claude 系モデルの alias                                  |
+| Codex CLI        | `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                               | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける |
+| Devin CLI        | `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`                                                                | `devin-*` は prefix を剥がして Devin CLI に渡す          |
+| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` は prefix を剥がして Cursor agent CLI に渡す  |
 
 上記はドキュメント済みの対応モデルであり、厳密な allowlist ではない。実行先 CLI 側でも指定モデルが利用可能である必要がある。`delegate-x-research` は別途 `DELEGATE_X_RESEARCH_MODEL` を使い、ドキュメント済みモデルは `grok-build`。
+
+上記モデル名の effort 挙動:
+
+delegate-skills は解決したモデル文字列だけを実行先 CLI に渡す。Claude `--effort`、Codex `model_reasoning_effort`、Cursor parameter override、Devin の effort option は渡さない。Codex delegate は `--ignore-user-config` 付きで起動するため、ユーザー config の `model_reasoning_effort` も読み込まれない。
+
+| モデル名                                                                              | effort 挙動                                                                                                |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `fable`, `opus`, `sonnet`, `haiku`                                                    | Claude `--effort` は明示しない。Claude CLI の alias 既定が適用される。                                     |
+| `gpt-5`                                                                               | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
+| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                  | Codex catalog 既定は `medium`。対応 level は `low`, `medium`, `high`, `xhigh`。                            |
+| `gpt-5.4-nano`                                                                        | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
+| `gpt-5.3-codex-spark`                                                                 | Codex effort は明示しない。Spark の availability と既定値はインストール済み Codex CLI/runtime 側で決まる。 |
+| `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`                   | Devin の separate effort flag は渡さない。選択モデルの Devin 側既定が適用される。                          |
+| `composer-2.5`, `composer-2.5-fast`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | effort suffix も Cursor parameter override も無い。Cursor model 既定が適用される。                         |
+| `cursor-glm-5.2-high`                                                                 | Cursor には `glm-5.2-high` を渡す。`high` は model slug に含まれる。                                       |
+| `cursor-glm-5.2-max`                                                                  | Cursor には `glm-5.2-max` を渡す。`max` は model slug に含まれる。                                         |
+| `grok-build`（`DELEGATE_X_RESEARCH_MODEL`）                                           | separate effort setting は渡さない。X 調査 backend の既定が適用される。                                    |
 
 ## モデル価格参照データ
 

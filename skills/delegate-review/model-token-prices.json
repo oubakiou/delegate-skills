@@ -2,7 +2,7 @@
   "schema_version": 1,
   "currency": "USD",
   "unit": "per_1m_tokens",
-  "retrieved_at": "2026-06-30",
+  "retrieved_at": "2026-07-05",
   "usage": "Reference data for cost analysis and reporting. It is not used as a cost gate.",
   "null_price": "No explicit price row was found in the listed source at retrieved_at.",
   "pricing_sources": {
@@ -99,6 +99,16 @@
       "pricing_source": "openai"
     },
     {
+      "model_provider": "openai",
+      "model": "gpt-5.3-codex-spark",
+      "display_name": "GPT-5.3 Codex Spark",
+      "input": null,
+      "cached_input": null,
+      "output": null,
+      "pricing_status": "not_listed_in_source",
+      "pricing_source": "openai"
+    },
+    {
       "model_provider": "cognition",
       "model": "swe-1.6",
       "display_name": "SWE-1.6",
@@ -129,6 +139,16 @@
       "pricing_source": "cognition"
     },
     {
+      "model_provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro(cognition)",
+      "input": 1.74,
+      "cached_input": 0.0145,
+      "output": 3.48,
+      "context": "standard",
+      "pricing_source": "cognition"
+    },
+    {
       "model_provider": "cursor",
       "model": "composer-2.5",
       "display_name": "Composer 2.5",
@@ -145,6 +165,26 @@
       "input": 3,
       "cached_input": null,
       "output": 15,
+      "context": "standard",
+      "pricing_source": "cursor"
+    },
+    {
+      "model_provider": "google",
+      "model": "gemini-3.1-pro",
+      "display_name": "Gemini 3.1 Pro(cursor)",
+      "input": 2,
+      "cached_input": 0.2,
+      "output": 12,
+      "context": "standard",
+      "pricing_source": "cursor"
+    },
+    {
+      "model_provider": "moonshot",
+      "model": "kimi-k2.7-code",
+      "display_name": "Kimi K2.7 Code(cursor)",
+      "input": 0.95,
+      "cached_input": 0.19,
+      "output": 4,
       "context": "standard",
       "pricing_source": "cursor"
     },
