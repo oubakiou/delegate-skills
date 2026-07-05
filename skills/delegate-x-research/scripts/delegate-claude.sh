@@ -80,6 +80,8 @@ trap cleanup EXIT INT TERM
 claude_args=(
   -p "$PROMPT"
   --model "$MODEL"
+  --output-format stream-json
+  --verbose
   --dangerously-skip-permissions
   --no-session-persistence
 )
@@ -114,6 +116,9 @@ else
   delegate_observe_write_companion_markdown "$RESPONSE_FILE"
   response_status="$child_status"
 fi
+
+measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$MODEL" "$backend" claude_stream_json || true)"
+delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" claude_stream_json "$measured_usage" || true
 
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"

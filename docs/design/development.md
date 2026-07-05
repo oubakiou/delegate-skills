@@ -124,6 +124,8 @@ self-contained 配布のため、共有スクリプト/アセットは `shared/`
 
 生成コピー（`skills/*/scripts/*.sh`、`skills/*/model-token-prices.json` 等）を直接編集してはならない。編集は `shared/` 側で行い、同期を走らせる。
 
+backend の CLI 出力を observe JSON へ正規化する処理も `shared/observe-json.sh` に置く。`usage` の実測値抽出や推定 fallback を変更した場合は、`scripts/observe-json.test.ts` に JSONL capture / Devin ATIF export / fallback の fixture 的な shell test を追加し、`npm run sync-shared` で各 skill へ同期する。
+
 ## git hooks（pre-commit）
 
 `.githooks/pre-commit` が以下を順に実行する:

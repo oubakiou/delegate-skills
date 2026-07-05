@@ -94,12 +94,13 @@ PROMPT_EOF
 CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   codex exec \
   -m "$MODEL" \
-  --skip-git-repo-check --ephemeral \
-  --ignore-user-config \
-  --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}" \
-  --output-last-message "$LAST_MSG" \
-  -C "$REPO_ROOT" \
-  "$PROMPT" >"$stdout_capture" 2>"$stderr_capture" &
+	  --skip-git-repo-check --ephemeral \
+	  --ignore-user-config \
+	  --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}" \
+	  --json \
+	  --output-last-message "$LAST_MSG" \
+	  -C "$REPO_ROOT" \
+	  "$PROMPT" >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then
@@ -120,6 +121,9 @@ else
   delegate_observe_write_companion_markdown "$RESPONSE_FILE"
   response_status="$child_status"
 fi
+
+measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$MODEL" "$backend" codex_json || delegate_observe_usage_from_codex_sessions "$CODEX_HOME_ISOLATED" "$MODEL" "$backend" || true)"
+delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" codex_json "$measured_usage" || true
 
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"

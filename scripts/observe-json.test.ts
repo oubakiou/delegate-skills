@@ -25,9 +25,21 @@ interface ObserveJson {
     kind: string
     dispatcher_pid?: number
     child_pid?: number
+    message?: string
+    source?: string
     timeout_seconds?: number
     idle_seconds?: number
   }[]
+  usage?: {
+    backend?: string
+    cost_usd?: number | null
+    input_tokens?: number | null
+    measurement?: string
+    model?: string
+    output_tokens?: number | null
+    source?: string
+    total_tokens?: number | null
+  }
   streams: {
     stdout: { bytes: number; truncated: boolean; content: string }
     stderr: { bytes: number; truncated: boolean; content: string }
@@ -148,6 +160,59 @@ const findRequiredEvent = (observe: ObserveJson, kind: string): ObserveJson['eve
   return observe.events[index]
 }
 
+const requireUsage = (observe: ObserveJson): NonNullable<ObserveJson['usage']> => {
+  if (!observe.usage) {
+    throw new Error('missing usage')
+  }
+  return observe.usage
+}
+
+const expectMeasuredUsage = (observe: ObserveJson): void => {
+  const usage = requireUsage(observe)
+  expect(usage.measurement).toBe('measured')
+  expect(usage.source).toBe('claude_stream_json')
+  expect(usage.input_tokens).toBe(120)
+  expect(usage.output_tokens).toBe(30)
+  expect(usage.total_tokens).toBe(150)
+  expect(usage.cost_usd).toBe(0.0012)
+}
+
+const expectDevinExportUsage = (observe: ObserveJson): void => {
+  const usage = requireUsage(observe)
+  expect(usage.measurement).toBe('measured')
+  expect(usage.source).toBe('devin_atif_export')
+  expect(usage.input_tokens).toBe(15_691)
+  expect(usage.output_tokens).toBe(3)
+  expect(usage.total_tokens).toBe(15_694)
+}
+
+const expectCodexSessionUsage = (observe: ObserveJson): void => {
+  const usage = requireUsage(observe)
+  expect(usage.measurement).toBe('measured')
+  expect(usage.source).toBe('codex_session_jsonl')
+  expect(usage.input_tokens).toBe(13_656)
+  expect(usage.output_tokens).toBe(17)
+  expect(usage.total_tokens).toBe(13_673)
+}
+
+const expectCodexJsonUsage = (observe: ObserveJson): void => {
+  const usage = requireUsage(observe)
+  expect(usage.measurement).toBe('measured')
+  expect(usage.source).toBe('codex_json')
+  expect(usage.input_tokens).toBe(13_367)
+  expect(usage.output_tokens).toBe(17)
+  expect(usage.total_tokens).toBe(13_384)
+}
+
+const expectEstimatedUsage = (observe: ObserveJson): void => {
+  const usage = requireUsage(observe)
+  expect(usage.measurement).toBe('estimated')
+  expect(usage.source).toBe('chars_4')
+  expect(usage.input_tokens).toBe(2)
+  expect(usage.output_tokens).toBe(1)
+  expect(usage.total_tokens).toBe(3)
+}
+
 describe('observe-json.sh', () => {
   it('records dispatcher and child pid with dispatch events', () => {
     const workDir = makeWorkDir()
@@ -256,6 +321,147 @@ MD
       `
     )
     expectCappedStreams(parseObserveJson(output))
+  })
+
+  describe('usage', () => {
+    it('records measured usage parsed from JSONL capture', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        capture="$run_dir/worker-stdout.capture"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore sonnet claude req.json res.json requester
+        printf '%s\\n' '{"type":"system","usage":{"input_tokens":3}}' '{"type":"result","result":"completed","usage":{"input_tokens":120,"output_tokens":30},"total_cost_usd":0.0012}' >"$capture"
+        measured="$(delegate_observe_usage_from_capture "$capture" sonnet claude claude_stream_json || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" claude sonnet req.json res.json claude_stream_json "$measured"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expectMeasuredUsage(observe)
+    })
+
+    it('records measured usage parsed from Devin ATIF export', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        export_file="$run_dir/devin-export.json"
+        mkdir -p "$run_dir"
+        printf '%s' '{"schema_version":"ATIF-v1.7","final_metrics":{"total_prompt_tokens":15691,"total_completion_tokens":3,"total_cached_tokens":769},"steps":[]}' >"$export_file"
+        delegate_observe_init "$observe" "$run_dir" chore devin-glm-5.2 devin req.json res.json requester
+        measured="$(delegate_observe_usage_from_devin_export "$export_file" devin-glm-5.2 devin || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" devin devin-glm-5.2 req.json res.json devin_atif_export "$measured"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expectDevinExportUsage(observe)
+    })
+
+    it('records measured usage parsed from Codex token count events', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        codex_home="$run_dir/codex-home"
+        observe="$run_dir/run_observe.json"
+        request="$run_dir/request.json"
+        response="$run_dir/response.json"
+        session_dir="$codex_home/sessions/2026/07/05"
+        mkdir -p "$session_dir"
+        printf '{"sections":["request"]}' >"$request"
+        printf '{"sections":["response"]}' >"$response"
+        printf '%s\\n' '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":13656,"cached_input_tokens":9600,"output_tokens":17,"reasoning_output_tokens":10,"total_tokens":13673}}}}' >"$session_dir/session.jsonl"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex "$request" "$response" requester
+        measured="$(delegate_observe_usage_from_codex_sessions "$codex_home" gpt-5.5 codex || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.5 "$request" "$response" codex_session_jsonl "$measured"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expectCodexSessionUsage(observe)
+    })
+
+    it('records measured usage parsed from Codex JSON stdout', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        capture="$run_dir/worker-stdout.capture"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+        printf '%s\\n' '{"type":"thread.started","thread_id":"test"}' '{"type":"turn.completed","usage":{"input_tokens":13367,"cached_input_tokens":9088,"output_tokens":17,"reasoning_output_tokens":10}}' >"$capture"
+        measured="$(delegate_observe_usage_from_capture "$capture" gpt-5.5 codex codex_json || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.5 req.json res.json codex_json "$measured"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expectCodexJsonUsage(observe)
+    })
+
+    it('ignores trailing usage objects without measured values', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        capture="$run_dir/worker-stdout.capture"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore sonnet claude req.json res.json requester
+        printf '%s\\n' '{"usage":{"input_tokens":120,"output_tokens":30},"total_cost_usd":0.0012}' '{"usage":{}}' >"$capture"
+        measured="$(delegate_observe_usage_from_capture "$capture" sonnet claude claude_stream_json || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" claude sonnet req.json res.json claude_stream_json "$measured"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expectMeasuredUsage(observe)
+    })
+
+    it('falls back to estimated usage and records a parse failure event', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        request="$run_dir/request.json"
+        response="$run_dir/response.json"
+        mkdir -p "$run_dir"
+        printf '{"sections":["12345678"]}' >"$request"
+        printf '{"sections":["1234"]}' >"$response"
+        delegate_observe_init "$observe" "$run_dir" chore haiku claude "$request" "$response" requester
+        delegate_observe_record_usage "$observe" "$run_dir" claude haiku "$request" "$response" claude_stream_json ""
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expectEstimatedUsage(observe)
+      expect(observe.events.map((event) => event.kind)).toContain('usage_parse_failed')
+    })
   })
 
   it('writes failed response and companion markdown through the shared helper', () => {

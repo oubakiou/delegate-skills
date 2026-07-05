@@ -43,6 +43,7 @@ source "$script_dir/observe-json.sh"
 backend="$(delegate_observe_backend_from_model "$ORIGINAL_MODEL")"
 stdout_capture="$WORK_DIR/worker-stdout.capture"
 stderr_capture="$WORK_DIR/worker-stderr.capture"
+devin_export="$WORK_DIR/devin-export.json"
 : >"$stdout_capture"
 : >"$stderr_capture"
 
@@ -87,6 +88,7 @@ devin_args=(
   -p "$PROMPT"
   --model "$MODEL"
   --permission-mode dangerous
+  --export "$devin_export"
 )
 
 cleanup() {
@@ -119,6 +121,9 @@ else
   delegate_observe_write_companion_markdown "$RESPONSE_FILE"
   response_status="$child_status"
 fi
+
+measured_usage="$(delegate_observe_usage_from_devin_export "$devin_export" "$ORIGINAL_MODEL" "$backend" || delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" devin_json || true)"
+delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" devin_atif_export "$measured_usage" || true
 
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"

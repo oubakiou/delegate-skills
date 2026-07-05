@@ -185,6 +185,285 @@ delegate_observe_event_json_inner() {
   mv "$tmp" "$observe_file"
 }
 
+delegate_observe_usage_update() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local usage_json="$3"
+
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_usage_update_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$usage_json"
+}
+
+delegate_observe_usage_update_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local usage_json="$3"
+  local tmp
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_usage_XXXXX" --suffix=.json)"
+
+  jq --argjson usage "$usage_json" '.usage = $usage' "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
+delegate_observe_usage_parse_failed() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local backend="$3"
+  local source="$4"
+  local message="$5"
+
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local event_json
+  event_json="$(jq -cn \
+    --arg ts "$now" \
+    --arg backend "$backend" \
+    --arg source "$source" \
+    --arg message "$message" \
+    '{kind: "usage_parse_failed", ts: $ts, backend: $backend, source: $source, message: $message}')"
+  delegate_observe_event_json "$observe_file" "$run_dir" "$event_json"
+}
+
+delegate_observe_count_section_chars() {
+  local file="$1"
+  if [ ! -s "$file" ]; then
+    printf '%s' ''
+    return 0
+  fi
+  jq -j '.sections // [] | join("\n\n")' "$file" 2>/dev/null | wc -m | tr -d '[:space:]'
+}
+
+delegate_observe_tokens_from_chars() {
+  local chars="$1"
+  if [ -z "$chars" ]; then
+    printf '%s' null
+    return 0
+  fi
+  printf '%s' "$(( (chars + 3) / 4 ))"
+}
+
+delegate_observe_estimated_usage_json() {
+  local request_file="$1"
+  local response_file="$2"
+  local model="$3"
+  local backend="$4"
+  local source="$5"
+
+  local input_chars output_chars input_tokens output_tokens total_tokens
+  input_chars="$(delegate_observe_count_section_chars "$request_file")"
+  output_chars="$(delegate_observe_count_section_chars "$response_file")"
+  input_tokens="$(delegate_observe_tokens_from_chars "$input_chars")"
+  output_tokens="$(delegate_observe_tokens_from_chars "$output_chars")"
+  if [ "$input_tokens" != null ] && [ "$output_tokens" != null ]; then
+    total_tokens="$(( input_tokens + output_tokens ))"
+  else
+    total_tokens=null
+  fi
+
+  jq -cn \
+    --arg model "$model" \
+    --arg backend "$backend" \
+    --arg source "$source" \
+    --argjson input_tokens "$input_tokens" \
+    --argjson output_tokens "$output_tokens" \
+    --argjson total_tokens "$total_tokens" \
+    '{
+      input_tokens: $input_tokens,
+      output_tokens: $output_tokens,
+      total_tokens: $total_tokens,
+      cost_usd: null,
+      measurement: "estimated",
+      source: $source,
+      model: $model,
+      backend: $backend
+    }'
+}
+
+delegate_observe_parse_usage_events() {
+  local model="$1"
+  local backend="$2"
+  local source="$3"
+
+  jq -R -s \
+    --arg model "$model" \
+    --arg backend "$backend" \
+    --arg source "$source" \
+    '
+    def objects:
+      split("\n") | map(select(length > 0) | try fromjson catch empty | select(type == "object"));
+	    def usage_of:
+	      .usage?
+	      // .message.usage?
+	      // .response.usage?
+	      // .event.usage?
+	      // .data.usage?
+	      // .payload.info.total_token_usage?
+	      // .payload.info.last_token_usage?;
+	    def number_or_null($value):
+	      if ($value | type) == "number" then $value else null end;
+	    def sum_or_null($left; $right):
+	      if (($left | type) == "number") and (($right | type) == "number") then $left + $right else null end;
+	    def has_measured_value($usage):
+	      ($usage.input_tokens | type) == "number"
+	      or ($usage.output_tokens | type) == "number"
+	      or ($usage.total_tokens | type) == "number"
+	      or ($usage.cost_usd | type) == "number";
+	    def token_usage($usage):
+	      {
+	        input_tokens: number_or_null($usage.input_tokens? // $usage.inputTokens? // $usage.prompt_tokens? // $usage.promptTokens?),
+	        output_tokens: number_or_null($usage.output_tokens? // $usage.outputTokens? // $usage.completion_tokens? // $usage.completionTokens?),
+        total_tokens: number_or_null($usage.total_tokens? // $usage.totalTokens?),
+        cost_usd: number_or_null($usage.total_cost_usd? // $usage.cost_usd? // $usage.costUsd?)
+      };
+    [
+      objects[]
+	      | . as $event
+	      | (usage_of) as $usage
+	      | select($usage != null)
+	      | token_usage($usage)
+	        + {cost_usd: (number_or_null($event.total_cost_usd? // $event.cost_usd? // $event.costUsd?) // token_usage($usage).cost_usd)}
+	      | select(has_measured_value(.))
+	    ] as $items
+    | if ($items | length) == 0 then empty
+	      else
+	        ($items[-1]) as $last
+	        | {
+	            input_tokens: $last.input_tokens,
+	            output_tokens: $last.output_tokens,
+	            total_tokens: ($last.total_tokens // sum_or_null($last.input_tokens; $last.output_tokens)),
+	            cost_usd: $last.cost_usd,
+	            measurement: "measured",
+	            source: $source,
+            model: $model,
+            backend: $backend
+          }
+      end'
+}
+
+delegate_observe_usage_from_capture() {
+  local capture_file="$1"
+  local model="$2"
+  local backend="$3"
+  local source="$4"
+
+	if [ ! -s "$capture_file" ]; then
+	  return 1
+	fi
+	local usage_json
+	usage_json="$(delegate_observe_parse_usage_events "$model" "$backend" "$source" <"$capture_file")"
+	if [ -z "$usage_json" ]; then
+	  return 1
+	fi
+	printf '%s\n' "$usage_json"
+}
+
+delegate_observe_usage_from_devin_export() {
+  local export_file="$1"
+  local model="$2"
+  local backend="$3"
+
+  if [ ! -s "$export_file" ]; then
+    return 1
+  fi
+  jq -c \
+    --arg model "$model" \
+    --arg backend "$backend" \
+    '
+    def number_or_null($value):
+      if ($value | type) == "number" then $value else null end;
+    def sum_or_null($left; $right):
+      if (($left | type) == "number") and (($right | type) == "number") then $left + $right else null end;
+    def metrics_usage($metrics):
+      {
+        input_tokens: number_or_null($metrics.total_prompt_tokens? // $metrics.prompt_tokens?),
+        output_tokens: number_or_null($metrics.total_completion_tokens? // $metrics.completion_tokens?),
+        total_tokens: null,
+        cost_usd: number_or_null($metrics.total_cost_usd? // $metrics.cost_usd?)
+      };
+    def summed_step_metrics:
+      reduce (.steps // [])[] as $step (
+        {input_tokens: 0, output_tokens: 0, cost_usd: null, found: false};
+        ($step.metrics? // null) as $metrics
+        | if $metrics == null then .
+          else {
+            input_tokens: (.input_tokens + (number_or_null($metrics.prompt_tokens?) // 0)),
+            output_tokens: (.output_tokens + (number_or_null($metrics.completion_tokens?) // 0)),
+            cost_usd: (.cost_usd // number_or_null($metrics.cost_usd?)),
+            found: true
+          }
+          end
+      )
+      | if .found then {
+          input_tokens: .input_tokens,
+          output_tokens: .output_tokens,
+          total_tokens: null,
+          cost_usd: .cost_usd
+        } else null end;
+    def has_measured_value($usage):
+      ($usage.input_tokens | type) == "number"
+      or ($usage.output_tokens | type) == "number"
+      or ($usage.total_tokens | type) == "number"
+      or ($usage.cost_usd | type) == "number";
+    (if .final_metrics? then metrics_usage(.final_metrics) else summed_step_metrics end) as $usage
+    | select($usage != null and has_measured_value($usage))
+    | {
+        input_tokens: $usage.input_tokens,
+        output_tokens: $usage.output_tokens,
+        total_tokens: ($usage.total_tokens // sum_or_null($usage.input_tokens; $usage.output_tokens)),
+        cost_usd: $usage.cost_usd,
+        measurement: "measured",
+        source: "devin_atif_export",
+        model: $model,
+        backend: $backend
+      }' "$export_file"
+}
+
+delegate_observe_usage_from_codex_sessions() {
+  local codex_home="$1"
+  local model="$2"
+  local backend="$3"
+  local sessions_dir="$codex_home/sessions"
+
+  if [ ! -d "$sessions_dir" ]; then
+    return 1
+  fi
+  local usage_json
+  usage_json="$(
+    find "$sessions_dir" -type f -name '*.jsonl' -print0 2>/dev/null \
+      | xargs -0 cat 2>/dev/null \
+      | delegate_observe_parse_usage_events "$model" "$backend" codex_session_jsonl
+  )"
+  if [ -z "$usage_json" ]; then
+    return 1
+  fi
+  printf '%s\n' "$usage_json"
+}
+
+delegate_observe_record_usage() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local backend="$3"
+  local model="$4"
+  local request_file="$5"
+  local response_file="$6"
+  local source="$7"
+  local measured_json="${8:-}"
+
+  local usage_json
+  if [ -n "$measured_json" ]; then
+    usage_json="$measured_json"
+  else
+    delegate_observe_usage_parse_failed "$observe_file" "$run_dir" "$backend" "$source" "measured usage was not available" || true
+    usage_json="$(delegate_observe_estimated_usage_json "$request_file" "$response_file" "$model" "$backend" chars_4)"
+  fi
+  delegate_observe_usage_update "$observe_file" "$run_dir" "$usage_json"
+}
+
 delegate_observe_dispatch_start() {
   local observe_file="$1"
   local run_dir="$2"

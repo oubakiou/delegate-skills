@@ -230,6 +230,16 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
     "stderr_bytes": 84,
     "last_stream_change_at": "2026-07-04T12:34:59Z"
   },
+  "usage": {
+    "input_tokens": 12345,
+    "output_tokens": 678,
+    "total_tokens": 13023,
+    "cost_usd": 0.0123,
+    "measurement": "measured",
+    "source": "claude_stream_json",
+    "model": "sonnet",
+    "backend": "claude"
+  },
   "events": [
     { "kind": "run_created", "ts": "2026-07-04T12:34:56Z" },
     {
@@ -263,6 +273,9 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `state.duration_ms`: 終了時だけ設定する。実行中 timeout は `state.started_at` と現在時刻から利用側が計算する
 - `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes`: capture file の現在サイズ。content を読まずに低コストで stream 進捗を判定する
 - `heartbeat.last_stream_change_at`: 直近 heartbeat で stdout/stderr bytes が増えた時刻
+- `usage.measurement`: `measured | estimated`。CLI の構造化出力や Codex session JSONL から実測できた場合は `measured`、取得不能時の chars/4 fallback は `estimated`
+- `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `chars_4` など、usage の由来
+- `events[].kind == "usage_parse_failed"`: 実測 usage が取れず推定 fallback に落ちたことを示す。usage 観測は補助情報のため、この event 自体では delegate 本体を失敗にしない
 - `events[].kind == "stall_timeout"`: `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` 有効時、stdout/stderr bytes が指定秒数増えず wrapper が子 CLI を kill したことを示す。wrapper は exit code `124` を返し、response 未生成なら failed response を書く
 - `streams.*.content`: 終了時または preflight failure 時の状況把握用。既定で末尾 `DELEGATE_OBSERVE_STREAM_MAX_BYTES` bytes だけを残し、超過時は `truncated: true` と総 bytes を記録する
 

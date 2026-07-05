@@ -139,6 +139,7 @@ Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
 For reproducible local debugging and external watchdogs, set `DELEGATE_WORK_DIR=.temp/delegate/work` so request, response, observe JSON, and per-run scratch files stay under a repo-local ignored directory.
 Set `DELEGATE_RUN_RETENTION_DAYS` to prune old per-run scratch directories in that work directory; request, response, and observe JSON files are kept for audit/debugging.
+Worker token usage is recorded in observe JSON as `usage.measurement: "measured" | "estimated"` when a run ends. Claude stream-json, Codex JSON/session JSONL, and Devin ATIF export can provide measured values; unsupported or unparsable backends fall back to a chars/4 estimate and emit a `usage_parse_failed` observe event.
 
 Documented model names for `DELEGATE_<TYPE>_MODEL`:
 

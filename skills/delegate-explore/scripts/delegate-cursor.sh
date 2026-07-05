@@ -129,5 +129,8 @@ else
   response_status="$child_status"
 fi
 
+measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" cursor_json || true)"
+delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" cursor_json "$measured_usage" || true
+
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"
