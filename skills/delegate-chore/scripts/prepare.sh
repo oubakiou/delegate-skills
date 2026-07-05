@@ -52,6 +52,17 @@ case "$session_mode_arg" in
     ;;
 esac
 
+if [ -n "$session_mode" ]; then
+  case "$task_type" in
+    implement | chore)
+      ;;
+    *)
+      echo "ERROR: session_mode is only supported for implement/chore tasks: $task_type" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
 

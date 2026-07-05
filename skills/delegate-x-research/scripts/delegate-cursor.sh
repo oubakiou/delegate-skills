@@ -162,7 +162,9 @@ else
   child_status=$?
 fi
 
+response_generated_by_worker=1
 if [ ! -s "$RESPONSE_FILE" ]; then
+  response_generated_by_worker=0
   response_status="$child_status"
   [ "$response_status" -eq 0 ] && response_status=1
   if ! delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$response_status"; then
@@ -174,14 +176,29 @@ else
   delegate_observe_write_companion_markdown "$RESPONSE_FILE"
   response_status="$child_status"
 fi
+response_allows_resume=0
+if [ "$response_generated_by_worker" -eq 1 ]; then
+  response_protocol_status="$(jq -r '.status // empty' "$RESPONSE_FILE" 2>/dev/null || true)"
+  if [ -n "$response_protocol_status" ] && [ "$response_protocol_status" != "failed" ]; then
+    response_allows_resume=1
+  fi
+fi
 
 measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" cursor_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" cursor_json "$measured_usage" || true
 
 if [ "$SESSION_MODE" = "resumable" ]; then
-  delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$CURSOR_CHAT_ID" cursor_create_chat resumable "" || true
+  if [ "$child_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ]; then
+    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$CURSOR_CHAT_ID" cursor_create_chat resumable "" || true
+  else
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor run did not complete successfully" || true
+  fi
 elif [ "$SESSION_MODE" = "followup" ]; then
-  delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$CURSOR_CHAT_ID" cursor_create_chat resumable "" || true
+  if [ "$child_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ]; then
+    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$CURSOR_CHAT_ID" cursor_create_chat resumable "" || true
+  else
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor follow-up did not complete successfully" || true
+  fi
 fi
 record_run_context
 

@@ -375,6 +375,35 @@ MD
     expect(observe.run.model_source).toBe('default')
   })
 
+  it('rejects session_mode for read-only task types', () => {
+    const workDir = makeWorkDir()
+    const resumable = runBashStatus(
+      `
+      set -euo pipefail
+      DELEGATE_WORK_DIR="${workDir}" bash shared/prepare.sh explore DELEGATE_EXPLORE_MODEL haiku '[]' requester resumable <<'MD'
+# Objective
+test
+MD
+      `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+    const followup = runBashStatus(
+      `
+      set -euo pipefail
+      DELEGATE_WORK_DIR="${workDir}" bash shared/prepare.sh review DELEGATE_REVIEW_MODEL opus '[]' requester followup="${workDir}/previous.json" <<'MD'
+# Objective
+test
+MD
+      `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+
+    expect(resumable.status).toBe(2)
+    expect(resumable.output).toContain('session_mode is only supported for implement/chore')
+    expect(followup.status).toBe(2)
+    expect(followup.output).toContain('session_mode is only supported for implement/chore')
+  })
+
   it('imports stream content through jq rawfile and applies byte cap', () => {
     const workDir = makeWorkDir()
     const output = runBash(

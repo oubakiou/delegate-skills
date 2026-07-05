@@ -170,10 +170,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 const args = process.argv.slice(2)
 const prompt = args[args.indexOf('-p') + 1] || ''
+if (process.env.FAKE_CLAUDE_EXIT_WITHOUT_RESPONSE === '1') {
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}))
+  process.exit(9)
+}
 const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
 const responseFile = responseMatches[responseMatches.length - 1]
+const status = process.env.FAKE_CLAUDE_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
 if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
 }
 const sessionIdIndex = args.indexOf('--session-id')
 if (sessionIdIndex !== -1 && process.env.CLAUDE_CONFIG_DIR && process.env.FAKE_CLAUDE_NO_SESSION !== '1') {
@@ -189,10 +194,15 @@ const codexFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
 const prompt = args[args.length - 1] || ''
+if (process.env.FAKE_CODEX_EXIT_WITHOUT_RESPONSE === '1') {
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+  process.exit(9)
+}
 const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
 const responseFile = responseMatches[responseMatches.length - 1]
+const status = process.env.FAKE_CODEX_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
 if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
 }
 fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
 if (process.env.FAKE_CODEX_NO_THREAD !== '1') {
@@ -205,10 +215,15 @@ const devinFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
 const prompt = args[args.indexOf('-p') + 1] || ''
+if (process.env.FAKE_DEVIN_EXIT_WITHOUT_RESPONSE === '1') {
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
+  process.exit(9)
+}
 const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
 const responseFile = responseMatches[responseMatches.length - 1]
+const status = process.env.FAKE_DEVIN_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
 if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
 }
 const exportIndex = args.indexOf('--export')
 if (exportIndex !== -1 && process.env.FAKE_DEVIN_NO_SESSION !== '1') {
@@ -237,11 +252,15 @@ if (args[0] === 'create-chat') {
   }
   process.exit(0)
 }
+if (process.env.FAKE_CURSOR_EXIT_WITHOUT_RESPONSE === '1') {
+  process.exit(9)
+}
 const prompt = args[args.length - 1] || ''
 const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
 const responseFile = responseMatches[responseMatches.length - 1]
+const status = process.env.FAKE_CURSOR_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
 if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
 }
 console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_tokens: 1}}))
 `
@@ -426,6 +445,15 @@ interface ExpectFollowupRun {
   sessionHome: string
 }
 
+interface ExpectFailedRunUnavailable {
+  backend: Backend
+  expectedStatus: number
+  fixture: Fixture
+  model: string
+  observe: ObserveJson
+  result: { status: number }
+}
+
 const expectClaudeResumableArgs = (fixture: Fixture, log: FakeCliLog): string => {
   const sessionIdIndex = log.args.indexOf('--session-id')
   expect(log.args).not.toContain('--no-session-persistence')
@@ -465,6 +493,63 @@ const expectUnavailable = (result: { status: number }, observe: ObserveJson): vo
   expect(result.status).toBe(0)
   expect(backendSession.persistence).toBe('unavailable')
   expect(backendSession.resume_id).toBeNull()
+}
+
+const errorOutputPart = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (Buffer.isBuffer(value)) {
+    return value.toString('utf8')
+  }
+  return ''
+}
+
+const runFollowupValidation = (
+  fixture: Fixture,
+  backend: Backend,
+  model: string
+): { output: string; status: number } => {
+  const script = `
+    set -euo pipefail
+    source shared/observe-json.sh
+    delegate_observe_validate_followup "${fixture.observeFile}" ${backend} ${model} "${repoRoot}" "${repoRoot}"
+  `
+  try {
+    const output = execFileSync('bash', ['-c', script], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    })
+    return { output, status: 0 }
+  } catch (error) {
+    if (isRecord(error) && typeof error.status === 'number') {
+      return {
+        output: `${errorOutputPart(error.stdout)}${errorOutputPart(error.stderr)}`,
+        status: error.status,
+      }
+    }
+    throw error
+  }
+}
+
+const expectFailedRunUnavailable = ({
+  backend,
+  expectedStatus,
+  fixture,
+  model,
+  observe,
+  result,
+}: ExpectFailedRunUnavailable): void => {
+  const backendSession = requireBackendSession(observe)
+  const validation = runFollowupValidation(fixture, backend, model)
+
+  expect(result.status).toBe(expectedStatus)
+  expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+  expect(backendSession.persistence).toBe('unavailable')
+  expect(backendSession.resume_id).toBeNull()
+  expect(validation.status).not.toBe(0)
+  expect(validation.output).toContain('backend_session.persistence is not resumable')
 }
 
 const expectCodexResumable = ({ fixture, log, observe, result }: ExpectWrapperRun): void => {
@@ -621,6 +706,42 @@ describe('delegate-claude.sh session modes', () => {
 
     expectUnavailable(result, observe)
   })
+
+  it('does not record failed resumable runs as follow-up bases', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaude(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CLAUDE_EXIT_WITHOUT_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'claude',
+      expectedStatus: 9,
+      fixture,
+      model: 'sonnet',
+      observe,
+      result,
+    })
+  })
+
+  it('does not record failed protocol responses as follow-up bases', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaude(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CLAUDE_FAILED_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'claude',
+      expectedStatus: 0,
+      fixture,
+      model: 'sonnet',
+      observe,
+      result,
+    })
+  })
 })
 
 describe('delegate-codex.sh session modes', () => {
@@ -673,6 +794,42 @@ describe('delegate-codex.sh session modes', () => {
 
     expectUnavailable(result, observe)
   })
+
+  it('does not record failed resumable runs as follow-up bases', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CODEX_EXIT_WITHOUT_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'codex',
+      expectedStatus: 9,
+      fixture,
+      model: 'gpt-5.5',
+      observe,
+      result,
+    })
+  })
+
+  it('does not record failed protocol responses as follow-up bases', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CODEX_FAILED_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'codex',
+      expectedStatus: 0,
+      fixture,
+      model: 'gpt-5.5',
+      observe,
+      result,
+    })
+  })
 })
 
 describe('delegate-devin.sh session modes', () => {
@@ -720,6 +877,42 @@ describe('delegate-devin.sh session modes', () => {
     const observe = readObserve(fixture.observeFile)
 
     expectUnavailable(result, observe)
+  })
+
+  it('does not record failed resumable runs as follow-up bases', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_DEVIN_EXIT_WITHOUT_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'devin',
+      expectedStatus: 9,
+      fixture,
+      model: 'devin-glm-5.2',
+      observe,
+      result,
+    })
+  })
+
+  it('does not record failed protocol responses as follow-up bases', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_DEVIN_FAILED_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'devin',
+      expectedStatus: 0,
+      fixture,
+      model: 'devin-glm-5.2',
+      observe,
+      result,
+    })
   })
 })
 
@@ -779,5 +972,41 @@ describe('delegate-cursor.sh session modes', () => {
     expect(logs).toHaveLength(1)
     expect(logs[0].args).toEqual(['create-chat'])
     expect(requireBackendSession(observe).persistence).toBe('unavailable')
+  })
+
+  it('does not record failed resumable runs as follow-up bases', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CURSOR_EXIT_WITHOUT_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'cursor',
+      expectedStatus: 9,
+      fixture,
+      model: 'cursor-glm-5.2-high',
+      observe,
+      result,
+    })
+  })
+
+  it('does not record failed protocol responses as follow-up bases', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CURSOR_FAILED_RESPONSE: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expectFailedRunUnavailable({
+      backend: 'cursor',
+      expectedStatus: 0,
+      fixture,
+      model: 'cursor-glm-5.2-high',
+      observe,
+      result,
+    })
   })
 })
