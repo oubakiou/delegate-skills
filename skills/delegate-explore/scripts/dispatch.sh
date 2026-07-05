@@ -7,12 +7,12 @@ set -euo pipefail
 
 # モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude）。
 # 分岐は決定論的なので main agent の推論に載せず、この 1 本の呼び出しに畳む。
-# Usage: dispatch.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]
+# Usage: dispatch.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]
 # stdout: 委譲先ラッパの stdout（response_file のパスのみ）
 # exit: 委譲先ラッパの exit code をそのまま返す（2=引数エラー）
 
 if [ $# -lt 4 ]; then
-  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]" >&2
+  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]" >&2
   exit 2
 fi
 
@@ -22,6 +22,9 @@ request_file="$3"
 response_file="$4"
 run_dir="${5:-${response_file%_res.json}}"
 observe_file="${6:-${response_file%_res.json}_observe.json}"
+session_mode="${7:-}"
+resume_arg="${8:-}"
+session_home="${9:-}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
@@ -49,7 +52,12 @@ delegate_observe_dispatch_start "$observe_file" "$run_dir" "$backend" "$pid"
 
 wrapper_stdout=""
 wrapper_status=0
-if wrapper_stdout="$(bash "$script_dir/$backend_script" "$model" "$task_type" "$request_file" "$response_file" "$run_dir" "$observe_file")"; then
+wrapper_args=("$model" "$task_type" "$request_file" "$response_file" "$run_dir" "$observe_file")
+if [ -n "$session_mode" ] || [ -n "$resume_arg" ] || [ -n "$session_home" ]; then
+  wrapper_args+=("$session_mode" "$resume_arg" "$session_home")
+fi
+
+if wrapper_stdout="$(bash "$script_dir/$backend_script" "${wrapper_args[@]}")"; then
   wrapper_status=0
 else
   wrapper_status=$?
