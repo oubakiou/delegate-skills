@@ -7,11 +7,11 @@ set -euo pipefail
 
 # Claude 系モデル指定時の claude -p 子プロセス起動ラッパ
 # 起動骨格は delegate-codex.sh と対称構造。
-# Usage: delegate-claude.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]
+# Usage: delegate-claude.sh <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]
 # stdout: response_file のパスのみ（本文は親 context に入れない）
 
 if [ $# -lt 4 ]; then
-  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file]" >&2
+  echo "Usage: $0 <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]" >&2
   exit 2
 fi
 
@@ -21,6 +21,9 @@ REQUEST_FILE="$3"
 RESPONSE_FILE="$4"
 RUN_DIR="${5:-${RESPONSE_FILE%_res.json}}"
 OBSERVE_FILE="${6:-${RESPONSE_FILE%_res.json}_observe.json}"
+SESSION_MODE="${7:-}"
+RESUME_ARG="${8:-}"
+SESSION_HOME="${9:-}"
 
 WORK_DIR="$RUN_DIR"
 mkdir -p "$WORK_DIR/tmp"
@@ -47,15 +50,58 @@ finish_without_child() {
   delegate_observe_write_failed_response "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$RESPONSE_FILE" "$exit_code" || true
   delegate_observe_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$$" "$stdout_capture" "$stderr_capture"
   delegate_observe_import_streams "$OBSERVE_FILE" "$WORK_DIR" "$stdout_capture" "$stderr_capture"
+  if declare -F record_run_context >/dev/null; then
+    record_run_context
+  fi
   printf '%s\n' "$RESPONSE_FILE"
   exit "$exit_code"
 }
 
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+WORKTREE_ROOT="$REPO_ROOT"
+
+record_run_context() {
+  if [ "$SESSION_MODE" = "resumable" ] || [ "$SESSION_MODE" = "followup" ]; then
+    delegate_observe_run_context_update "$OBSERVE_FILE" "$WORK_DIR" "$REPO_ROOT" "$WORKTREE_ROOT" || true
+  fi
+}
+
+claude_session_file_exists() {
+  local claude_home="$1"
+  local session_id="$2"
+  find "$claude_home/projects" -type f -name "${session_id}.jsonl" -print -quit 2>/dev/null | grep -q .
+}
+
+CLAUDE_SESSION_HOME=""
+CLAUDE_SESSION_ID=""
+case "$SESSION_MODE" in
+  "")
+    ;;
+  resumable)
+    CLAUDE_SESSION_HOME="$WORK_DIR/claude-config"
+    mkdir -p "$CLAUDE_SESSION_HOME"
+    real_claude_config="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    [ -f "$real_claude_config/.credentials.json" ] && cp "$real_claude_config/.credentials.json" "$CLAUDE_SESSION_HOME/.credentials.json"
+    CLAUDE_SESSION_ID="$(cat /proc/sys/kernel/random/uuid)"
+    ;;
+  followup)
+    if [ -z "$SESSION_HOME" ] || [ -z "$RESUME_ARG" ]; then
+      finish_without_child 5 "ERROR: follow-up requires session_home and resume_id."
+    fi
+    if ! claude_session_file_exists "$SESSION_HOME" "$RESUME_ARG"; then
+      finish_without_child 5 "ERROR: Claude resume session file is missing for resume_id: $RESUME_ARG"
+    fi
+    CLAUDE_SESSION_HOME="$SESSION_HOME"
+    CLAUDE_SESSION_ID="$RESUME_ARG"
+    ;;
+  *)
+    finish_without_child 2 "ERROR: session_mode must be empty, resumable, or followup: $SESSION_MODE"
+    ;;
+esac
+
 if ! command -v claude >/dev/null 2>&1; then
   finish_without_child 3 "ERROR: claude CLI が見つかりません。"
 fi
-
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
@@ -83,8 +129,19 @@ claude_args=(
   --output-format stream-json
   --verbose
   --dangerously-skip-permissions
-  --no-session-persistence
 )
+
+case "$SESSION_MODE" in
+  "")
+    claude_args+=(--no-session-persistence)
+    ;;
+  resumable)
+    claude_args+=(--session-id "$CLAUDE_SESSION_ID")
+    ;;
+  followup)
+    claude_args+=(--resume "$CLAUDE_SESSION_ID")
+    ;;
+esac
 
 # read-only 種別は Edit/Write を技術的に除外する（Codex パスでは不可能な防御層）
 case "$TASK_TYPE" in
@@ -94,8 +151,13 @@ case "$TASK_TYPE" in
 esac
 
 cd "$REPO_ROOT"
-TMPDIR="$WORK_DIR/tmp" claude "${claude_args[@]}" \
-  >"$stdout_capture" 2>"$stderr_capture" &
+if [ -n "$CLAUDE_SESSION_HOME" ]; then
+  CLAUDE_CONFIG_DIR="$CLAUDE_SESSION_HOME" TMPDIR="$WORK_DIR/tmp" claude "${claude_args[@]}" \
+    >"$stdout_capture" 2>"$stderr_capture" &
+else
+  TMPDIR="$WORK_DIR/tmp" claude "${claude_args[@]}" \
+    >"$stdout_capture" 2>"$stderr_capture" &
+fi
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then
@@ -119,6 +181,17 @@ fi
 
 measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$MODEL" "$backend" claude_stream_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" claude_stream_json "$measured_usage" || true
+
+if [ "$SESSION_MODE" = "resumable" ]; then
+  if claude_session_file_exists "$CLAUDE_SESSION_HOME" "$CLAUDE_SESSION_ID"; then
+    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$CLAUDE_SESSION_ID" session_id_arg resumable "$CLAUDE_SESSION_HOME" || true
+  else
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "Claude session file was not created" "$CLAUDE_SESSION_HOME" || true
+  fi
+elif [ "$SESSION_MODE" = "followup" ]; then
+  delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$CLAUDE_SESSION_ID" session_id_arg resumable "$CLAUDE_SESSION_HOME" || true
+fi
+record_run_context
 
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"
