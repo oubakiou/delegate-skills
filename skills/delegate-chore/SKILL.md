@@ -37,6 +37,21 @@ allowed-tools: Bash(bash .claude/skills/delegate-chore/scripts/prepare.sh:*), Ba
 2. **実行**: `bash .claude/skills/delegate-chore/scripts/dispatch.sh "$model" chore "$request_file" "$response_file" "$run_dir" "$observe_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude）は dispatch.sh が行う。stdout は response_file のパスのみ。非対話モードの親（`claude -p` 等）では dispatch を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを `jq` で読む。
 3. **レスポンス読み取り**: `bash .claude/skills/delegate-chore/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合は status + index + Summary section を返すので、必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
 
+## セッション再利用（resumable / follow-up）
+
+既定は通常 run。大きめの横断修正など、親レビューで差し戻す可能性が高い場合だけ初回から resumable initial run を明示する。過剰使用しない。
+
+- resumable initial run: `prepare.sh` の第 6 引数に `resumable` を渡す。dispatch は第 7 引数に `resumable`、第 8・9 引数に空文字を渡す。
+  - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-chore/scripts/prepare.sh chore DELEGATE_CHORE_MODEL haiku "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID" resumable)"`
+  - `session_mode="$(printf '%s' "$out" | jq -r .session_mode)"` / `lineage_id="$(printf '%s' "$out" | jq -r .lineage_id)"`
+  - `bash .claude/skills/delegate-chore/scripts/dispatch.sh "$model" chore "$request_file" "$response_file" "$run_dir" "$observe_file" "$session_mode" "" ""`
+  - response 読了後に `jq -r .backend_session.persistence "$observe_file"` を確認する。`resumable` 以外なら follow-up 不可としてその場で判断し、後から暗黙 fallback を期待しない。
+- follow-up run: 親の差分確認で不具合が見つかった場合のみ使う。`prepare.sh` の第 6 引数に `followup=<前回observe_file>` を渡す。exit 5 は検証失敗なので中止し、通常 delegate として出し直す。暗黙 fallback しない。
+  - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-chore/scripts/prepare.sh chore DELEGATE_CHORE_MODEL haiku "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID" "followup=$previous_observe_file")"`
+  - `session_mode="$(printf '%s' "$out" | jq -r .session_mode)"` / `resume_id="$(printf '%s' "$out" | jq -r .resume_id)"` / `backend_session_home="$(printf '%s' "$out" | jq -r .backend_session_home)"`
+  - `bash .claude/skills/delegate-chore/scripts/dispatch.sh "$model" chore "$request_file" "$response_file" "$run_dir" "$observe_file" "$session_mode" "$resume_id" "$backend_session_home"`
+  - follow-up request には、親が見つけた不具合、最新 `git diff` の見るべき範囲、前回 `response_file` の参照を必ず含める。worker の古い会話文脈だけに依存させない。
+
 ## skill 昇格提案（フィードバックループ）
 
 delegate-chore に流れるタスクは「専用 skill が無い作業」のシグナル。レスポンス消費後、その作業が

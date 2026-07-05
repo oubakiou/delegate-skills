@@ -43,6 +43,7 @@ review の作業を委譲する場合は、この skill を使う。generic な 
 ## 制約
 
 - read-only。ファイル編集・git の書き込み操作・push はしない（差分を読んで指摘を報告するだけ）
+- read-only 種別のため session reuse（resumable / follow-up）は使わない
 - 指摘は報告 Markdown の Findings section に収め、各 finding に severity / file:line / 根拠 / 影響 / 推奨対応を含める
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）
 - main は worker 出力を echo / 再要約しない。ユーザー向けは Summary を指す 1 行に留める（出力＝課金トークンを増やさないため。spec.md §6）

@@ -99,6 +99,12 @@ What the prefixes mean:
 
 All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
+### Resumable worker sessions
+
+Normal delegate runs stay non-persistent. For larger `delegate-implement` or `delegate-chore` tasks where the main agent expects a review/fix loop, the main agent may explicitly start a resumable initial run. That opt-in records a backend resume handle, `lineage_id`, and `run_context` in the observe JSON so a later follow-up can resume the same backend session while still creating a fresh request/response/observe run.
+
+Follow-up is explicit and fail-closed: it requires a previous observe JSON whose `backend_session.persistence` is `resumable`, a resume handle, matching backend/model/repo/worktree context, and a compatible git HEAD. If validation fails, delegation does not silently fall back to a new session; the main agent must issue a normal delegate run instead. Claude, Codex, Devin, and Cursor backends support the resumable path. No new environment variables are required.
+
 `delegate-imagegen` resolves a Codex model with the same env/default mechanism as the other delegates, but it remains a Codex-only capability bridge: `DELEGATE_IMAGEGEN_MODEL` selects the child model, `gpt*` routes to Codex, and non-`gpt*` fails closed instead of falling through to Claude.
 
 `delegate-x-research` resolves `DELEGATE_X_RESEARCH_MODEL` with default `grok-build`, then launches the current X research backend, currently Grok CLI, to investigate x.com / X posts, accounts, threads, and reactions. It does not route through Claude or Codex.

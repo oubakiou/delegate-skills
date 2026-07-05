@@ -41,5 +41,6 @@ explore は読む量が大きいほど効果が出る。複数ファイル・長
 ## 制約
 
 - read-only。ファイル編集・push はしない
+- read-only 種別のため session reuse（resumable / follow-up）は使わない
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）
 - main は worker 出力を echo / 再要約しない。ユーザー向けは Summary を指す 1 行に留める（出力＝課金トークンを増やさないため。spec.md §6）
