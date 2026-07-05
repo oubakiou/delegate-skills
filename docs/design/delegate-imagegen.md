@@ -93,8 +93,8 @@ worker の report Markdown は次の見出しを基本にする。
 
 - 実行フローの共通規約: [SKILL.md](../../skills/delegate-imagegen/SKILL.md)
 - ファイルプロトコル v1: [protocol-v1.md](protocol-v1.md)
-- 多段委譲ポリシー: spec.md [§7](spec.md#7-多段委譲ポリシー再帰防止)
-- exit code / 環境変数 / 脅威モデル: spec.md [§9](spec.md#9-スクリプトと-exit-code) / [§11](spec.md#11-環境変数) / [§12](spec.md#12-脅威モデル割り切り)
+- 多段委譲ポリシー: spec.md [§8](spec.md#8-多段委譲ポリシー再帰防止)
+- exit code / 環境変数 / 脅威モデル: spec.md [§10](spec.md#10-スクリプトと-exit-code) / [§12](spec.md#12-環境変数) / [§13](spec.md#13-脅威モデル割り切り)
 
 ## 9. 外部参照
 

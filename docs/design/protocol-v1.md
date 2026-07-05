@@ -39,6 +39,16 @@ jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 
 `.md` は `sections` を結合した補助成果物であり、`task_type_chain` / `requester_session_id` / `status` / `responder_session_id` などの構造化メタデータは正本 JSON に残す。`.md` 生成に失敗しても protocol の成否は JSON 生成結果で判定する。スクリプトは `.md` 本文を stdout に出さず、ファイルへ直接書く。
 
+## observe JSON の optional metadata
+
+protocol v1 の request / response schema は、session reuse の有無で変えない。resumable initial run と follow-up run は、通常 run と同じ request/response file を新しく作り、lineage と backend resume handle は observe JSON の optional metadata にだけ記録する。
+
+- `lineage`: `lineage_id` と、follow-up では前回 observe JSON への `followup_of`
+- `backend_session`: backend CLI へ渡す resume metadata。`backend` / `model` / `resume_id` / `resume_source` / `persistence` / `home_dir` を持つ
+- `run_context`: `repo_root` / `worktree_root` / `git_head` を必須にした stale-context 判定情報。`git_branch` / `dirty` は補助情報
+
+`responder_session_id` は response を書いた worker / wrapper の追跡 ID であり、backend resume handle ではない。follow-up 可否は `backend_session.persistence == "resumable"` と `backend_session.resume_id`、および `run_context` の検証結果で判断する。
+
 ## リクエストファイル（main → sub）
 
 トップレベルキー: `protocol_version` / `type` / `task_type` / `model` / `task_type_chain` / `requester_session_id` / `index` / `sections`
@@ -91,7 +101,7 @@ jq -r '.sections | join("\n\n")' "$request_file" >"${request_file%.json}.md"
 - `protocol_version`: リクエストと揃える（バージョン差検出・互換性判定用）
 - `type`: 固定値 `response`（ファイル種別の自己記述）
 - `status`: `completed | partial | failed | needs_input`。main が最優先・最安に読む構造化フィールド（md2idx の section ではない）
-- `responder_session_id`: 必須。リクエスト先 worker 子プロセスのプロセス / セッション ID。追跡・デバッグ用
+- `responder_session_id`: 必須。リクエスト先 worker 子プロセスのプロセス / セッション ID。追跡・デバッグ用。backend resume handle ではない
 - `index` / `sections`: 作業報告の md2idx 出力。標準の Markdown 見出しは Summary / Changed files / Commands / Verification / Findings / Blockers / Error。skill 固有の成果物に合わせて見出しを追加・置換してよい。`delegate-imagegen` は Summary / Generated files / Parameters / Verification / Blockers を使う。検証結果は構造化フィールドに持たず、Verification section に収める。main は `status` の次にこの section だけを必要時に引く（検証ログを main の context に流し込まない）
 
 生成:

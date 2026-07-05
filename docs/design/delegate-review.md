@@ -52,5 +52,5 @@ worker の報告 Markdown は canonical 英語 section 名に固定する。`Sum
 
 - 実行フロー（前提条件チェック → モデル解決 → チェーン確認 → ファイル事前確保 → リクエスト作成 → 実行系分岐 → レスポンス読み取り）: [SKILL.md](../../skills/delegate-review/SKILL.md)
 - ファイルプロトコル v1: [protocol-v1.md](protocol-v1.md)
-- 多段委譲ポリシー（`review` がチェーンに二度登場するのを禁止）: spec.md [§7](spec.md#7-多段委譲ポリシー再帰防止)
-- exit code / 環境変数 / 脅威モデル: spec.md [§9](spec.md#9-スクリプトと-exit-code) / [§11](spec.md#11-環境変数) / [§12](spec.md#12-脅威モデル割り切り)
+- 多段委譲ポリシー（`review` がチェーンに二度登場するのを禁止）: spec.md [§8](spec.md#8-多段委譲ポリシー再帰防止)
+- exit code / 環境変数 / 脅威モデル: spec.md [§10](spec.md#10-スクリプトと-exit-code) / [§12](spec.md#12-環境変数) / [§13](spec.md#13-脅威モデル割り切り)
