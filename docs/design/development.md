@@ -139,6 +139,21 @@ backend の CLI 出力を observe JSON へ正規化する処理も `shared/obser
 4. 最終ドリフト検証（fail-closed）
 5. `vp test`
 
+## issue triage（ラベル）
+
+issue には重要度と対応コストのラベルを 1 つずつ付ける。
+
+| ラベル             | 基準                                                         |
+| ------------------ | ------------------------------------------------------------ |
+| `priority: high`   | skill の中核価値（委譲の成功率・成果物の信頼性）を直接損なう |
+| `priority: medium` | 実害はあるが発生頻度が低い、または利用側で回避可能           |
+| `priority: low`    | 利便性向上・リソース節約など、なくても運用が回る             |
+| `cost: large`      | 複数コンポーネントへの変更や設計判断を伴う                   |
+| `cost: medium`     | `shared/` 複数ファイル + テスト + ドキュメントに及ぶ         |
+| `cost: small`      | 局所的な変更やドキュメント追記で収まる                       |
+
+対応順は priority 優先、同 priority なら cost の小さいものから着手する。
+
 ## リリースプロセス
 
 `gh skill publish` で GitHub Releases と `gh skill` レジストリに **同一の `vX.Y.Z` git tag で**公開する。
