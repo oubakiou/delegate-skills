@@ -15,6 +15,7 @@ interface FakeCliLog {
     BASH_MAX_TIMEOUT_MS: string | null
     CLAUDE_CONFIG_DIR: string | null
     CODEX_HOME: string | null
+    CURSOR_CONFIG_DIR: string | null
     TMPDIR: string | null
   }
 }
@@ -88,6 +89,7 @@ const readLog = (filePath: string): FakeCliLog => {
       BASH_MAX_TIMEOUT_MS: stringOrNullValue(record.env.BASH_MAX_TIMEOUT_MS),
       CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
       CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
+      CURSOR_CONFIG_DIR: stringOrNullValue(record.env.CURSOR_CONFIG_DIR),
       TMPDIR: stringOrNullValue(record.env.TMPDIR),
     },
   }
@@ -109,6 +111,7 @@ const readLogs = (filePath: string): FakeCliLog[] => {
         BASH_MAX_TIMEOUT_MS: stringOrNullValue(record.env.BASH_MAX_TIMEOUT_MS),
         CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
         CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
+        CURSOR_CONFIG_DIR: stringOrNullValue(record.env.CURSOR_CONFIG_DIR),
         TMPDIR: stringOrNullValue(record.env.TMPDIR),
       },
     }
@@ -247,7 +250,7 @@ fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, command: 'devin
 const cursorFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
-const entry = {args, command: 'agent', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}
+const entry = {args, command: 'agent', cwd: process.cwd(), env: {CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}
 let logs = []
 try {
   logs = JSON.parse(fs.readFileSync(process.env.FAKE_CLI_LOG, 'utf8'))
@@ -333,8 +336,10 @@ const writeFixtureFiles = (
   mkdirSync(paths.runDir, { recursive: true })
   mkdirSync(path.join(paths.homeDir, '.claude'), { recursive: true })
   mkdirSync(path.join(paths.homeDir, '.codex'), { recursive: true })
+  mkdirSync(path.join(paths.homeDir, '.cursor'), { recursive: true })
   writeFileSync(path.join(paths.homeDir, '.claude', '.credentials.json'), '{}')
   writeFileSync(path.join(paths.homeDir, '.codex', 'auth.json'), '{}')
+  writeFileSync(path.join(paths.homeDir, '.cursor', 'cli-config.json'), '{}')
   writeFileSync(paths.requestFile, JSON.stringify({ sections: ['request'] }))
   writeFakeCli(paths.binDir, backend)
 }
@@ -343,10 +348,12 @@ const fixtureEnv = (
   paths: Omit<Fixture, 'env'> & { binDir: string; homeDir: string }
 ): NodeJS.ProcessEnv => ({
   ...process.env,
+  CURSOR_CONFIG_DIR: '',
   DELEGATE_OBSERVE_HEARTBEAT_INTERVAL: '1',
   FAKE_CLI_LOG: paths.logFile,
   HOME: paths.homeDir,
   PATH: `${paths.binDir}:${process.env.PATH ?? ''}`,
+  XDG_CONFIG_HOME: '',
 })
 
 const makeFixture = (backend: Backend): Fixture => {
@@ -973,6 +980,26 @@ describe('delegate-cursor.sh session modes', () => {
     expect(result.status).toBe(0)
     expect(log.args).not.toContain('create-chat')
     expect(log.args).not.toContain('--resume')
+  })
+
+  it('isolates CURSOR_CONFIG_DIR into the run dir and copies cli-config.json', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.env.CURSOR_CONFIG_DIR).toBe(path.join(fixture.runDir, 'cursor-config'))
+    expect(existsSync(path.join(fixture.runDir, 'cursor-config', 'cli-config.json'))).toBe(true)
+  })
+
+  it('runs create-chat with the isolated CURSOR_CONFIG_DIR too', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['resumable', '', ''])
+    const logs = readLogs(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(logs[0].args).toEqual(['create-chat'])
+    expect(logs[0].env.CURSOR_CONFIG_DIR).toBe(path.join(fixture.runDir, 'cursor-config'))
   })
 
   it('creates a chat and starts resumable runs with --resume', () => {

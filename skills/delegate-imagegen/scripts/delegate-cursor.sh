@@ -106,8 +106,27 @@ if ! command -v agent >/dev/null 2>&1; then
   finish_without_child 3 "ERROR: agent CLI が見つかりません。"
 fi
 
+# Cursor agent CLI は起動時に <config dir>/cli-config.json を tmp ファイル + rename で
+# 書き換えるため、共有 config のままだと並列 dispatch 同士で rename が競合し
+# 片方が ENOENT で即死し得る。CURSOR_CONFIG_DIR を run_dir 配下へ隔離し、
+# authInfo を含む既存 cli-config.json をコピーしてログインを維持する
+# （codex backend の CODEX_HOME 隔離と対称）。config dir の解決順
+# （CURSOR_CONFIG_DIR → XDG_CONFIG_HOME/cursor → ~/.cursor）は CLI 本体と揃える。
+# CURSOR_CONFIG_DIR 未対応の古い CLI では無視され、従来の共有 config 動作になる
+CURSOR_CONFIG_ISOLATED="$WORK_DIR/cursor-config"
+mkdir -p "$CURSOR_CONFIG_ISOLATED"
+REAL_CURSOR_CONFIG_DIR="${CURSOR_CONFIG_DIR:-}"
+if [ -z "$REAL_CURSOR_CONFIG_DIR" ]; then
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    REAL_CURSOR_CONFIG_DIR="$XDG_CONFIG_HOME/cursor"
+  else
+    REAL_CURSOR_CONFIG_DIR="$HOME/.cursor"
+  fi
+fi
+[ -f "$REAL_CURSOR_CONFIG_DIR/cli-config.json" ] && cp "$REAL_CURSOR_CONFIG_DIR/cli-config.json" "$CURSOR_CONFIG_ISOLATED/cli-config.json"
+
 if [ "$SESSION_MODE" = "resumable" ]; then
-  if ! CURSOR_CHAT_ID="$(TMPDIR="$WORK_DIR/tmp" agent create-chat 2>"$WORK_DIR/cursor-create-chat.stderr")" || [ -z "$CURSOR_CHAT_ID" ]; then
+  if ! CURSOR_CHAT_ID="$(CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent create-chat 2>"$WORK_DIR/cursor-create-chat.stderr")" || [ -z "$CURSOR_CHAT_ID" ]; then
     delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor create-chat failed" || true
     finish_without_child 5 "ERROR: agent create-chat failed."
   fi
@@ -153,7 +172,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$REPO_ROOT"
-TMPDIR="$WORK_DIR/tmp" agent "${agent_args[@]}" \
+CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent "${agent_args[@]}" \
   >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
