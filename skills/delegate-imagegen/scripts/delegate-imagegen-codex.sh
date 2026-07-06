@@ -145,5 +145,12 @@ else
 fi
 delegate_observe_dispatch_end "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid" "$response_status" "$response_present"
 
+# protocol status が failed の response は exit 0 でも失敗扱いとし、調査のため prune しない
+response_protocol_status="$(jq -r '.status // empty' "$RESPONSE_FILE" 2>/dev/null || true)"
+if [ "$response_status" -eq 0 ] && [ "$response_present" = true ] \
+  && [ -n "$response_protocol_status" ] && [ "$response_protocol_status" != "failed" ]; then
+  delegate_codex_home_prune "$CODEX_HOME_ISOLATED"
+fi
+
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"

@@ -206,5 +206,9 @@ elif [ "$SESSION_MODE" = "followup" ]; then
 fi
 record_run_context
 
+if [ "$response_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ]; then
+  delegate_codex_home_prune "$CODEX_HOME_ISOLATED"
+fi
+
 printf '%s\n' "$RESPONSE_FILE"
 exit "$response_status"

@@ -799,6 +799,17 @@ describe('delegate-claude.sh session modes', () => {
   })
 })
 
+const seedCodexHomeLeftovers = (fixture: Fixture): string => {
+  const codexHome = path.join(fixture.runDir, 'codex-home')
+  mkdirSync(path.join(codexHome, '.tmp'), { recursive: true })
+  mkdirSync(path.join(codexHome, 'sessions'), { recursive: true })
+  writeFileSync(path.join(codexHome, '.tmp', 'cache.bin'), 'cache')
+  writeFileSync(path.join(codexHome, 'models_cache.json'), '{}')
+  writeFileSync(path.join(codexHome, 'sessions', 'rollout.jsonl'), '{}\n')
+  writeFileSync(path.join(codexHome, 'config.toml'), '')
+  return codexHome
+}
+
 describe('delegate-codex.sh session modes', () => {
   it('keeps normal runs ephemeral', () => {
     const fixture = makeFixture('codex')
@@ -810,6 +821,45 @@ describe('delegate-codex.sh session modes', () => {
     expect(log.args).toContain('--sandbox')
     expect(log.args).toContain('-C')
     expect(log.args).not.toContain('resume')
+  })
+
+  it('prunes codex-home caches and the auth copy after successful runs', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = seedCodexHomeLeftovers(fixture)
+    const result = runCodex(fixture)
+
+    expect(result.status).toBe(0)
+    expect(existsSync(path.join(codexHome, '.tmp'))).toBe(false)
+    expect(existsSync(path.join(codexHome, 'models_cache.json'))).toBe(false)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+    expect(existsSync(path.join(codexHome, 'sessions', 'rollout.jsonl'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'config.toml'))).toBe(true)
+  })
+
+  it('keeps codex-home intact when DELEGATE_CODEX_HOME_PRUNE is 0', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = seedCodexHomeLeftovers(fixture)
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      DELEGATE_CODEX_HOME_PRUNE: '0',
+    })
+
+    expect(result.status).toBe(0)
+    expect(existsSync(path.join(codexHome, '.tmp'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(true)
+  })
+
+  it('keeps codex-home intact when the run fails', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = seedCodexHomeLeftovers(fixture)
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_EXIT_WITHOUT_RESPONSE: '1',
+    })
+
+    expect(result.status).toBe(9)
+    expect(existsSync(path.join(codexHome, '.tmp'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(true)
   })
 
   it('starts resumable runs without --ephemeral and records thread.started', () => {
@@ -884,6 +934,62 @@ describe('delegate-codex.sh session modes', () => {
       observe,
       result,
     })
+  })
+})
+
+const runImagegen = (
+  fixture: Fixture,
+  env: NodeJS.ProcessEnv = fixture.env
+): { status: number } => {
+  const script = path.join(
+    repoRoot,
+    'skills',
+    'delegate-imagegen',
+    'scripts',
+    'delegate-imagegen-codex.sh'
+  )
+  const args = [
+    'gpt-5.5',
+    fixture.requestFile,
+    fixture.responseFile,
+    fixture.runDir,
+    fixture.observeFile,
+  ]
+  try {
+    execFileSync('bash', [script, ...args], { cwd: repoRoot, env, stdio: 'pipe' })
+    return { status: 0 }
+  } catch (error) {
+    if (isRecord(error) && typeof error.status === 'number') {
+      return { status: error.status }
+    }
+    throw error
+  }
+}
+
+describe('delegate-imagegen-codex.sh prune', () => {
+  it('prunes codex-home after successful runs', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = seedCodexHomeLeftovers(fixture)
+    const result = runImagegen(fixture)
+
+    expect(result.status).toBe(0)
+    expect(existsSync(path.join(codexHome, '.tmp'))).toBe(false)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+    expect(existsSync(path.join(codexHome, 'sessions', 'rollout.jsonl'))).toBe(true)
+  })
+
+  it('keeps codex-home when the protocol response status is failed', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = seedCodexHomeLeftovers(fixture)
+    const result = runImagegen(fixture, {
+      ...fixture.env,
+      FAKE_CODEX_FAILED_RESPONSE: '1',
+    })
+
+    expect(result.status).toBe(0)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(existsSync(path.join(codexHome, '.tmp'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(true)
   })
 })
 
