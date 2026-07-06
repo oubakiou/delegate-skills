@@ -146,7 +146,7 @@ follow-up は明示的かつ fail-closed。前回 observe JSON の `backend_sess
 
 ローカルでの再現調査や外部 watchdog からの監視には `DELEGATE_WORK_DIR=.temp/delegate/work` を設定し、request / response / observe JSON / run ごとの scratch file をリポジトリ内の ignore 済みディレクトリに集約する。
 `DELEGATE_RUN_RETENTION_DAYS` を設定すると、その work directory 内の古い run ごとの scratch directory を削除する。監査・デバッグ用の request / response / observe JSON は削除しない。
-worker の token usage は run 終了時に observe JSON の `usage.measurement: "measured" | "estimated"` として記録する。Claude stream-json、Codex JSON/session JSONL、Devin ATIF export は実測値を返せる場合があり、未対応または parse 不能な backend では chars/4 推定に fallback し、`usage_parse_failed` observe event を残す。
+worker の token usage は run 終了時に observe JSON の `usage.measurement: "measured" | "estimated"` として記録する。Claude stream-json、Codex JSON/session JSONL、Devin ATIF export は実測値を返せる場合があり、未対応または parse 不能な backend では chars/4 推定に fallback し、`usage_parse_failed` observe event を残す。推定 usage には `estimation_basis: "protocol_payload_only"` が入る。これは request/response のプロトコルペイロード分だけを数えた確定的な下限値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まないため、実測 backend とのモデル間比較には使わないこと。usage を出さない cursor backend は常にこの推定になる。
 
 `DELEGATE_<TYPE>_MODEL` で指定できるドキュメント済みモデル名:
 

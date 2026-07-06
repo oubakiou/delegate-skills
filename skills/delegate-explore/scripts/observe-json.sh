@@ -531,6 +531,9 @@ delegate_observe_estimated_usage_json() {
     total_tokens=null
   fi
 
+  # chars/4 推定は request/response のプロトコルペイロードだけを数え、子ワーカーの
+  # 実消費（コンテキスト読み込み・ツール往復・思考）を含まない確定的な下限値。
+  # 「精度が粗い実測近似」と誤読されないよう、根拠を機械可読に明示する
   jq -cn \
     --arg model "$model" \
     --arg backend "$backend" \
@@ -544,6 +547,7 @@ delegate_observe_estimated_usage_json() {
       total_tokens: $total_tokens,
       cost_usd: null,
       measurement: "estimated",
+      estimation_basis: "protocol_payload_only",
       source: $source,
       model: $model,
       backend: $backend

@@ -274,6 +274,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes`: capture file の現在サイズ。content を読まずに低コストで stream 進捗を判定する
 - `heartbeat.last_stream_change_at`: 直近 heartbeat で stdout/stderr bytes が増えた時刻
 - `usage.measurement`: `measured | estimated`。CLI の構造化出力や Codex session JSONL から実測できた場合は `measured`、取得不能時の chars/4 fallback は `estimated`
+- `usage.estimation_basis`: `estimated` のときだけ入る。`protocol_payload_only` は request/response のプロトコルペイロード分だけを数えた値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まない**下限値**を意味する。実測近似ではないため、実測 backend とのモデル間比較には使わないこと（usage を出さない cursor backend は常にこの推定になる）
 - `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `chars_4` など、usage の由来
 - `events[].kind == "usage_parse_failed"`: 実測 usage が取れず推定 fallback に落ちたことを示す。usage 観測は補助情報のため、この event 自体では delegate 本体を失敗にしない
 - `events[].kind == "stall_timeout"`: `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` 有効時、stdout/stderr bytes が指定秒数増えず wrapper が子 CLI を kill したことを示す。wrapper は exit code `124` を返し、response 未生成なら failed response を書く。event の `process_tree`（pid / ppid / 経過秒 / コマンドの行配列）に kill 時点の子プロセスツリーを残し、何を待って停滞したかを stream content の目視なしで切り分けられるようにする

@@ -53,6 +53,7 @@ interface ObserveJson {
   usage?: {
     backend?: string
     cost_usd?: number | null
+    estimation_basis?: string
     input_tokens?: number | null
     measurement?: string
     model?: string
@@ -254,6 +255,7 @@ const expectCodexJsonUsage = (observe: ObserveJson): void => {
 const expectEstimatedUsage = (observe: ObserveJson): void => {
   const usage = requireUsage(observe)
   expect(usage.measurement).toBe('estimated')
+  expect(usage.estimation_basis).toBe('protocol_payload_only')
   expect(usage.source).toBe('chars_4')
   expect(usage.input_tokens).toBe(2)
   expect(usage.output_tokens).toBe(1)
