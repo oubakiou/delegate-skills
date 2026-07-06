@@ -276,6 +276,8 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes`: capture file の現在サイズ。content を読まずに低コストで stream 進捗を判定する
 - `heartbeat.last_stream_change_at`: 直近 heartbeat で stdout/stderr bytes が増えた時刻
 - `usage.measurement`: `measured | estimated`。CLI の構造化出力や Codex session JSONL から実測できた場合は `measured`、取得不能時の chars/4 fallback は `estimated`
+- `usage.cached_input_tokens`: 実測でキャッシュ読みトークンの内訳が取れた場合に入る（取れない backend では null）
+- `usage.cost_usd_estimated` / `usage.cost_estimate_basis` / `usage.pricing_source`: 実測トークンはあるが CLI が費用を報告しない（`cost_usd` が null の）場合に、同梱の `model-token-prices.json` から換算した概算を**実測 `cost_usd` とは別フィールドで**併記する（下流の集計が精度を区別できるようにするため）。`cached_input_tokens` が取れた場合は cached 単価を適用し `cost_estimate_basis: "cached_input_rate_applied"`、取れない場合は非キャッシュ単価による上限寄り概算で `"uncached_input_rate_upper_bound"` になる。単価表に該当モデルが無い・単価が null の場合はフィールドごと省略する（null は埋めない）
 - `usage.estimation_basis`: `estimated` のときだけ入る。`protocol_payload_only` は request/response のプロトコルペイロード分だけを数えた値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まない**下限値**を意味する。実測近似ではないため、実測 backend とのモデル間比較には使わないこと（usage を出さない cursor backend は常にこの推定になる）
 - `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `chars_4` など、usage の由来
 - `events[].kind == "usage_parse_failed"`: 実測 usage が取れず推定 fallback に落ちたことを示す。usage 観測は補助情報のため、この event 自体では delegate 本体を失敗にしない

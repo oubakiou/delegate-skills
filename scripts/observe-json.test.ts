@@ -53,12 +53,16 @@ interface ObserveJson {
   }[]
   usage?: {
     backend?: string
+    cached_input_tokens?: number | null
+    cost_estimate_basis?: string
     cost_usd?: number | null
+    cost_usd_estimated?: number
     estimation_basis?: string
     input_tokens?: number | null
     measurement?: string
     model?: string
     output_tokens?: number | null
+    pricing_source?: string
     source?: string
     total_tokens?: number | null
   }
@@ -224,6 +228,7 @@ const expectMeasuredUsage = (observe: ObserveJson): void => {
   expect(usage.output_tokens).toBe(30)
   expect(usage.total_tokens).toBe(150)
   expect(usage.cost_usd).toBe(0.0012)
+  expect(usage.cost_usd_estimated).toBeUndefined()
 }
 
 const expectDevinExportUsage = (observe: ObserveJson): void => {
@@ -235,13 +240,26 @@ const expectDevinExportUsage = (observe: ObserveJson): void => {
   expect(usage.total_tokens).toBe(15_694)
 }
 
+// gpt-5.5 単価: (input - cached)*5 + cached*0.5 + output*30 per 1M tokens
+const expectCachedRateCostEstimate = (
+  usage: NonNullable<ObserveJson['usage']>,
+  costUsdEstimated: number
+): void => {
+  expect(usage.cost_usd_estimated).toBeCloseTo(costUsdEstimated, 10)
+  expect(usage.cost_estimate_basis).toBe('cached_input_rate_applied')
+  expect(usage.pricing_source).toBe('model-token-prices.json:openai')
+  expect(usage.cost_usd).toBeNull()
+}
+
 const expectCodexSessionUsage = (observe: ObserveJson): void => {
   const usage = requireUsage(observe)
   expect(usage.measurement).toBe('measured')
   expect(usage.source).toBe('codex_session_jsonl')
   expect(usage.input_tokens).toBe(13_656)
+  expect(usage.cached_input_tokens).toBe(9600)
   expect(usage.output_tokens).toBe(17)
   expect(usage.total_tokens).toBe(13_673)
+  expectCachedRateCostEstimate(usage, 0.025_59)
 }
 
 const expectCodexJsonUsage = (observe: ObserveJson): void => {
@@ -249,8 +267,10 @@ const expectCodexJsonUsage = (observe: ObserveJson): void => {
   expect(usage.measurement).toBe('measured')
   expect(usage.source).toBe('codex_json')
   expect(usage.input_tokens).toBe(13_367)
+  expect(usage.cached_input_tokens).toBe(9088)
   expect(usage.output_tokens).toBe(17)
   expect(usage.total_tokens).toBe(13_384)
+  expectCachedRateCostEstimate(usage, 0.026_449)
 }
 
 const expectEstimatedUsage = (observe: ObserveJson): void => {
@@ -261,6 +281,7 @@ const expectEstimatedUsage = (observe: ObserveJson): void => {
   expect(usage.input_tokens).toBe(2)
   expect(usage.output_tokens).toBe(1)
   expect(usage.total_tokens).toBe(3)
+  expect(usage.cost_usd_estimated).toBeUndefined()
 }
 
 const requireBackendSession = (
@@ -521,6 +542,98 @@ MD
       const observe = parseObserveJson(output)
 
       expectCodexJsonUsage(observe)
+    })
+
+    it('falls back to uncached rates when the cache breakdown is missing', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        capture="$run_dir/worker-stdout.capture"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+        printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}' >"$capture"
+        measured="$(delegate_observe_usage_from_capture "$capture" gpt-5.5 codex codex_json || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.5 req.json res.json codex_json "$measured"
+        cat "$observe"
+        `
+      )
+      const usage = requireUsage(parseObserveJson(output))
+
+      // gpt-5.5 非キャッシュ単価: 100*5 + 10*30 per 1M tokens
+      expect(usage.cost_usd_estimated).toBeCloseTo(0.0008, 10)
+      expect(usage.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
+    })
+
+    it('resolves prefixed devin models and prefers the backend pricing source', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore devin-glm-5.2 devin req.json res.json requester
+        measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":0,"total_tokens":1000000,"cost_usd":null,"measurement":"measured","source":"devin_json","model":"devin-glm-5.2","backend":"devin"}'
+        delegate_observe_record_usage "$observe" "$run_dir" devin devin-glm-5.2 req.json res.json devin_json "$measured"
+        cat "$observe"
+        `
+      )
+      const usage = requireUsage(parseObserveJson(output))
+
+      // glm-5.2(cognition): 1M input tokens * 1.4 per 1M tokens
+      expect(usage.cost_usd_estimated).toBeCloseTo(1.4, 10)
+      expect(usage.pricing_source).toBe('model-token-prices.json:cognition')
+    })
+
+    it('resolves cursor effort-suffixed models against the base price entry', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore cursor-glm-5.2-high cursor req.json res.json requester
+        measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":0,"total_tokens":1000000,"cost_usd":null,"measurement":"measured","source":"cursor_json","model":"cursor-glm-5.2-high","backend":"cursor"}'
+        delegate_observe_record_usage "$observe" "$run_dir" cursor cursor-glm-5.2-high req.json res.json cursor_json "$measured"
+        cat "$observe"
+        `
+      )
+      const usage = requireUsage(parseObserveJson(output))
+
+      expect(usage.cost_usd_estimated).toBeCloseTo(1.4, 10)
+      expect(usage.pricing_source).toBe('model-token-prices.json:cursor')
+    })
+
+    it('omits the cost estimate when the price table has no usable entry', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        capture="$run_dir/worker-stdout.capture"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5 codex req.json res.json requester
+        printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}' >"$capture"
+        measured="$(delegate_observe_usage_from_capture "$capture" gpt-5 codex codex_json || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5 req.json res.json codex_json "$measured"
+        cat "$observe"
+        `
+      )
+      const usage = requireUsage(parseObserveJson(output))
+
+      expect(usage.measurement).toBe('measured')
+      expect(usage.cost_usd_estimated).toBeUndefined()
+      expect(usage.cost_estimate_basis).toBeUndefined()
+      expect(usage.pricing_source).toBeUndefined()
     })
 
     it('ignores trailing usage objects without measured values', () => {

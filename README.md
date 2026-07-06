@@ -181,6 +181,8 @@ delegate-skills passes only the resolved model string to the target CLI. It does
 
 [`shared/model-token-prices.json`](shared/model-token-prices.json) contains a manually curated token price snapshot for supported delegate model families. `scripts/sync-shared.ts` bundles a copy into each skill directory. It is reference data for cost analysis and reporting only; delegate-skills does not use it as a cost gate.
 
+When a backend reports measured tokens but no cost (e.g. Codex), the observe usage additionally carries `cost_usd_estimated` converted from this table, kept separate from the measured `cost_usd` field so downstream aggregation can tell the two apart. `cost_estimate_basis` records whether cached-input rates were applied, and the fields are omitted entirely when the table has no usable entry for the model.
+
 ![Model token prices](docs/assets/model-token-prices.svg)
 
 Models with input prices at or below \$1 or output prices at or below \$5 per 1M tokens:

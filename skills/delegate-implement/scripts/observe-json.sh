@@ -5,6 +5,17 @@ set -euo pipefail
 # 各 delegate-* skill の scripts/observe-json.sh は scripts/sync-shared.ts により
 # この正本から自動生成されたコピー。編集は正本に対して行うこと。
 
+# 単価表は shared/ では observe-json.sh と同階層、各 skill 配布では scripts/ の親に置かれる
+DELEGATE_OBSERVE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+delegate_observe_prices_file() {
+  if [ -s "$DELEGATE_OBSERVE_LIB_DIR/model-token-prices.json" ]; then
+    printf '%s' "$DELEGATE_OBSERVE_LIB_DIR/model-token-prices.json"
+  elif [ -s "$DELEGATE_OBSERVE_LIB_DIR/../model-token-prices.json" ]; then
+    printf '%s' "$DELEGATE_OBSERVE_LIB_DIR/../model-token-prices.json"
+  fi
+}
+
 delegate_observe_backend_from_model() {
   case "$1" in
     gpt*) printf '%s' codex ;;
@@ -586,6 +597,7 @@ delegate_observe_parse_usage_events() {
 	    def token_usage($usage):
 	      {
 	        input_tokens: number_or_null($usage.input_tokens? // $usage.inputTokens? // $usage.prompt_tokens? // $usage.promptTokens?),
+	        cached_input_tokens: number_or_null($usage.cached_input_tokens? // $usage.cachedInputTokens? // $usage.cache_read_input_tokens?),
 	        output_tokens: number_or_null($usage.output_tokens? // $usage.outputTokens? // $usage.completion_tokens? // $usage.completionTokens?),
         total_tokens: number_or_null($usage.total_tokens? // $usage.totalTokens?),
         cost_usd: number_or_null($usage.total_cost_usd? // $usage.cost_usd? // $usage.costUsd?)
@@ -604,6 +616,7 @@ delegate_observe_parse_usage_events() {
 	        ($items[-1]) as $last
 	        | {
 	            input_tokens: $last.input_tokens,
+		            cached_input_tokens: $last.cached_input_tokens,
 	            output_tokens: $last.output_tokens,
 	            total_tokens: ($last.total_tokens // sum_or_null($last.input_tokens; $last.output_tokens)),
 	            cost_usd: $last.cost_usd,
@@ -714,6 +727,74 @@ delegate_observe_usage_from_codex_sessions() {
   printf '%s\n' "$usage_json"
 }
 
+# Codex CLI などトークン実測は取れるが費用を報告しない backend 向けに、同梱の
+# 単価表から換算した概算を実測 cost_usd とは別フィールドで併記する（下流の集計が
+# 実測と換算の精度を区別できるようにするため）。cached_input_tokens が取れた場合は
+# cached 単価を適用し、取れない場合は非キャッシュ単価による上限寄り概算である旨を
+# cost_estimate_basis で機械可読に示す。単価表に該当モデルが無い・単価が null の
+# 場合はフィールド自体を省略する（null は埋めない）
+delegate_observe_augment_cost_estimate() {
+  local usage_json="$1"
+  local backend="$2"
+
+  local prices_file
+  prices_file="$(delegate_observe_prices_file)"
+  if [ -z "$prices_file" ]; then
+    printf '%s\n' "$usage_json"
+    return 0
+  fi
+  jq -c --slurpfile prices "$prices_file" --arg backend "$backend" '
+    def provider_for($b):
+      {codex: "openai", claude: "anthropic", devin: "cognition", cursor: "cursor"}[$b] // null;
+    # observe usage の model は backend 固定プレフィックス付きの documented name
+    # （devin-glm-5.2 等）だが、単価表は基底 model 名で持つため lookup 前に剥がす。
+    # cursor は effort が model slug に載る（-high / -max）ため、完全一致が無い場合に
+    # 限り suffix を剥がした基底名でも照合する
+    def normalized_model($m; $b):
+      if $b == "devin" and ($m | startswith("devin-")) then $m[6:]
+      elif $b == "cursor" and ($m | startswith("cursor-")) then $m[7:]
+      else $m end;
+    def matches_for($name; $models; $aliases):
+      ([$aliases[] | select(.alias == $name) | .alias_for] | first // $name) as $resolved
+      | [$models[] | select(.model == $resolved)];
+    . as $u
+    | if ($u.measurement == "measured")
+        and ($u.cost_usd == null)
+        and (($u.input_tokens | type) == "number")
+        and (($u.output_tokens | type) == "number")
+      then
+        ($prices[0].models // []) as $models
+        | ($prices[0].aliases // []) as $aliases
+        | normalized_model($u.model; $backend) as $base
+        | (if $backend == "cursor" and ($base | test("-(high|max)$"))
+           then [$base, ($base | sub("-(high|max)$"; ""))]
+           else [$base] end) as $names
+        | (([$names[] | matches_for(.; $models; $aliases) | select(length > 0)] | first) // []) as $matches
+        | (([$matches[] | select(.pricing_source == provider_for($backend))] | first) // ($matches | first)) as $entry
+        | if ($entry != null)
+            and (($entry.input | type) == "number")
+            and (($entry.output | type) == "number")
+          then
+            ($u.cached_input_tokens // null) as $cached
+            | if (($cached | type) == "number")
+                and (($entry.cached_input | type) == "number")
+                and ($cached <= $u.input_tokens)
+              then $u + {
+                cost_usd_estimated: (((($u.input_tokens - $cached) * $entry.input) + ($cached * $entry.cached_input) + ($u.output_tokens * $entry.output)) / 1000000),
+                cost_estimate_basis: "cached_input_rate_applied",
+                pricing_source: ("model-token-prices.json:" + ($entry.pricing_source // "unknown"))
+              }
+              else $u + {
+                cost_usd_estimated: ((($u.input_tokens * $entry.input) + ($u.output_tokens * $entry.output)) / 1000000),
+                cost_estimate_basis: "uncached_input_rate_upper_bound",
+                pricing_source: ("model-token-prices.json:" + ($entry.pricing_source // "unknown"))
+              }
+              end
+          else $u end
+      else $u end
+  ' <<<"$usage_json"
+}
+
 delegate_observe_record_usage() {
   local observe_file="$1"
   local run_dir="$2"
@@ -730,6 +811,10 @@ delegate_observe_record_usage() {
   else
     delegate_observe_usage_parse_failed "$observe_file" "$run_dir" "$backend" "$source" "measured usage was not available" || true
     usage_json="$(delegate_observe_estimated_usage_json "$request_file" "$response_file" "$model" "$backend" chars_4)"
+  fi
+  local augmented
+  if augmented="$(delegate_observe_augment_cost_estimate "$usage_json" "$backend" 2>/dev/null)" && [ -n "$augmented" ]; then
+    usage_json="$augmented"
   fi
   delegate_observe_usage_update "$observe_file" "$run_dir" "$usage_json"
 }
