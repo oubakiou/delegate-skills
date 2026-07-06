@@ -49,6 +49,7 @@ interface ObserveJson {
     timeout_seconds?: number
     idle_seconds?: number
     process_tree?: string[]
+    superseded_by?: string
   }[]
   usage?: {
     backend?: string
@@ -888,6 +889,42 @@ describe('observe-json.sh lifecycle helpers', () => {
     expect(stallEvent.idle_seconds).toBeGreaterThanOrEqual(1)
     const processTree = stallEvent.process_tree ?? []
     expect(processTree.some((line) => line.includes('sleep'))).toBe(true)
+  })
+
+  it('supersedes stale prepared observes of the same type and requester only', () => {
+    const workDir = makeWorkDir()
+    runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      init() {
+        local run_dir="${workDir}/delegate_chore_20260706_$1"
+        mkdir -p "$run_dir"
+        delegate_observe_init "\${run_dir}_observe.json" "$run_dir" chore haiku claude req.json res.json "$2"
+      }
+      init 000009_zzzzz req-1
+      init 000002_bbbbb req-1
+      init 000003_ccccc other-req
+      init 000006_rrrrr req-1
+      rm -rf "${workDir}/delegate_chore_20260706_000006_rrrrr"
+      init 000004_ddddd req-1
+      delegate_observe_dispatch_start "${workDir}/delegate_chore_20260706_000002_bbbbb_observe.json" "${workDir}/delegate_chore_20260706_000002_bbbbb" claude 111
+      delegate_observe_dispatch_start "${workDir}/delegate_chore_20260706_000004_ddddd_observe.json" "${workDir}/delegate_chore_20260706_000004_ddddd" claude 222
+      delegate_observe_supersede_stale_prepared "${workDir}/delegate_chore_20260706_000004_ddddd_observe.json" chore
+      `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+    const observeAt = (name: string): ObserveJson =>
+      readObserveJson(path.join(workDir, `delegate_chore_20260706_${name}_observe.json`))
+
+    // 000001 は basename 辞書順では current より古くないが mtime では古い（同一秒対策）
+    expect(observeAt('000009_zzzzz').state.phase).toBe('superseded')
+    expect(observeAt('000002_bbbbb').state.phase).toBe('running')
+    expect(observeAt('000003_ccccc').state.phase).toBe('prepared')
+    expect(observeAt('000006_rrrrr').state.phase).toBe('prepared')
+    expect(existsSync(path.join(workDir, 'delegate_chore_20260706_000006_rrrrr'))).toBe(false)
+    const supersededEvent = findRequiredEvent(observeAt('000009_zzzzz'), 'superseded')
+    expect(supersededEvent.superseded_by).toBe('delegate_chore_20260706_000004_ddddd_observe.json')
   })
 
   it('removes old run directories while keeping running runs during build-request', () => {

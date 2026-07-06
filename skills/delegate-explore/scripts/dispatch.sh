@@ -49,6 +49,7 @@ fi
 
 pid="$$"
 delegate_observe_dispatch_start "$observe_file" "$run_dir" "$backend" "$pid"
+delegate_observe_supersede_stale_prepared "$observe_file" "$task_type" || true
 
 wrapper_stdout=""
 wrapper_status=0

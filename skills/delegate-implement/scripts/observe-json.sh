@@ -734,6 +734,78 @@ delegate_observe_record_usage() {
   delegate_observe_usage_update "$observe_file" "$run_dir" "$usage_json"
 }
 
+# prepare は呼び出しごとに新しい ID で observe JSON を初期化するため、main が dispatch 前に
+# リクエストを作り直すと放棄された observe が "prepared" のまま WORK_DIR に残留し、
+# 「observe 全数 = 往復全数」とみなす利用側の集計やライブ監視を誤らせる。dispatch 時に
+# 同一 WORK_DIR / 同一 task_type / 同一 requester で、dispatch 時点より古い mtime の
+# prepared-only observe へ superseded マークを付けて機械可読に区別する。
+# basename の timestamp は秒精度で同一秒内の順序を表せないため、順序判定には
+# ナノ秒精度の mtime（bash -ot）を使う。dispatch 待ちの並列 run を誤マークしても、
+# その run の dispatch_start が phase を "running" で上書きするため自己修復する
+delegate_observe_supersede_stale_prepared() {
+  local observe_file="$1"
+  local task_type="$2"
+
+  local work_dir current_base requester candidate
+  work_dir="$(dirname "$observe_file")"
+  current_base="$(basename "$observe_file")"
+  requester="$(jq -r '.run.requester_session_id // ""' "$observe_file" 2>/dev/null || printf '')"
+
+  for candidate in "$work_dir/delegate_${task_type}_"*_observe.json; do
+    [ -f "$candidate" ] || continue
+    [ "$(basename "$candidate")" = "$current_base" ] && continue
+    [ "$candidate" -ot "$observe_file" ] || continue
+    delegate_observe_mark_superseded "$candidate" "$requester" "$current_base" || true
+  done
+}
+
+delegate_observe_mark_superseded() {
+  local observe_file="$1"
+  local requester="$2"
+  local superseded_by="$3"
+
+  # run_dir が無い候補は DELEGATE_RUN_RETENTION_DAYS で削除済み。lock/tmp 作成で
+  # 削除済み directory を復活させないため触らない
+  local run_dir="${observe_file%_observe.json}"
+  [ -d "$run_dir" ] || return 0
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_mark_superseded_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$requester" \
+    "$superseded_by"
+}
+
+delegate_observe_mark_superseded_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local requester="$3"
+  local superseded_by="$4"
+
+  local phase candidate_requester now event_json tmp
+  phase="$(jq -r '.state.phase // ""' "$observe_file" 2>/dev/null || printf '')"
+  [ "$phase" = "prepared" ] || return 0
+  candidate_requester="$(jq -r '.run.requester_session_id // ""' "$observe_file" 2>/dev/null || printf '')"
+  [ "$candidate_requester" = "$requester" ] || return 0
+
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  event_json="$(
+    jq -cn \
+      --arg ts "$now" \
+      --arg superseded_by "$superseded_by" \
+      '{kind: "superseded", ts: $ts, superseded_by: $superseded_by}'
+  )"
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_superseded_XXXXX" --suffix=.json)"
+  jq \
+    --argjson event "$event_json" \
+    '(.state.phase = "superseded")
+     | (.events += [$event])' \
+    "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
 delegate_observe_dispatch_start() {
   local observe_file="$1"
   local run_dir="$2"
