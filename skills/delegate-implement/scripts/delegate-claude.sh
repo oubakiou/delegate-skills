@@ -108,6 +108,7 @@ PROMPT=$(cat <<PROMPT_EOF
 
 1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。
+   長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
 4. 作業報告 Markdown を stdin で \`bash ${script_dir}/build-response.sh <status> ${RESPONDER_SESSION_ID} "${RESPONSE_FILE}"\` に渡して書く。status は completed | partial | failed | needs_input のいずれか。report の見出しは
    Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
@@ -150,14 +151,24 @@ case "$TASK_TYPE" in
     ;;
 esac
 
-cd "$REPO_ROOT"
-if [ -n "$CLAUDE_SESSION_HOME" ]; then
-  CLAUDE_CONFIG_DIR="$CLAUDE_SESSION_HOME" TMPDIR="$WORK_DIR/tmp" claude "${claude_args[@]}" \
-    >"$stdout_capture" 2>"$stderr_capture" &
-else
-  TMPDIR="$WORK_DIR/tmp" claude "${claude_args[@]}" \
-    >"$stdout_capture" 2>"$stderr_capture" &
+# 子が自作のハングするサブプロセスを待ち続けると外側 watchdog の kill まで復帰機会が無い。
+# Bash tool の timeout 上限を注入しておくと、ハングしたコマンドが harness からツールエラーで
+# 返り、子が自力で是正（timeout 付き再実行等）できる。0 指定で注入を無効化する。
+CHILD_BASH_TIMEOUT_MS="$(delegate_observe_positive_int_or_zero "${DELEGATE_CHILD_BASH_TIMEOUT_MS:-300000}")"
+child_env=(TMPDIR="$WORK_DIR/tmp")
+if [ "$CHILD_BASH_TIMEOUT_MS" -gt 0 ]; then
+  child_env+=(
+    BASH_DEFAULT_TIMEOUT_MS="$CHILD_BASH_TIMEOUT_MS"
+    BASH_MAX_TIMEOUT_MS="$CHILD_BASH_TIMEOUT_MS"
+  )
 fi
+if [ -n "$CLAUDE_SESSION_HOME" ]; then
+  child_env+=(CLAUDE_CONFIG_DIR="$CLAUDE_SESSION_HOME")
+fi
+
+cd "$REPO_ROOT"
+env "${child_env[@]}" claude "${claude_args[@]}" \
+  >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then

@@ -11,6 +11,8 @@ interface FakeCliLog {
   command: string | null
   cwd: string
   env: {
+    BASH_DEFAULT_TIMEOUT_MS: string | null
+    BASH_MAX_TIMEOUT_MS: string | null
     CLAUDE_CONFIG_DIR: string | null
     CODEX_HOME: string | null
     TMPDIR: string | null
@@ -82,6 +84,8 @@ const readLog = (filePath: string): FakeCliLog => {
     command: stringOrNullValue(record.command),
     cwd: stringOrNullValue(record.cwd) ?? '',
     env: {
+      BASH_DEFAULT_TIMEOUT_MS: stringOrNullValue(record.env.BASH_DEFAULT_TIMEOUT_MS),
+      BASH_MAX_TIMEOUT_MS: stringOrNullValue(record.env.BASH_MAX_TIMEOUT_MS),
       CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
       CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
       TMPDIR: stringOrNullValue(record.env.TMPDIR),
@@ -101,6 +105,8 @@ const readLogs = (filePath: string): FakeCliLog[] => {
       command: stringOrNullValue(record.command),
       cwd: stringOrNullValue(record.cwd) ?? '',
       env: {
+        BASH_DEFAULT_TIMEOUT_MS: stringOrNullValue(record.env.BASH_DEFAULT_TIMEOUT_MS),
+        BASH_MAX_TIMEOUT_MS: stringOrNullValue(record.env.BASH_MAX_TIMEOUT_MS),
         CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
         CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
         TMPDIR: stringOrNullValue(record.env.TMPDIR),
@@ -170,8 +176,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 const args = process.argv.slice(2)
 const prompt = args[args.indexOf('-p') + 1] || ''
+const loggedEnv = () => ({
+  BASH_DEFAULT_TIMEOUT_MS: process.env.BASH_DEFAULT_TIMEOUT_MS,
+  BASH_MAX_TIMEOUT_MS: process.env.BASH_MAX_TIMEOUT_MS,
+  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  TMPDIR: process.env.TMPDIR,
+})
 if (process.env.FAKE_CLAUDE_EXIT_WITHOUT_RESPONSE === '1') {
-  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}))
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: loggedEnv()}))
   process.exit(9)
 }
 const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
@@ -186,7 +198,7 @@ if (sessionIdIndex !== -1 && process.env.CLAUDE_CONFIG_DIR && process.env.FAKE_C
   fs.mkdirSync(sessionDir, {recursive: true})
   fs.writeFileSync(path.join(sessionDir, args[sessionIdIndex + 1] + '.jsonl'), '{}\\n')
 }
-fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}))
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: loggedEnv()}))
 console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_tokens: 1}}))
 `
 
@@ -667,6 +679,42 @@ describe('delegate-claude.sh session modes', () => {
     expect(log.args).not.toContain('--session-id')
     expect(log.args).not.toContain('--resume')
     expect(log.env.CLAUDE_CONFIG_DIR).toBeNull()
+  })
+
+  it('injects Bash tool timeout caps into the child env by default', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaude(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.env.BASH_DEFAULT_TIMEOUT_MS).toBe('300000')
+    expect(log.env.BASH_MAX_TIMEOUT_MS).toBe('300000')
+  })
+
+  it('overrides the injected Bash timeout via DELEGATE_CHILD_BASH_TIMEOUT_MS', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaude(fixture, [], {
+      ...fixture.env,
+      DELEGATE_CHILD_BASH_TIMEOUT_MS: '120000',
+    })
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.env.BASH_DEFAULT_TIMEOUT_MS).toBe('120000')
+    expect(log.env.BASH_MAX_TIMEOUT_MS).toBe('120000')
+  })
+
+  it('skips Bash timeout injection when DELEGATE_CHILD_BASH_TIMEOUT_MS is 0', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaude(fixture, [], {
+      ...fixture.env,
+      DELEGATE_CHILD_BASH_TIMEOUT_MS: '0',
+    })
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.env.BASH_DEFAULT_TIMEOUT_MS).toBeNull()
+    expect(log.env.BASH_MAX_TIMEOUT_MS).toBeNull()
   })
 
   it('starts resumable runs with a lineage config dir and session id', () => {

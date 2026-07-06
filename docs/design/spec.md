@@ -276,7 +276,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `usage.measurement`: `measured | estimated`。CLI の構造化出力や Codex session JSONL から実測できた場合は `measured`、取得不能時の chars/4 fallback は `estimated`
 - `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `chars_4` など、usage の由来
 - `events[].kind == "usage_parse_failed"`: 実測 usage が取れず推定 fallback に落ちたことを示す。usage 観測は補助情報のため、この event 自体では delegate 本体を失敗にしない
-- `events[].kind == "stall_timeout"`: `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` 有効時、stdout/stderr bytes が指定秒数増えず wrapper が子 CLI を kill したことを示す。wrapper は exit code `124` を返し、response 未生成なら failed response を書く
+- `events[].kind == "stall_timeout"`: `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` 有効時、stdout/stderr bytes が指定秒数増えず wrapper が子 CLI を kill したことを示す。wrapper は exit code `124` を返し、response 未生成なら failed response を書く。event の `process_tree`（pid / ppid / 経過秒 / コマンドの行配列）に kill 時点の子プロセスツリーを残し、何を待って停滞したかを stream content の目視なしで切り分けられるようにする
 - `streams.*.content`: 終了時または preflight failure 時の状況把握用。既定で末尾 `DELEGATE_OBSERVE_STREAM_MAX_BYTES` bytes だけを残し、超過時は `truncated: true` と総 bytes を記録する
 - `lineage`: opt-in の resumable / follow-up run だけに入る。`lineage_id` と、follow-up では前回 `observe_file` への `followup_of` を持つ
 - `backend_session`: opt-in の resumable / follow-up run だけに入る backend resume metadata。`backend` / `model` / `resume_id` / `resume_source` / `persistence` / `home_dir` を持ち、`persistence: "resumable"` のときだけ follow-up 対象になる
@@ -499,6 +499,7 @@ delegate-skills/
 | `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値  |
 | `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先 |
 | `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                               |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000`（ミリ秒、`0` は注入なし）       | claude backend の子へ注入する Bash tool の timeout 上限          |
 | `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する    |
 | `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限             |
 | `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する     |

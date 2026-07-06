@@ -970,6 +970,28 @@ delegate_observe_failed_response_written_inner() {
   mv "$tmp" "$observe_file"
 }
 
+# stall 時に「子が何を待って停滞したか」を stream 末尾の目視なしで切り分けるため、
+# 子のプロセスツリー（pid / ppid / 経過秒 / コマンド）を JSON 配列で返す
+delegate_observe_process_tree_json() {
+  local root_pid="$1"
+  ps -e -o pid=,ppid=,etimes=,args= 2>/dev/null | awk -v root="$root_pid" '
+    {
+      pid = $1
+      parent[pid] = $2
+      line[pid] = $0
+    }
+    END {
+      for (pid in line) {
+        q = pid
+        for (depth = 0; depth < 64 && q != ""; depth++) {
+          if (q == root) { print line[pid]; break }
+          q = parent[q]
+        }
+      }
+    }
+  ' | sort -n | jq -R -s 'split("\n") | map(select(length > 0))'
+}
+
 delegate_observe_stall_timeout() {
   local observe_file="$1"
   local run_dir="$2"
@@ -1004,10 +1026,12 @@ delegate_observe_stall_timeout_inner() {
   local stdout_capture="$7"
   local stderr_capture="$8"
 
-  local now stdout_bytes stderr_bytes event_json tmp
+  local now stdout_bytes stderr_bytes process_tree event_json tmp
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   stdout_bytes="$(delegate_observe_capture_bytes "$stdout_capture")"
   stderr_bytes="$(delegate_observe_capture_bytes "$stderr_capture")"
+  process_tree="$(delegate_observe_process_tree_json "$child_pid" || true)"
+  [ -n "$process_tree" ] || process_tree='[]'
   event_json="$(
     jq -cn \
       --arg ts "$now" \
@@ -1017,6 +1041,7 @@ delegate_observe_stall_timeout_inner() {
       --argjson idle_seconds "$idle_seconds" \
       --argjson stdout_bytes "$stdout_bytes" \
       --argjson stderr_bytes "$stderr_bytes" \
+      --argjson process_tree "$process_tree" \
       '{
         kind: "stall_timeout",
         ts: $ts,
@@ -1025,7 +1050,8 @@ delegate_observe_stall_timeout_inner() {
         timeout_seconds: $timeout_seconds,
         idle_seconds: $idle_seconds,
         stdout_bytes: $stdout_bytes,
-        stderr_bytes: $stderr_bytes
+        stderr_bytes: $stderr_bytes,
+        process_tree: $process_tree
       }'
   )"
 

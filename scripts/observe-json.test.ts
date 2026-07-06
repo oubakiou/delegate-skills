@@ -48,6 +48,7 @@ interface ObserveJson {
     source?: string
     timeout_seconds?: number
     idle_seconds?: number
+    process_tree?: string[]
   }[]
   usage?: {
     backend?: string
@@ -883,6 +884,8 @@ describe('observe-json.sh lifecycle helpers', () => {
     expect(observe.state.phase).toBe('stalled')
     expect(stallEvent.timeout_seconds).toBe(1)
     expect(stallEvent.idle_seconds).toBeGreaterThanOrEqual(1)
+    const processTree = stallEvent.process_tree ?? []
+    expect(processTree.some((line) => line.includes('sleep'))).toBe(true)
   })
 
   it('removes old run directories while keeping running runs during build-request', () => {
