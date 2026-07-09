@@ -1,3 +1,6 @@
+// shell 実装の observe JSON helper を実際の Bash 呼び出しで検証し、
+// telemetry parse、session metadata、cost estimate pricing を
+// TypeScript 側に再実装せずにカバーする。
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -544,96 +547,162 @@ MD
       expectCodexJsonUsage(observe)
     })
 
-    it('falls back to uncached rates when the cache breakdown is missing', () => {
-      const workDir = makeWorkDir()
-      const output = runBash(
-        `
-        set -euo pipefail
-        source shared/observe-json.sh
-        run_dir="${workDir}/run"
-        observe="$run_dir/run_observe.json"
-        capture="$run_dir/worker-stdout.capture"
-        mkdir -p "$run_dir"
-        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
-        printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}' >"$capture"
-        measured="$(delegate_observe_usage_from_capture "$capture" gpt-5.5 codex codex_json || true)"
-        delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.5 req.json res.json codex_json "$measured"
-        cat "$observe"
-        `
-      )
-      const usage = requireUsage(parseObserveJson(output))
+    describe('cost estimates', () => {
+      it('falls back to uncached rates when the cache breakdown is missing', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          capture="$run_dir/worker-stdout.capture"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+          printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}' >"$capture"
+          measured="$(delegate_observe_usage_from_capture "$capture" gpt-5.5 codex codex_json || true)"
+          delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.5 req.json res.json codex_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
 
-      // gpt-5.5 非キャッシュ単価: 100*5 + 10*30 per 1M tokens
-      expect(usage.cost_usd_estimated).toBeCloseTo(0.0008, 10)
-      expect(usage.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
-    })
+        // gpt-5.5 非キャッシュ単価: 100*5 + 10*30 per 1M tokens
+        expect(usage.cost_usd_estimated).toBeCloseTo(0.0008, 10)
+        expect(usage.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
+      })
 
-    it('resolves prefixed devin models and prefers the backend pricing source', () => {
-      const workDir = makeWorkDir()
-      const output = runBash(
-        `
-        set -euo pipefail
-        source shared/observe-json.sh
-        run_dir="${workDir}/run"
-        observe="$run_dir/run_observe.json"
-        mkdir -p "$run_dir"
-        delegate_observe_init "$observe" "$run_dir" chore devin-glm-5.2 devin req.json res.json requester
-        measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":0,"total_tokens":1000000,"cost_usd":null,"measurement":"measured","source":"devin_json","model":"devin-glm-5.2","backend":"devin"}'
-        delegate_observe_record_usage "$observe" "$run_dir" devin devin-glm-5.2 req.json res.json devin_json "$measured"
-        cat "$observe"
-        `
-      )
-      const usage = requireUsage(parseObserveJson(output))
+      it('resolves prefixed devin models and prefers the backend pricing source', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore devin-glm-5.2 devin req.json res.json requester
+          measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":0,"total_tokens":1000000,"cost_usd":null,"measurement":"measured","source":"devin_json","model":"devin-glm-5.2","backend":"devin"}'
+          delegate_observe_record_usage "$observe" "$run_dir" devin devin-glm-5.2 req.json res.json devin_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
 
-      // glm-5.2(cognition): 1M input tokens * 1.4 per 1M tokens
-      expect(usage.cost_usd_estimated).toBeCloseTo(1.4, 10)
-      expect(usage.pricing_source).toBe('model-token-prices.json:cognition')
-    })
+        // glm-5.2(cognition): 1M input tokens * 1.4 per 1M tokens
+        expect(usage.cost_usd_estimated).toBeCloseTo(1.4, 10)
+        expect(usage.pricing_source).toBe('model-token-prices.json:cognition')
+      })
 
-    it('resolves cursor effort-suffixed models against the base price entry', () => {
-      const workDir = makeWorkDir()
-      const output = runBash(
-        `
-        set -euo pipefail
-        source shared/observe-json.sh
-        run_dir="${workDir}/run"
-        observe="$run_dir/run_observe.json"
-        mkdir -p "$run_dir"
-        delegate_observe_init "$observe" "$run_dir" chore cursor-glm-5.2-high cursor req.json res.json requester
-        measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":0,"total_tokens":1000000,"cost_usd":null,"measurement":"measured","source":"cursor_json","model":"cursor-glm-5.2-high","backend":"cursor"}'
-        delegate_observe_record_usage "$observe" "$run_dir" cursor cursor-glm-5.2-high req.json res.json cursor_json "$measured"
-        cat "$observe"
-        `
-      )
-      const usage = requireUsage(parseObserveJson(output))
+      it('estimates SWE-1.7 preview pricing from the Devin price table', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore swe-1.7 devin req.json res.json requester
+          measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":1000000,"total_tokens":2000000,"cost_usd":null,"measurement":"measured","source":"devin_json","model":"swe-1.7","backend":"devin"}'
+          delegate_observe_record_usage "$observe" "$run_dir" devin swe-1.7 req.json res.json devin_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
 
-      expect(usage.cost_usd_estimated).toBeCloseTo(1.4, 10)
-      expect(usage.pricing_source).toBe('model-token-prices.json:cursor')
-    })
+        expect(usage.cost_usd_estimated).toBe(0)
+        expect(usage.pricing_source).toBe('model-token-prices.json:cognition')
+      })
 
-    it('omits the cost estimate when the price table has no usable entry', () => {
-      const workDir = makeWorkDir()
-      const output = runBash(
-        `
-        set -euo pipefail
-        source shared/observe-json.sh
-        run_dir="${workDir}/run"
-        observe="$run_dir/run_observe.json"
-        capture="$run_dir/worker-stdout.capture"
-        mkdir -p "$run_dir"
-        delegate_observe_init "$observe" "$run_dir" chore gpt-5 codex req.json res.json requester
-        printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}' >"$capture"
-        measured="$(delegate_observe_usage_from_capture "$capture" gpt-5 codex codex_json || true)"
-        delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5 req.json res.json codex_json "$measured"
-        cat "$observe"
-        `
-      )
-      const usage = requireUsage(parseObserveJson(output))
+      it('estimates SWE-1.7 Lightning pricing from the Devin price table', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore swe-1.7-lightning devin req.json res.json requester
+          measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":1000000,"total_tokens":2000000,"cost_usd":null,"measurement":"measured","source":"devin_json","model":"swe-1.7-lightning","backend":"devin"}'
+          delegate_observe_record_usage "$observe" "$run_dir" devin swe-1.7-lightning req.json res.json devin_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
 
-      expect(usage.measurement).toBe('measured')
-      expect(usage.cost_usd_estimated).toBeUndefined()
-      expect(usage.cost_estimate_basis).toBeUndefined()
-      expect(usage.pricing_source).toBeUndefined()
+        expect(usage.cost_usd_estimated).toBeCloseTo(15, 10)
+        expect(usage.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
+        expect(usage.pricing_source).toBe('model-token-prices.json:cognition')
+      })
+
+      it('resolves cursor effort-suffixed models against the base price entry', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore cursor-glm-5.2-high cursor req.json res.json requester
+          measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":0,"total_tokens":1000000,"cost_usd":null,"measurement":"measured","source":"cursor_json","model":"cursor-glm-5.2-high","backend":"cursor"}'
+          delegate_observe_record_usage "$observe" "$run_dir" cursor cursor-glm-5.2-high req.json res.json cursor_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
+
+        expect(usage.cost_usd_estimated).toBeCloseTo(1.4, 10)
+        expect(usage.pricing_source).toBe('model-token-prices.json:cursor')
+      })
+
+      it('resolves prefixed Cursor Grok models against the Cursor price table', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore cursor-grok-4.5 cursor req.json res.json requester
+          measured='{"input_tokens":1000000,"cached_input_tokens":null,"output_tokens":1000000,"total_tokens":2000000,"cost_usd":null,"measurement":"measured","source":"cursor_json","model":"cursor-grok-4.5","backend":"cursor"}'
+          delegate_observe_record_usage "$observe" "$run_dir" cursor cursor-grok-4.5 req.json res.json cursor_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
+
+        expect(usage.cost_usd_estimated).toBeCloseTo(8, 10)
+        expect(usage.pricing_source).toBe('model-token-prices.json:cursor')
+      })
+
+      it('omits the cost estimate when the price table has no usable entry', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          capture="$run_dir/worker-stdout.capture"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore gpt-5 codex req.json res.json requester
+          printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}' >"$capture"
+          measured="$(delegate_observe_usage_from_capture "$capture" gpt-5 codex codex_json || true)"
+          delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5 req.json res.json codex_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
+
+        expect(usage.measurement).toBe('measured')
+        expect(usage.cost_usd_estimated).toBeUndefined()
+        expect(usage.cost_estimate_basis).toBeUndefined()
+        expect(usage.pricing_source).toBeUndefined()
+      })
     })
 
     it('ignores trailing usage objects without measured values', () => {

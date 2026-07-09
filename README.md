@@ -94,7 +94,7 @@ Delegate routine, mechanical work to a cheaper model without polluting the main 
 
 What the prefixes mean:
 
-- `swe-*` and `composer-*` are each CLI's native model names and are passed through as-is (e.g. `swe-1.6`, `composer-2.5`)
+- `swe-*` and `composer-*` are each CLI's native model names and are passed through as-is (e.g. `swe-1.7`, `composer-2.5`)
 - `devin-*` and `cursor-*` are backend-pinning prefixes that fix "use this CLI"; the prefix is stripped and the remainder is passed as the model name (e.g. `devin-glm-5.2` → `glm-5.2` on Devin CLI, `cursor-glm-5.2-high` → `glm-5.2-high` on Cursor agent CLI)
 
 All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
@@ -151,12 +151,12 @@ Worker token usage is recorded in observe JSON as `usage.measurement: "measured"
 
 Documented model names for `DELEGATE_<TYPE>_MODEL`:
 
-| Runtime          | Model names                                                                                                                        | Notes                                                                     |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`                                                                                                 | Aliases for Claude family models                                          |
-| Codex CLI        | `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                               | `delegate-imagegen` only accepts the `gpt*` / Codex branch                |
-| Devin CLI        | `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`                                                                | `devin-*` strips the prefix before passing the model to Devin CLI         |
-| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` strips the prefix before passing the model to Cursor agent CLI |
+| Runtime          | Model names                                                                                                                                           | Notes                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`                                                                                                                    | Aliases for Claude family models                                          |
+| Codex CLI        | `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                  | `delegate-imagegen` only accepts the `gpt*` / Codex branch                |
+| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`                                                   | `devin-*` strips the prefix before passing the model to Devin CLI         |
+| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` strips the prefix before passing the model to Cursor agent CLI |
 
 The list above is documented support, not a hard allowlist. The target CLI must also expose the requested model. `delegate-x-research` uses `DELEGATE_X_RESEARCH_MODEL` instead, with documented model `grok-build`.
 
@@ -164,18 +164,18 @@ Effort handling for those documented names:
 
 delegate-skills passes only the resolved model string to the target CLI. It does not pass Claude `--effort`, Codex `model_reasoning_effort`, Cursor parameter overrides, or any Devin effort option. Codex delegates also run with `--ignore-user-config`, so user config `model_reasoning_effort` is not loaded.
 
-| Model name(s)                                                                         | Effort behavior                                                                                              |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `fable`, `opus`, `sonnet`, `haiku`                                                    | No explicit Claude `--effort`; the Claude CLI default for the alias applies.                                 |
-| `gpt-5`                                                                               | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
-| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                  | Codex catalog default is `medium`; supported levels are `low`, `medium`, `high`, and `xhigh`.                |
-| `gpt-5.4-nano`                                                                        | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
-| `gpt-5.3-codex-spark`                                                                 | No explicit Codex effort; Spark availability and defaults are determined by the installed Codex CLI/runtime. |
-| `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`                   | No separate Devin effort flag is passed; the Devin-side default for the selected model applies.              |
-| `composer-2.5`, `composer-2.5-fast`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | No effort suffix or Cursor parameter override; the Cursor model default applies.                             |
-| `cursor-glm-5.2-high`                                                                 | Cursor receives `glm-5.2-high`; `high` is encoded in the model slug.                                         |
-| `cursor-glm-5.2-max`                                                                  | Cursor receives `glm-5.2-max`; `max` is encoded in the model slug.                                           |
-| `grok-build` (`DELEGATE_X_RESEARCH_MODEL`)                                            | No separate effort setting is passed; the X research backend default applies.                                |
+| Model name(s)                                                                                            | Effort behavior                                                                                              |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `fable`, `opus`, `sonnet`, `haiku`                                                                       | No explicit Claude `--effort`; the Claude CLI default for the alias applies.                                 |
+| `gpt-5`                                                                                                  | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
+| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                                     | Codex catalog default is `medium`; supported levels are `low`, `medium`, `high`, and `xhigh`.                |
+| `gpt-5.4-nano`                                                                                           | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
+| `gpt-5.3-codex-spark`                                                                                    | No explicit Codex effort; Spark availability and defaults are determined by the installed Codex CLI/runtime. |
+| `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`      | No separate Devin effort flag is passed; the Devin-side default for the selected model applies.              |
+| `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | No effort suffix or Cursor parameter override; the Cursor model default applies.                             |
+| `cursor-glm-5.2-high`                                                                                    | Cursor receives `glm-5.2-high`; `high` is encoded in the model slug.                                         |
+| `cursor-glm-5.2-max`                                                                                     | Cursor receives `glm-5.2-max`; `max` is encoded in the model slug.                                           |
+| `grok-build` (`DELEGATE_X_RESEARCH_MODEL`)                                                               | No separate effort setting is passed; the X research backend default applies.                                |
 
 ## Model price reference
 
