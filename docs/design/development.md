@@ -129,6 +129,17 @@ self-contained 配布のため、共有スクリプト/アセットは `shared/`
 
 backend の CLI 出力を observe JSON へ正規化する処理も `shared/observe-json.sh` に置く。`usage` の実測値抽出や推定 fallback、session reuse の `lineage` / `backend_session` / `run_context` helper、follow-up validation を変更した場合は、`scripts/observe-json.test.ts` に JSONL capture / Devin ATIF export / fallback / stale-context 判定の fixture 的な shell test を追加し、`npm run sync-shared` で各 skill へ同期する。
 
+## モデル追加・価格更新
+
+`DELEGATE_<TYPE>_MODEL` で指定できるモデルを追加（または価格改定を反映）する際の作業一覧。
+
+1. **価格表の正本を更新**: `shared/model-token-prices.json` の `models` にエントリを追加する。`pricing_source` は `pricing_sources` に定義済みの key を使い、未定義の source なら先に追加する。無料プレビュー等は `pricing_status` で明示し、価格が見つからない場合は `null` + `pricing_status: "not_listed_in_source"` とする。既定エイリアス（例: `swe` → 最新版）の付け替えが必要なら alias エントリも更新する。`retrieved_at` を確認日に更新する
+2. **skill コピーへ同期**: `npm run sync-shared`。`skills/*/model-token-prices.json` を直接編集しない
+3. **README 更新（英日両方）**: `README.md` と `README_ja.md` の Documented model names 表と Effort behavior 表に追加する。両言語の記載が対応していることを確認する
+4. **価格チャート再生成**: `docs/assets/model-token-prices.svg`（全 priced モデル）と `docs/assets/model-token-prices-low-cost.svg`（input ≤ \$1 または output ≤ \$5 per 1M tokens のみ）を更新後の JSON から再生成する（dataviz-svg skill / Vega-Lite）。low-cost 側の掲載可否は閾値で機械的に判定する
+5. **テスト追加**: 価格解決やコスト推定の挙動が変わる場合（新 provider、prefix 解決、alias 変更等）は `scripts/observe-json.test.ts` の cost estimates にケースを追加する
+6. **検証**: `npm run sync-shared:check` / `vp check` / `vp test`
+
 ## git hooks（pre-commit）
 
 `.githooks/pre-commit` が以下を順に実行する:
