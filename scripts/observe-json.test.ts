@@ -572,6 +572,28 @@ MD
         expect(usage.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
       })
 
+      it('estimates GPT-5.6 alias pricing with cached input from the OpenAI price table', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore gpt-5.6 codex req.json res.json requester
+          measured='{"input_tokens":1000000,"cached_input_tokens":400000,"output_tokens":1000000,"total_tokens":2000000,"cost_usd":null,"measurement":"measured","source":"codex_json","model":"gpt-5.6","backend":"codex"}'
+          delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.6 req.json res.json codex_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
+
+        expect(usage.cost_usd_estimated).toBeCloseTo(33.2, 10)
+        expect(usage.cost_estimate_basis).toBe('cached_input_rate_applied')
+        expect(usage.pricing_source).toBe('model-token-prices.json:openai')
+      })
+
       it('resolves prefixed devin models and prefers the backend pricing source', () => {
         const workDir = makeWorkDir()
         const output = runBash(
