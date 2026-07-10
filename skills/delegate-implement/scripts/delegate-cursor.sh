@@ -126,14 +126,22 @@ fi
 [ -f "$REAL_CURSOR_CONFIG_DIR/cli-config.json" ] && cp "$REAL_CURSOR_CONFIG_DIR/cli-config.json" "$CURSOR_CONFIG_ISOLATED/cli-config.json"
 
 if [ "$SESSION_MODE" = "resumable" ]; then
-  if ! CURSOR_CHAT_ID="$(CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent create-chat </dev/null 2>"$WORK_DIR/cursor-create-chat.stderr")" || [ -z "$CURSOR_CHAT_ID" ]; then
+  # cursor-agent の create-chat は起動途中で racy に停止し、stdin を /dev/null に
+  # 固定していても無応答の孤児プロセスとして残り得る。正常応答は 2〜5 秒で返るため、
+  # timeout で打ち切って最大 3 回まで再試行する
+  create_chat_attempt=0
+  while [ "$create_chat_attempt" -lt 3 ] && [ -z "$CURSOR_CHAT_ID" ]; do
+    create_chat_attempt=$((create_chat_attempt + 1))
+    create_chat_status=0
+    create_chat_output="$(CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" timeout -k 5 45 agent create-chat </dev/null 2>>"$WORK_DIR/cursor-create-chat.stderr")" || create_chat_status=$?
+    # 失敗時の stdout は診断出力の可能性があり chat id として信用できない
+    if [ "$create_chat_status" -eq 0 ]; then
+      CURSOR_CHAT_ID="$(printf '%s\n' "$create_chat_output" | tail -n 1 | tr -d '\r')"
+    fi
+  done
+  if [ -z "$CURSOR_CHAT_ID" ]; then
     delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor create-chat failed" || true
     finish_without_child 5 "ERROR: agent create-chat failed."
-  fi
-  CURSOR_CHAT_ID="$(printf '%s\n' "$CURSOR_CHAT_ID" | tail -n 1 | tr -d '\r')"
-  if [ -z "$CURSOR_CHAT_ID" ]; then
-    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor create-chat did not return a chat id" || true
-    finish_without_child 5 "ERROR: agent create-chat did not return a chat id."
   fi
 fi
 

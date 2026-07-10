@@ -2,7 +2,11 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+// 各テストが bash wrapper + fake CLI (node) を実プロセスとして spawn するため、
+// 並列実行の負荷次第で既定 5 秒を超え得る
+vi.setConfig({ testTimeout: 30_000 })
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -260,6 +264,12 @@ logs.push(entry)
 fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify(logs))
 if (args[0] === 'create-chat') {
   if (process.env.FAKE_CURSOR_CREATE_CHAT_FAIL === '1') {
+    console.log('diagnostic-noise-not-a-chat-id')
+    process.exit(7)
+  }
+  const createChatCalls = logs.filter((log) => log.args[0] === 'create-chat').length
+  if (process.env.FAKE_CURSOR_CREATE_CHAT_FAIL_ONCE === '1' && createChatCalls === 1) {
+    console.log('diagnostic-noise-not-a-chat-id')
     process.exit(7)
   }
   if (process.env.FAKE_CURSOR_NO_CHAT !== '1') {
@@ -1139,7 +1149,26 @@ describe('delegate-cursor.sh session modes', () => {
     expectFailedWithoutChild(fixture, result)
   })
 
-  it('fails closed and records unavailable persistence when create-chat fails', () => {
+  it('retries create-chat and continues when a later attempt succeeds', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CURSOR_CREATE_CHAT_FAIL_ONCE: '1',
+    })
+    const logs = readLogs(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expect(logs.slice(0, 2).map((log) => log.args)).toEqual([['create-chat'], ['create-chat']])
+    expectCursorResumable({
+      createChatLog: logs[1],
+      fixture,
+      log: logs[2],
+      observe,
+      result,
+    })
+  })
+
+  it('fails closed and records unavailable persistence when create-chat keeps failing', () => {
     const fixture = makeFixture('cursor')
     const result = runCursor(fixture, ['resumable', '', ''], {
       ...fixture.env,
@@ -1150,8 +1179,8 @@ describe('delegate-cursor.sh session modes', () => {
 
     expect(result.status).toBe(5)
     expect(readResponseStatus(fixture.responseFile)).toBe('failed')
-    expect(logs).toHaveLength(1)
-    expect(logs[0].args).toEqual(['create-chat'])
+    expect(logs).toHaveLength(3)
+    expect(logs.map((log) => log.args)).toEqual([['create-chat'], ['create-chat'], ['create-chat']])
     expect(requireBackendSession(observe).persistence).toBe('unavailable')
   })
 
