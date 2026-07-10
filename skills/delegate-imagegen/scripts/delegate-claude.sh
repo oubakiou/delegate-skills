@@ -167,7 +167,7 @@ if [ -n "$CLAUDE_SESSION_HOME" ]; then
 fi
 
 cd "$REPO_ROOT"
-env "${child_env[@]}" claude "${claude_args[@]}" \
+env "${child_env[@]}" claude "${claude_args[@]}" </dev/null \
   >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 

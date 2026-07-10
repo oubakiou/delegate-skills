@@ -126,7 +126,7 @@ fi
 [ -f "$REAL_CURSOR_CONFIG_DIR/cli-config.json" ] && cp "$REAL_CURSOR_CONFIG_DIR/cli-config.json" "$CURSOR_CONFIG_ISOLATED/cli-config.json"
 
 if [ "$SESSION_MODE" = "resumable" ]; then
-  if ! CURSOR_CHAT_ID="$(CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent create-chat 2>"$WORK_DIR/cursor-create-chat.stderr")" || [ -z "$CURSOR_CHAT_ID" ]; then
+  if ! CURSOR_CHAT_ID="$(CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent create-chat </dev/null 2>"$WORK_DIR/cursor-create-chat.stderr")" || [ -z "$CURSOR_CHAT_ID" ]; then
     delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Cursor create-chat failed" || true
     finish_without_child 5 "ERROR: agent create-chat failed."
   fi
@@ -172,7 +172,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$REPO_ROOT"
-CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent "${agent_args[@]}" \
+CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent "${agent_args[@]}" </dev/null \
   >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 

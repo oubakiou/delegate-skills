@@ -115,7 +115,7 @@ CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}" \
   --output-last-message "$LAST_MSG" \
   -C "$REPO_ROOT" \
-  "$PROMPT" >"$stdout_capture" 2>"$stderr_capture" &
+  "$PROMPT" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then

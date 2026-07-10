@@ -154,7 +154,7 @@ fi
 
 # --ignore-rules は付けない: AGENTS.md を読ませて規約遵守させる
 cd "$REPO_ROOT"
-CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" codex "${codex_args[@]}" >"$stdout_capture" 2>"$stderr_capture" &
+CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" codex "${codex_args[@]}" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then

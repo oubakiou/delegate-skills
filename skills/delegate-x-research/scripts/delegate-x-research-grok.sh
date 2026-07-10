@@ -61,7 +61,7 @@ if ! command -v grok >/dev/null 2>&1; then
 fi
 
 available_grok_models() {
-  grok models 2>/dev/null | awk '/^[[:space:]]*[-*][[:space:]]+/ {print $2}'
+  grok models </dev/null 2>/dev/null | awk '/^[[:space:]]*[-*][[:space:]]+/ {print $2}'
 }
 
 grok_model_available() {
@@ -116,7 +116,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 TMPDIR="$WORK_DIR/tmp" \
-  grok "${grok_args[@]}" >"$stdout_capture" 2>"$stderr_capture" &
+  grok "${grok_args[@]}" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then

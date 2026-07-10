@@ -139,7 +139,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$REPO_ROOT"
-TMPDIR="$WORK_DIR/tmp" devin "${devin_args[@]}" \
+TMPDIR="$WORK_DIR/tmp" devin "${devin_args[@]}" </dev/null \
   >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
