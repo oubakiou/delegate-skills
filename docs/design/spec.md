@@ -268,7 +268,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 }
 ```
 
-- `state.phase`: `prepared | running | superseded | stalled | ended`。observe JSON は prepare 時点で作られるため、main が dispatch 前にリクエストを作り直すと放棄された observe が `prepared` のまま WORK_DIR に残留し得る。集計・監視は observe の全数を往復の全数とみなさず、`state.phase` で除外すること。dispatch は同一 WORK_DIR / 同一 task_type / 同一 requester で dispatch 時点より mtime が古い prepared-only observe に `superseded` を付ける（basename の timestamp は秒精度で同一秒内の順序を表せないため mtime で判定する。run_dir が `DELEGATE_RUN_RETENTION_DAYS` で削除済みの候補は、削除済み directory を復活させないため触らない）。マークは best-effort であり `prepared` 残留が完全に無くなる保証はない
+- `state.phase`: `prepared | running | superseded | stalled | ended`。observe JSON は prepare 時点で作られるため、main が dispatch 前にリクエストを作り直すと放棄された observe が `prepared` のまま WORK_DIR に残留し得る。集計・監視は observe の全数を往復の全数とみなさず、`state.phase` で除外すること。特に usage を集計する消費者は、dispatch されなかった observe（`prepared` / `superseded`。`usage` は未設定で jq では null 相当）を分母から除外すること。この判定には `state.started_at == null` も同値に使える。dispatch は同一 WORK_DIR / 同一 task_type / 同一 requester で dispatch 時点より mtime が古い prepared-only observe に `superseded` を付ける（basename の timestamp は秒精度で同一秒内の順序を表せないため mtime で判定する。run_dir が `DELEGATE_RUN_RETENTION_DAYS` で削除済みの候補は、削除済み directory を復活させないため触らない）。マークは best-effort であり `prepared` 残留が完全に無くなる保証はない
 - `run.model_source`: `env | default`。`prepare.sh` / `prepare-imagegen.sh` 経由で初期化された observe JSON に入り、wrapper が直接初期化した fallback 経路では省略される場合がある
 - `state.dispatcher_pid`: `dispatch.sh` または専用 wrapper の管理プロセス PID。子 CLI の kill 対象ではない
 - `heartbeat.child_pid`: 実際の子 CLI PID。子 CLI 起動前の preflight failure では dispatcher PID が入る場合がある
