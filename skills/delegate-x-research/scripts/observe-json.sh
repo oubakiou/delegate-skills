@@ -597,7 +597,7 @@ delegate_observe_parse_usage_events() {
 	    def token_usage($usage):
 	      {
 	        input_tokens: number_or_null($usage.input_tokens? // $usage.inputTokens? // $usage.prompt_tokens? // $usage.promptTokens?),
-	        cached_input_tokens: number_or_null($usage.cached_input_tokens? // $usage.cachedInputTokens? // $usage.cache_read_input_tokens?),
+	        cached_input_tokens: number_or_null($usage.cached_input_tokens? // $usage.cachedInputTokens? // $usage.cache_read_input_tokens? // $usage.cacheReadTokens?),
 	        output_tokens: number_or_null($usage.output_tokens? // $usage.outputTokens? // $usage.completion_tokens? // $usage.completionTokens?),
         total_tokens: number_or_null($usage.total_tokens? // $usage.totalTokens?),
         cost_usd: number_or_null($usage.total_cost_usd? // $usage.cost_usd? // $usage.costUsd?)

@@ -246,11 +246,12 @@ const expectDevinExportUsage = (observe: ObserveJson): void => {
 // gpt-5.5 単価: (input - cached)*5 + cached*0.5 + output*30 per 1M tokens
 const expectCachedRateCostEstimate = (
   usage: NonNullable<ObserveJson['usage']>,
-  costUsdEstimated: number
+  costUsdEstimated: number,
+  pricingSource = 'model-token-prices.json:openai'
 ): void => {
   expect(usage.cost_usd_estimated).toBeCloseTo(costUsdEstimated, 10)
   expect(usage.cost_estimate_basis).toBe('cached_input_rate_applied')
-  expect(usage.pricing_source).toBe('model-token-prices.json:openai')
+  expect(usage.pricing_source).toBe(pricingSource)
   expect(usage.cost_usd).toBeNull()
 }
 
@@ -274,6 +275,18 @@ const expectCodexJsonUsage = (observe: ObserveJson): void => {
   expect(usage.output_tokens).toBe(17)
   expect(usage.total_tokens).toBe(13_384)
   expectCachedRateCostEstimate(usage, 0.026_449)
+}
+
+const expectCursorStreamJsonUsage = (observe: ObserveJson): void => {
+  const usage = requireUsage(observe)
+  expect(usage.measurement).toBe('measured')
+  expect(usage.source).toBe('cursor_json')
+  expect(usage.input_tokens).toBe(8084)
+  expect(usage.cached_input_tokens).toBe(5971)
+  expect(usage.output_tokens).toBe(18)
+  expect(usage.total_tokens).toBe(8102)
+  // composer-2.5 単価: (input - cached)*0.5 + cached*0.2 + output*2.5 per 1M tokens
+  expectCachedRateCostEstimate(usage, 0.002_295_7, 'model-token-prices.json:cursor')
 }
 
 const expectEstimatedUsage = (observe: ObserveJson): void => {
@@ -545,6 +558,28 @@ MD
       const observe = parseObserveJson(output)
 
       expectCodexJsonUsage(observe)
+    })
+
+    it('records measured usage parsed from Cursor stream-json stdout', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        capture="$run_dir/worker-stdout.capture"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore composer-2.5 cursor req.json res.json requester
+        printf '%s\\n' '{"type":"system","subtype":"init"}' '{"type":"result","subtype":"success","duration_ms":6661,"result":"ok","session_id":"sid","request_id":"rid","usage":{"inputTokens":8084,"outputTokens":18,"cacheReadTokens":5971,"cacheWriteTokens":0}}' >"$capture"
+        measured="$(delegate_observe_usage_from_capture "$capture" composer-2.5 cursor cursor_json || true)"
+        delegate_observe_record_usage "$observe" "$run_dir" cursor composer-2.5 req.json res.json cursor_json "$measured"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expectCursorStreamJsonUsage(observe)
     })
 
     describe('cost estimates', () => {

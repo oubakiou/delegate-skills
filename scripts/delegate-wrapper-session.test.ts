@@ -287,7 +287,7 @@ const status = process.env.FAKE_CURSOR_FAILED_RESPONSE === '1' ? 'failed' : 'com
 if (responseFile) {
   fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
 }
-console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_tokens: 1}}))
+console.log(JSON.stringify({type: 'result', subtype: 'success', usage: {inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0}}))
 `
 
 type Backend = 'claude' | 'codex' | 'devin' | 'cursor'
@@ -1096,6 +1096,7 @@ describe('delegate-cursor.sh session modes', () => {
     expect(result.status).toBe(0)
     expect(log.args).not.toContain('create-chat')
     expect(log.args).not.toContain('--resume')
+    expect(log.args.join(' ')).toContain('--output-format stream-json')
   })
 
   it('isolates CURSOR_CONFIG_DIR into the run dir and copies cli-config.json', () => {

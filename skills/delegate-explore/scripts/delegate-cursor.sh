@@ -159,11 +159,14 @@ PROMPT=$(cat <<PROMPT_EOF
 PROMPT_EOF
 )
 
+# stream-json は最終 result イベントに実測 usage を含み、イベントが逐次流れるため
+# stream 無変化ベースの stall 検出も機能する（text モードは応答完了まで無音）
 agent_args=(
   -p
   --trust
   --force
   --model "$MODEL"
+  --output-format stream-json
 )
 
 if [ -n "$CURSOR_CHAT_ID" ]; then
