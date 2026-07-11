@@ -105,7 +105,7 @@ Normal delegate runs stay non-persistent. For larger `delegate-implement` or `de
 
 Follow-up is explicit and fail-closed: it requires a previous observe JSON whose `backend_session.persistence` is `resumable`, a resume handle, matching backend/model/repo/worktree context, and a compatible git HEAD. If validation fails, delegation does not silently fall back to a new session; the main agent must issue a normal delegate run instead. Claude, Codex, Devin, and Cursor backends support the resumable path. No new environment variables are required.
 
-`delegate-explore` covers not only code and repository documents but also web research via WebSearch / WebFetch and internal-knowledge research via MCP tools (Notion, Atlassian, etc.) configured in the runtime environment. On the Claude backend these tools are technically enabled (only repository-writing tools are excluded via a denylist); on the other backends the exploration scope is conveyed by prompt constraints and depends on each CLI's capabilities, so prefer Claude family models for web/MCP research. MCP usage is unrestricted by default; set `DELEGATE_EXPLORE_MCP_READ_ONLY=1` to inject a prompt-level constraint limiting the worker to read-only MCP tools. Fetched web/MCP content (including prompt-injection risk) stays isolated in the child process — only the worker's report returns to the main agent.
+`delegate-explore` covers not only code and repository documents but also web research via WebSearch / WebFetch and internal-knowledge research via MCP tools (Notion, Atlassian, etc.) configured in the runtime environment. On the Claude backend these tools are technically enabled (only repository-writing tools are excluded via a denylist); on the other backends the exploration scope is conveyed by prompt constraints and depends on each CLI's capabilities, so prefer Claude family models for web/MCP research. The worker is always limited to read-only MCP tools via a prompt-level constraint; delegate MCP-writing work to `delegate-chore` / `delegate-implement` instead. Fetched web/MCP content (including prompt-injection risk) stays isolated in the child process — only the worker's report returns to the main agent.
 
 `delegate-imagegen` resolves a Codex model with the same env/default mechanism as the other delegates, but it remains a Codex-only capability bridge: `DELEGATE_IMAGEGEN_MODEL` selects the child model, `gpt*` routes to Codex, and non-`gpt*` fails closed instead of falling through to Claude.
 
@@ -113,14 +113,14 @@ Follow-up is explicit and fail-closed: it requires a previous observe JSON whose
 
 ## Skills
 
-| skill                 | Purpose                                      | Tool permissions              | Default model | env                                                                               |
-| --------------------- | -------------------------------------------- | ----------------------------- | ------------- | --------------------------------------------------------------------------------- |
-| `delegate-explore`    | Read-only code / doc / web / MCP exploration | read-only (web & MCP allowed) | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_EXPLORE_MCP_READ_ONLY` / `DELEGATE_WORK_DIR` |
-| `delegate-implement`  | Code implementation & edits (one commit)     | Edit/Write/Bash (no push)     | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                  |
-| `delegate-chore`      | Fallback chores                              | Edit/Write/Bash (no push)     | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                      |
-| `delegate-review`     | Code/doc review (diff findings)              | read-only                     | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                     |
-| `delegate-imagegen`   | Image generation/editing via Codex           | Codex subprocess              | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR`  |
-| `delegate-x-research` | x.com / X research                           | X research subprocess         | `grok-build`  | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                 |
+| skill                 | Purpose                                      | Tool permissions              | Default model | env                                                                              |
+| --------------------- | -------------------------------------------- | ----------------------------- | ------------- | -------------------------------------------------------------------------------- |
+| `delegate-explore`    | Read-only code / doc / web / MCP exploration | read-only (web & MCP allowed) | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-implement`  | Code implementation & edits (one commit)     | Edit/Write/Bash (no push)     | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
+| `delegate-chore`      | Fallback chores                              | Edit/Write/Bash (no push)     | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
+| `delegate-review`     | Code/doc review (diff findings)              | read-only                     | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
+| `delegate-imagegen`   | Image generation/editing via Codex           | Codex subprocess              | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
+| `delegate-x-research` | x.com / X research                           | X research subprocess         | `grok-build`  | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
 
 Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
 
@@ -130,21 +130,20 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 
 ## Environment variables
 
-| Variable                                 | Default                                | Description                                                                                    |
-| ---------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`                  | per skill                              | Per-type model override                                                                        |
-| `DELEGATE_WORK_DIR`                      | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                                                            |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto`                                          |
-| `DELEGATE_METRICS_FILE`                  | unset                                  | Optional JSONL proxy-metric telemetry output path                                              |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                           | Worker observe JSON heartbeat interval                                                         |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection)       | Bash tool timeout caps injected into Claude backend children                                   |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (enabled, `0` = keep)              | Prune codex-home caches and the auth copy after successful runs                                |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                         | Kill a child after this many seconds without stream byte growth                                |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)        | Max stdout/stderr content stored in observe JSON                                               |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                         | Delete old per-run scratch directories during request preparation                              |
-| `DELEGATE_EXPLORE_MCP_READ_ONLY`         | `0` (unrestricted)                     | When `1`, restrict the explore worker's MCP usage to read-only tools (prompt-level constraint) |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`                                               |
-| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                           | Model for `delegate-x-research`                                                                |
+| Variable                                 | Default                                | Description                                                       |
+| ---------------------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`                  | per skill                              | Per-type model override                                           |
+| `DELEGATE_WORK_DIR`                      | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                               |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto`             |
+| `DELEGATE_METRICS_FILE`                  | unset                                  | Optional JSONL proxy-metric telemetry output path                 |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                           | Worker observe JSON heartbeat interval                            |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection)       | Bash tool timeout caps injected into Claude backend children      |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (enabled, `0` = keep)              | Prune codex-home caches and the auth copy after successful runs   |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                         | Kill a child after this many seconds without stream byte growth   |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)        | Max stdout/stderr content stored in observe JSON                  |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                         | Delete old per-run scratch directories during request preparation |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`                  |
+| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                           | Model for `delegate-x-research`                                   |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 

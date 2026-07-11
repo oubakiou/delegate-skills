@@ -880,7 +880,7 @@ describe('read-only tool config and prompt constraints', () => {
     expect(log.args).not.toContain('--disallowedTools')
   })
 
-  it('mentions web/MCP exploration in the claude explore prompt without MCP restriction by default', () => {
+  it('always injects web/MCP exploration and MCP read-only constraints into the claude explore prompt', () => {
     const fixture = makeFixture('claude')
     const result = runClaudeTaskType(fixture, 'explore')
     const prompt = promptFromLog(readLog(fixture.logFile))
@@ -888,27 +888,12 @@ describe('read-only tool config and prompt constraints', () => {
     expect(result.status).toBe(0)
     expect(prompt).toContain('WebSearch / WebFetch')
     expect(prompt).toContain('read-only 制約')
-    expect(prompt).not.toContain('MCP 制約')
-  })
-
-  it('injects the MCP read-only constraint when DELEGATE_EXPLORE_MCP_READ_ONLY=1', () => {
-    const fixture = makeFixture('claude')
-    const result = runClaudeTaskType(fixture, 'explore', {
-      ...fixture.env,
-      DELEGATE_EXPLORE_MCP_READ_ONLY: '1',
-    })
-    const prompt = promptFromLog(readLog(fixture.logFile))
-
-    expect(result.status).toBe(0)
     expect(prompt).toContain('MCP 制約')
   })
 
   it('shares the explore constraints with the cursor prompt', () => {
     const fixture = makeFixture('cursor')
-    const result = runCursorTaskType(fixture, 'explore', {
-      ...fixture.env,
-      DELEGATE_EXPLORE_MCP_READ_ONLY: '1',
-    })
+    const result = runCursorTaskType(fixture, 'explore')
     const prompt = promptFromLog(readLog(fixture.logFile))
 
     expect(result.status).toBe(0)
