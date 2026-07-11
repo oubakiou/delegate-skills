@@ -2,6 +2,7 @@
 name: delegate-review
 license: MIT
 description: >
+  main の context 消費の削減（context isolation）を第一目標として、
   コード/ドキュメントレビュー（差分の指摘出し）を判断比重の高いモデルの subagent に委譲するスキル。
   大きめの diff、複数ファイルにまたがる変更、main が差分全体を読むと重い一次レビューに使う。
   数行の diff、main が既に読んだ差分、style / typo 程度の軽微レビューには使わない。

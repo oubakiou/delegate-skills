@@ -2,7 +2,8 @@
 name: delegate-chore
 license: MIT
 description: >
-  explore / implement / review のどれにも明確に当てはまらない雑務のうち、対象 content を読んで判断する必要があり、
+  token cost の削減を第一目標として、explore / implement / review のどれにも明確に当てはまらない雑務のうち、
+  対象 content を読んで判断する必要があり、
   親エージェントの context を膨らませたくない作業を安価な subagent に委譲するフォールバックスキル。
   単一コマンドで処理できる軽微な整形・リネーム・一括置換・定型コマンド実行は原則として main が直接実行し、
   この skill は使わない。専用スキルが当てはまる場合はそちらを優先する。
