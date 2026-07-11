@@ -460,6 +460,41 @@ const runCursor = (
   env: NodeJS.ProcessEnv = fixture.env
 ): { status: number } => runWrapper('delegate-cursor.sh', cursorArgs(fixture, modeArgs), env)
 
+const taskTypeArgs = (fixture: Fixture, model: string, taskType: string): string[] => [
+  model,
+  taskType,
+  fixture.requestFile,
+  fixture.responseFile,
+  fixture.runDir,
+  fixture.observeFile,
+]
+
+const runClaudeTaskType = (
+  fixture: Fixture,
+  taskType: string,
+  env: NodeJS.ProcessEnv = fixture.env
+): { status: number } =>
+  runWrapper('delegate-claude.sh', taskTypeArgs(fixture, 'sonnet', taskType), env)
+
+const runCursorTaskType = (
+  fixture: Fixture,
+  taskType: string,
+  env: NodeJS.ProcessEnv = fixture.env
+): { status: number } =>
+  runWrapper('delegate-cursor.sh', taskTypeArgs(fixture, 'cursor-glm-5.2-high', taskType), env)
+
+// claude は `-p <prompt>`、cursor は `-p` が単独フラグでプロンプトが最終引数
+const promptFromLog = (log: FakeCliLog): string => {
+  const flagIndex = log.args.indexOf('-p')
+  if (flagIndex !== -1) {
+    const candidate = log.args[flagIndex + 1] ?? ''
+    if (candidate !== '' && !candidate.startsWith('-')) {
+      return candidate
+    }
+  }
+  return log.args[log.args.length - 1] ?? ''
+}
+
 interface ExpectWrapperRun {
   fixture: Fixture
   log: FakeCliLog
@@ -819,6 +854,69 @@ const seedCodexHomeLeftovers = (fixture: Fixture): string => {
   writeFileSync(path.join(codexHome, 'config.toml'), '')
   return codexHome
 }
+
+describe('read-only tool config and prompt constraints', () => {
+  it('uses a repo-write denylist for claude explore instead of the allowlist', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'explore')
+    const log = readLog(fixture.logFile)
+    const denyIndex = log.args.indexOf('--disallowedTools')
+
+    expect(result.status).toBe(0)
+    expect(denyIndex).toBeGreaterThan(-1)
+    expect(log.args[denyIndex + 1]).toBe('Edit,MultiEdit,Write,NotebookEdit')
+    expect(log.args).not.toContain('--allowedTools')
+  })
+
+  it('keeps the claude review allowlist unchanged', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'review')
+    const log = readLog(fixture.logFile)
+    const allowIndex = log.args.indexOf('--allowedTools')
+
+    expect(result.status).toBe(0)
+    expect(allowIndex).toBeGreaterThan(-1)
+    expect(log.args[allowIndex + 1]).toBe('Read,Bash')
+    expect(log.args).not.toContain('--disallowedTools')
+  })
+
+  it('mentions web/MCP exploration in the claude explore prompt without MCP restriction by default', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'explore')
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('WebSearch / WebFetch')
+    expect(prompt).toContain('read-only 制約')
+    expect(prompt).not.toContain('MCP 制約')
+  })
+
+  it('injects the MCP read-only constraint when DELEGATE_EXPLORE_MCP_READ_ONLY=1', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'explore', {
+      ...fixture.env,
+      DELEGATE_EXPLORE_MCP_READ_ONLY: '1',
+    })
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('MCP 制約')
+  })
+
+  it('shares the explore constraints with the cursor prompt', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursorTaskType(fixture, 'explore', {
+      ...fixture.env,
+      DELEGATE_EXPLORE_MCP_READ_ONLY: '1',
+    })
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('WebSearch / WebFetch')
+    expect(prompt).toContain('read-only 制約')
+    expect(prompt).toContain('MCP 制約')
+  })
+})
 
 describe('delegate-codex.sh session modes', () => {
   it('keeps normal runs ephemeral', () => {

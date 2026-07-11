@@ -42,6 +42,7 @@ RESPONDER_SESSION_ID="devin:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
+source "$script_dir/prompt-constraints.sh"
 
 backend="$(delegate_observe_backend_from_model "$ORIGINAL_MODEL")"
 stdout_capture="$WORK_DIR/worker-stdout.capture"
@@ -104,11 +105,13 @@ if ! command -v devin >/dev/null 2>&1; then
   finish_without_child 3 "ERROR: devin CLI が見つかりません。"
 fi
 
+readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
 1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
-2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。
+2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
 4. 作業報告 Markdown を stdin で \`bash ${script_dir}/build-response.sh <status> ${RESPONDER_SESSION_ID} "${RESPONSE_FILE}"\` に渡して書く。status は completed | partial | failed | needs_input のいずれか。report の見出しは

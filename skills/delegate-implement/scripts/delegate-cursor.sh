@@ -42,14 +42,9 @@ RESPONDER_SESSION_ID="cursor:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
+source "$script_dir/prompt-constraints.sh"
 
-readonly_constraints=""
-case "$TASK_TYPE" in
-  explore|review)
-    readonly_constraints="
-read-only 制約: リポジトリのファイル編集・git 書き込み・push は禁止。調査（Read / Grep / git diff 等）のみ。${RESPONSE_FILE} への報告生成（build-response.sh 実行）は可。"
-    ;;
-esac
+readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
 
 backend="$(delegate_observe_backend_from_model "$ORIGINAL_MODEL")"
 stdout_capture="$WORK_DIR/worker-stdout.capture"
