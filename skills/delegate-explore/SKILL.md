@@ -4,13 +4,11 @@ license: MIT
 description: >
   token cost の削減を第一目標として、read-only な探索・読解を安価なモデルの subagent に委譲するスキル。
   対象はコードベース・ドキュメントに加え、WebSearch / WebFetch による Web 上のライブラリ仕様・OSS・技術情報の調査、
-  Notion・Confluence・Jira など実行環境に設定済みの MCP ツール経由の社内ドキュメント・チケット調査まで含む。
-  「どこで定義/記載されているか」「どう動くか」「どこから参照されているか」などのコード調査、
-  仕様書・README・設計ドキュメント等の Markdown/テキストの内容確認・要約・該当箇所特定、
-  Web や社内ナレッジの下調べに使う。
-  複数ファイル・長めの文書・複数の Web ページを読む必要があり、親エージェントの context を汚さずに安く処理したいときに使う。
+  Notion・Confluence・Jira など MCP ツール経由の社内ドキュメント・チケット調査まで含む。
+  コードの定義・参照・挙動の調査、仕様書・README・設計資料の内容確認・要約・該当箇所特定、Web や社内ナレッジの下調べに使う。
+  複数ファイル・長い文書・複数の Web ページを読む調査を、親エージェントの context を汚さずに安く処理したいときに使う。
   単一の短いファイル確認や rg 一発で済む調査には使わない。コード変更を伴う場合は delegate-implement を使うこと。
-  explore の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
+  explore の委譲はこの skill を使い、generic な subagent で代替しない。
 allowed-tools: Bash(bash .claude/skills/delegate-explore/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/dispatch.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-explore/scripts/read-response.sh:*), Bash(jq:*), Read
 ---
 
