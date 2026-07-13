@@ -5,6 +5,8 @@
 [![English](https://img.shields.io/badge/Language-English-blue?style=for-the-badge)](./README.md)
 [![日本語](https://img.shields.io/badge/言語-日本語-lightgrey?style=for-the-badge)](./README_ja.md)
 
+📖 Introduction article: [Don't Make the Expensive Model Do Everything — delegate-skills, a Casual Multi-Model Setup Built on Nothing but Standard Skills](https://dev.to/kiou_ouba_afbd120335456f3/dont-make-the-expensive-model-do-everything-delegate-skills-a-casual-multi-model-setup-built-on-1c9j)
+
 **A skill set for LLM agents that delegates implementation, exploration, review, and chores to a subagent running a cheaper model or a model from another vendor (Claude → Codex, etc.) — compressing token cost.**
 
 Keep an expensive model as the main agent and offload routine "read, investigate, fix" work to a cheaper-model child process. For example, when the main agent is Claude Fable 5 (input \$10 / output \$50 per 1M tokens), delegating code exploration to Claude Haiku 4.5 (\$1 / \$5) cuts the token cost of that work to 1/10. Delegation targets are not limited to Claude models: models available through Codex (`gpt-*`), Devin CLI, and Cursor agent CLI can be selected by model name alone. Results come back through files and are read incrementally, so the main agent's context stays small.

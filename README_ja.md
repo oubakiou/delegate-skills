@@ -5,6 +5,8 @@
 [![English](https://img.shields.io/badge/Language-English-lightgrey?style=for-the-badge)](./README.md)
 [![日本語](https://img.shields.io/badge/言語-日本語-blue?style=for-the-badge)](./README_ja.md)
 
+📖 紹介記事: [高級モデルに全部やらせない — 標準機能(skill)だけでカジュアルに実現するマルチモデルの仕組み『delegate-skills』](https://zenn.dev/oubakiou/articles/c6f632dd0a9e92)
+
 **実装・調査・レビュー・雑務などのタスクを、より安価なモデルや別ベンダーのモデル（Claude → Codex 等）の subagent に委譲してトークン費用を圧縮する LLM エージェント向け skill 集。**
 
 高価なモデルを main agent に据えたまま、「読む・調べる・直す」といった定型作業だけを安価なモデルの子プロセスへ逃がす。たとえば main が Claude Fable 5（input \$10 / output \$50 per 1M tokens）のとき、コード探索を Claude Haiku 4.5（\$1 / \$5）へ委譲すれば、その作業のトークン単価は 1/10 になる。委譲先は Claude 系モデルに限らず、Codex（`gpt-*`）・Devin CLI・Cursor agent CLI 経由のモデルもモデル名だけで指定できる。委譲結果はファイル経由で必要な部分だけ段階的に読み取るため、main の context も膨らまない。
