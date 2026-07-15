@@ -46,6 +46,7 @@ delegate-skills/
     delegate-review/{SKILL.md, scripts/}
     delegate-imagegen/{SKILL.md, scripts/}
     delegate-x-research/{SKILL.md, scripts/}
+    delegate-htmldoc/{SKILL.md, references/, scripts/}
   .claude/skills/<skill>/scripts/  # Claude Code 向け gh skill install 配置
   .agents/skills/<skill>/scripts/  # Codex 向け gh skill install 配置
   shared/                          # 共有スクリプト/アセットの正本（種別・実行系非依存）

@@ -43,7 +43,7 @@ gh skill install oubakiou/delegate-skills delegate-explore --agent claude-code -
 gh skill install oubakiou/delegate-skills delegate-explore --agent codex --scope project
 
 # Install all delegate skills at once
-for skill in delegate-explore delegate-implement delegate-chore delegate-review delegate-imagegen delegate-x-research; do
+for skill in delegate-explore delegate-implement delegate-chore delegate-review delegate-imagegen delegate-x-research delegate-htmldoc; do
   gh skill install oubakiou/delegate-skills "$skill" --agent claude-code --scope project
 done
 ```
@@ -115,20 +115,23 @@ Follow-up is explicit and fail-closed: it requires a previous observe JSON whose
 
 ## Skills
 
-| skill                 | Purpose                                      | Tool permissions              | Default model | env                                                                              |
-| --------------------- | -------------------------------------------- | ----------------------------- | ------------- | -------------------------------------------------------------------------------- |
-| `delegate-explore`    | Read-only code / doc / web / MCP exploration | read-only (web & MCP allowed) | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
-| `delegate-implement`  | Code implementation & edits (one commit)     | Edit/Write/Bash (no push)     | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
-| `delegate-chore`      | Fallback chores                              | Edit/Write/Bash (no push)     | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
-| `delegate-review`     | Code/doc review (diff findings)              | read-only                     | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
-| `delegate-imagegen`   | Image generation/editing via Codex           | Codex subprocess              | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
-| `delegate-x-research` | x.com / X research                           | X research subprocess         | `grok-build`  | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
+| skill                 | Purpose                                      | Tool permissions                  | Default model | env                                                                              |
+| --------------------- | -------------------------------------------- | --------------------------------- | ------------- | -------------------------------------------------------------------------------- |
+| `delegate-explore`    | Read-only code / doc / web / MCP exploration | read-only (web & MCP allowed)     | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-implement`  | Code implementation & edits (one commit)     | Edit/Write/Bash (no push)         | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
+| `delegate-chore`      | Fallback chores                              | Edit/Write/Bash (no push)         | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
+| `delegate-review`     | Code/doc review (diff findings)              | read-only                         | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
+| `delegate-imagegen`   | Image generation/editing via Codex           | Codex subprocess                  | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
+| `delegate-x-research` | x.com / X research                           | X research subprocess             | `grok-build`  | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
+| `delegate-htmldoc`    | HTML document generation (fixed template)    | output-file writes only (no push) | `haiku`       | `DELEGATE_HTMLDOC_MODEL` / `DELEGATE_WORK_DIR`                                   |
 
-Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`.
+Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`; htmldoc only fills content into a bundled fixed template, so `haiku`.
 
 `delegate-imagegen` intentionally has no user-facing model prompt, but operators can set `DELEGATE_IMAGEGEN_MODEL`. If the user does not specify an output directory, generated files go under `delegate-imagegen-output/`.
 
 `delegate-x-research` is a capability bridge for X research, so operators can set `DELEGATE_X_RESEARCH_MODEL` but the main agent should not ask users to pick a backend model.
+
+`delegate-htmldoc` generates self-contained HTML documents by filling content into a fixed template bundled with the skill (`references/template.html` + `references/styleguide.md`), so the design stays identical across runs and models. The worker never generates or edits CSS. If the user does not specify an output path, generated files go under `delegate-htmldoc-output/`.
 
 ## Environment variables
 

@@ -24,6 +24,11 @@ MCP 制約: MCP ツールは読み取り系（search / fetch / get / list 等）
       constraints="
 read-only 制約: リポジトリのファイル編集・git 書き込み・push は禁止。調査（Read / Grep / git diff 等）のみ。${response_file} への報告生成は可。"
       ;;
+    htmldoc)
+      constraints="
+書き込み制約: 書き込みは request で指定された出力 HTML ファイルと ${response_file} への報告生成のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
+テンプレート制約: 同梱テンプレートの CSS・component 構造は変更せず、content の流し込みだけを行う。"
+      ;;
   esac
   printf '%s' "$constraints"
 }

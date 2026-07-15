@@ -33,6 +33,7 @@ const DELEGATE_SKILLS = [
   'delegate-review',
   'delegate-imagegen',
   'delegate-x-research',
+  'delegate-htmldoc',
 ]
 
 interface Pair {

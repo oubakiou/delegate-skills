@@ -75,6 +75,7 @@ for agent in claude-code codex; do
     delegate-review \
     delegate-imagegen \
     delegate-x-research \
+    delegate-htmldoc \
   ; do
     gh skill install . "$skill" --from-local --agent "$agent" --scope project --force
   done

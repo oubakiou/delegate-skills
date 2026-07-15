@@ -1,0 +1,325 @@
+<!doctype html>
+<!--
+  delegate-htmldoc 標準テンプレート。
+  style 要素の CSS は固定資産であり、worker は変更しない。
+  本文はこのファイルの component 語彙（references/styleguide.md 参照）に content を流し込んで構成する。
+  以下の body はすべての component の使用例を兼ねるサンプル。
+-->
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ドキュメントタイトル — サブタイトル</title>
+    <style>
+      :root {
+        --bg: #f7f8fa;
+        --card: #ffffff;
+        --ink: #1f2530;
+        --muted: #5b6472;
+        --accent: #2563eb;
+        --accent-soft: #eff4ff;
+        --ok: #15803d;
+        --ok-soft: #ecfdf3;
+        --warn: #b45309;
+        --warn-soft: #fffbeb;
+        --bad: #b91c1c;
+        --bad-soft: #fef2f2;
+        --border: #e3e7ee;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        line-height: 1.75;
+      }
+      .wrap {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 40px 24px 80px;
+      }
+      header.hero {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 32px 36px;
+        margin-bottom: 28px;
+      }
+      .meta {
+        font-size: 13px;
+        color: var(--muted);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      .meta a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .meta a:hover {
+        text-decoration: underline;
+      }
+      .badge {
+        display: inline-block;
+        padding: 1px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        background: var(--ok-soft);
+        color: var(--ok);
+        border: 1px solid #bbe7c9;
+      }
+      .badge.neutral {
+        background: var(--accent-soft);
+        color: #1e40af;
+        border-color: #c7d8fb;
+      }
+      .badge.warn {
+        background: var(--warn-soft);
+        color: var(--warn);
+        border-color: #f3d9a4;
+      }
+      h1 {
+        font-size: 26px;
+        margin: 0 0 6px;
+        line-height: 1.4;
+      }
+      .subtitle {
+        color: var(--muted);
+        font-size: 15px;
+        margin: 0;
+      }
+      section {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 28px 36px;
+        margin-bottom: 24px;
+      }
+      h2 {
+        font-size: 19px;
+        margin: 0 0 16px;
+        padding-left: 12px;
+        border-left: 4px solid var(--accent);
+      }
+      h3 {
+        font-size: 16px;
+        margin: 24px 0 8px;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      code {
+        font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+        font-size: 0.88em;
+        background: var(--accent-soft);
+        color: #1e40af;
+        padding: 1px 6px;
+        border-radius: 4px;
+      }
+      pre {
+        font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        background: #1f2530;
+        color: #e6e9ef;
+        padding: 16px 20px;
+        border-radius: 8px;
+        overflow-x: auto;
+      }
+      pre code {
+        background: none;
+        color: inherit;
+        padding: 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+        margin: 8px 0 4px;
+      }
+      th,
+      td {
+        border: 1px solid var(--border);
+        padding: 10px 12px;
+        vertical-align: top;
+        text-align: left;
+      }
+      th {
+        background: #f0f3f8;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      td.status-ok {
+        background: var(--ok-soft);
+      }
+      td.status-pending {
+        background: var(--warn-soft);
+      }
+      td.status-bad {
+        background: var(--bad-soft);
+      }
+      .pill {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 0 8px;
+        border-radius: 999px;
+        margin-right: 6px;
+      }
+      .pill.ok {
+        background: var(--ok-soft);
+        color: var(--ok);
+        border: 1px solid #bbe7c9;
+      }
+      .pill.pending {
+        background: var(--warn-soft);
+        color: var(--warn);
+        border: 1px solid #f3d9a4;
+      }
+      .pill.bad {
+        background: var(--bad-soft);
+        color: var(--bad);
+        border: 1px solid #f1c1c1;
+      }
+      .conclusion {
+        background: var(--accent-soft);
+        border: 1px solid #c7d8fb;
+        border-radius: 10px;
+        padding: 18px 22px;
+        font-size: 15px;
+      }
+      .conclusion strong {
+        color: #1e40af;
+      }
+      ol.tasks {
+        padding-left: 22px;
+        margin: 0;
+      }
+      ol.tasks li {
+        margin-bottom: 12px;
+      }
+      ul.plain {
+        padding-left: 22px;
+        margin: 0 0 12px;
+      }
+      ul.plain li {
+        margin-bottom: 6px;
+      }
+      .note {
+        font-size: 13px;
+        color: var(--muted);
+        border-top: 1px solid var(--border);
+        margin-top: 8px;
+        padding-top: 14px;
+      }
+      footer {
+        text-align: center;
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 32px;
+      }
+      @media (max-width: 640px) {
+        section,
+        header.hero {
+          padding: 20px 18px;
+        }
+        table {
+          font-size: 12.5px;
+        }
+        th,
+        td {
+          padding: 7px 8px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <!-- component: hero — 文書冒頭に必ず 1 つ。meta 行（出典リンク・badge）は任意 -->
+      <header class="hero">
+        <div class="meta">
+          <span><a href="https://example.com/source">出典・関連リンク</a></span>
+          <span class="badge">STATUS</span>
+          <span class="badge neutral">CATEGORY</span>
+        </div>
+        <h1>ドキュメントタイトル</h1>
+        <p class="subtitle">1〜2 文のサブタイトル。文書の対象と要点を短く述べる。</p>
+      </header>
+
+      <!-- component: section — 本文の基本単位。h2 + 段落・リスト・表を内包する -->
+      <section>
+        <h2>セクション見出し</h2>
+        <p>本文段落。インラインの用語・識別子は <code>code</code> で示す。</p>
+        <ul class="plain">
+          <li>箇条書きは <code>ul.plain</code> を使う</li>
+          <li>強調は <strong>strong</strong> のみ。色は使わない</li>
+        </ul>
+      </section>
+
+      <!-- component: table — 比較・一覧。状態を持つセルは status-ok / status-pending / status-bad、
+       セル内の状態ラベルは pill（ok / pending / bad）を併用する -->
+      <section>
+        <h2>比較・一覧セクション</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>項目</th>
+              <th>説明</th>
+              <th>状態</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>項目 A</strong></td>
+              <td>説明文</td>
+              <td class="status-ok"><span class="pill ok">確認済</span>補足</td>
+            </tr>
+            <tr>
+              <td><strong>項目 B</strong></td>
+              <td>説明文</td>
+              <td class="status-pending"><span class="pill pending">未確認</span>補足</td>
+            </tr>
+            <tr>
+              <td><strong>項目 C</strong></td>
+              <td>説明文</td>
+              <td class="status-bad"><span class="pill bad">問題あり</span>補足</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- component: conclusion — 結論・最重要メッセージ。文書につき 0〜1 個 -->
+      <section>
+        <h2>結論</h2>
+        <div class="conclusion">
+          <strong>最も伝えたい結論</strong>を 1〜3 文で書く。強調は conclusion 内の strong を使う。
+        </div>
+      </section>
+
+      <!-- component: tasks — 残課題・手順など順序付きリスト。note は出典・脚注 -->
+      <section>
+        <h2>残課題・補足</h2>
+        <ol class="tasks">
+          <li><strong>課題名</strong> — 課題の説明。</li>
+          <li><strong>課題名</strong> — 課題の説明。</li>
+        </ol>
+        <p class="note">出典: <a href="https://example.com/source">参照元</a> の説明。</p>
+      </section>
+
+      <!-- component: codeblock — 複数行のコード・ログ・コマンド例 -->
+      <section>
+        <h2>コード・ログ</h2>
+        <pre><code>$ command --flag value
+output line</code></pre>
+      </section>
+
+      <!-- component: footer — 文書末尾に必ず 1 つ -->
+      <footer>プロジェクト名 — ドキュメント種別</footer>
+    </div>
+  </body>
+</html>
