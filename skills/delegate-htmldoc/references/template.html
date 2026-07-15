@@ -217,6 +217,20 @@
         margin-top: 8px;
         padding-top: 14px;
       }
+      figure {
+        margin: 16px 0 4px;
+        text-align: center;
+      }
+      figure svg,
+      figure img {
+        max-width: 100%;
+        height: auto;
+      }
+      figcaption {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 8px;
+      }
       footer {
         text-align: center;
         font-size: 12px;
@@ -316,6 +330,31 @@
         <h2>コード・ログ</h2>
         <pre><code>$ command --flag value
 output line</code></pre>
+      </section>
+
+      <!-- component: figure — 親から渡された素材の掲載。SVG は素材ファイルの内容をインライン埋め込み、
+       ラスタ画像は出力ディレクトリへコピーして相対パス参照する。worker は素材を生成・加工しない -->
+      <section>
+        <h2>図・画像</h2>
+        <figure>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="320"
+            height="80"
+            viewBox="0 0 320 80"
+            role="img"
+            aria-label="サンプルチャート"
+          >
+            <rect x="10" y="30" width="60" height="40" fill="#2563eb" />
+            <rect x="90" y="15" width="60" height="55" fill="#15803d" />
+            <rect x="170" y="45" width="60" height="25" fill="#b45309" />
+          </svg>
+          <figcaption>図 1: SVG インライン埋め込みの例</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/example.png" alt="画像の説明" width="320" />
+          <figcaption>図 2: ラスタ画像の相対パス参照の例</figcaption>
+        </figure>
       </section>
 
       <!-- component: footer — 文書末尾に必ず 1 つ -->

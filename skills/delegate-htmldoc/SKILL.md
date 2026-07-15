@@ -36,13 +36,21 @@ allowed-tools: Bash(bash .claude/skills/delegate-htmldoc/scripts/prepare.sh:*), 
 
 request の Context には両ファイルのパスを必ず記載し、worker にテンプレートをコピーして content だけを流し込ませる。main がテンプレート本文を読み込んで request に貼ることはしない（パス参照で足りる）。
 
+### 図・画像素材
+
+素材は親側で用意し、request にパスで渡す。worker に素材を生成・加工・取得させない。
+
+- チャート・図解が必要なら、先に dataviz-svg（SVG 生成）や delegate-imagegen（ラスタ画像生成）で素材を作り、そのファイルパスを Context に列挙する
+- SVG は worker がファイル内容を figure component へインライン埋め込みする（単一ファイル性を保つ）
+- ラスタ画像は worker が出力 HTML と同じディレクトリ配下（例: `assets/`）へコピーし、相対パスで参照する。この場合の成果物は「出力ディレクトリ一式」になる
+
 ## 委譲する前に（コストゲート）
 
 htmldoc は文書本文の生成（出力 token）が嵩むほど効果が出る。まとまった分量の調査結果・レポート・複数セクションの資料は委譲する。一方、main が既に全 content を持っていて数行の HTML 断片を書けば済む場合や、既存 HTML の 1 箇所修正は main が直接処理する。
 
 ## 実行フロー
 
-1. **準備（集約）**: 前提チェック→モデル解決→チェーン確認→リクエスト生成を `prepare.sh` 1 本に畳む。Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。request は terse に書く: 文書化する source（ファイル・issue・調査結果）はパスや URL で参照させ、本文を貼らない。Context に `references/template.html` と `references/styleguide.md` のパスを記載する。Constraints に出力ファイルパスを明記する（ユーザー指定がなければ `delegate-htmldoc-output/` 配下）。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
+1. **準備（集約）**: 前提チェック→モデル解決→チェーン確認→リクエスト生成を `prepare.sh` 1 本に畳む。Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。request は terse に書く: 文書化する source（ファイル・issue・調査結果）はパスや URL で参照させ、本文を貼らない。Context に `references/template.html` と `references/styleguide.md` のパス、および使用する図・画像素材のパスを記載する。Constraints に出力ファイルパスを明記する（ユーザー指定がなければ `delegate-htmldoc-output/` 配下）。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
    - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-htmldoc/scripts/prepare.sh htmldoc DELEGATE_HTMLDOC_MODEL haiku "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）
    - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"` / `run_dir="$(printf '%s' "$out" | jq -r .run_dir)"` / `observe_file="$(printf '%s' "$out" | jq -r .observe_file)"`
 2. **実行**: `bash .claude/skills/delegate-htmldoc/scripts/dispatch.sh "$model" htmldoc "$request_file" "$response_file" "$run_dir" "$observe_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude）は dispatch.sh が行う。stdout は response_file のパスのみ。非対話モードの親（`claude -p` 等）では dispatch を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを `jq` で読む。`state.phase` は `prepared | running | superseded | stalled | ended`。`prepared` / `superseded` は dispatch されなかった observe（`state.started_at == null`、`usage` は未設定で jq では null 相当）なので、usage を集計する場合は分母から除外する。
@@ -55,13 +63,14 @@ report の見出しは共有 wrapper が固定する標準構成（`Summary / Ch
 
 - `Summary`: 生成したドキュメントの短い説明
 - `Changed files`: 作成した HTML ファイルのパス
-- `Verification`: テンプレート CSS を変更していないこと、単一ファイルで完結していることの確認
+- `Verification`: テンプレート CSS を変更していないこと、外部 URL 依存が無いこと（インライン SVG と同梱アセットの相対参照は可）の確認
 - `Findings`: 使用した component（hero / section / table / conclusion / tasks 等）と文書構成、source の特記事項
 - `Blockers`: source 不足・内容の矛盾・テンプレートで表現できない要求
 
 ## 制約
 
-- 書き込みは指定された出力 HTML ファイルと response の生成のみ。それ以外のリポジトリファイル編集・push はしない
+- 書き込みは指定された出力ディレクトリ配下（出力 HTML と素材コピー）と response の生成のみ。それ以外のリポジトリファイル編集・push はしない
+- 図・画像は request で渡された素材のみ使用する。worker は素材を生成・加工・取得しない
 - テンプレートの CSS・component 構造を変更しない。content の流し込みだけを行う（デザイン揺れを排除するため）
 - 単発生成の種別のため session reuse（resumable / follow-up）は使わない。修正が必要なら新しい delegate run として出し直す
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）

@@ -115,15 +115,15 @@ follow-up は明示的かつ fail-closed。前回 observe JSON の `backend_sess
 
 ## skill 一覧
 
-| skill                 | 用途                                               | ツール権限                            | 既定モデル   | env                                                                              |
-| --------------------- | -------------------------------------------------- | ------------------------------------- | ------------ | -------------------------------------------------------------------------------- |
-| `delegate-explore`    | read-only のコード/ドキュメント/Web/MCP 探索・読解 | read-only（Web・MCP 可）              | `haiku`      | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
-| `delegate-implement`  | コード実装・修正（1 コミットに収まる単位）         | Edit/Write/Bash（push なし）          | `sonnet`     | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
-| `delegate-chore`      | フォールバック雑務                                 | Edit/Write/Bash（push なし）          | `haiku`      | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
-| `delegate-review`     | コード/ドキュメントレビュー（差分の指摘）          | read-only                             | `opus`       | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
-| `delegate-imagegen`   | Codex による画像生成/編集                          | Codex 子プロセス                      | `gpt-5`      | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
-| `delegate-x-research` | x.com / X 調査                                     | X 調査子プロセス                      | `grok-build` | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
-| `delegate-htmldoc`    | HTML ドキュメント生成（固定テンプレート）          | 出力ファイル書き込みのみ（push なし） | `haiku`      | `DELEGATE_HTMLDOC_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| skill                 | 用途                                               | ツール権限                                | 既定モデル   | env                                                                              |
+| --------------------- | -------------------------------------------------- | ----------------------------------------- | ------------ | -------------------------------------------------------------------------------- |
+| `delegate-explore`    | read-only のコード/ドキュメント/Web/MCP 探索・読解 | read-only（Web・MCP 可）                  | `haiku`      | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-implement`  | コード実装・修正（1 コミットに収まる単位）         | Edit/Write/Bash（push なし）              | `sonnet`     | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
+| `delegate-chore`      | フォールバック雑務                                 | Edit/Write/Bash（push なし）              | `haiku`      | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
+| `delegate-review`     | コード/ドキュメントレビュー（差分の指摘）          | read-only                                 | `opus`       | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
+| `delegate-imagegen`   | Codex による画像生成/編集                          | Codex 子プロセス                          | `gpt-5`      | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
+| `delegate-x-research` | x.com / X 調査                                     | X 調査子プロセス                          | `grok-build` | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
+| `delegate-htmldoc`    | HTML ドキュメント生成（固定テンプレート）          | 出力ディレクトリ書き込みのみ（push なし） | `haiku`      | `DELEGATE_HTMLDOC_MODEL` / `DELEGATE_WORK_DIR`                                   |
 
 既定モデルの根拠: explore / chore は read 中心・低リスクで `haiku`、implement は編集の判断を要するため `sonnet`、review は指摘品質が成果物に直結し判断比重が高いため `opus`、htmldoc は同梱固定テンプレートへの content 流し込みだけで判断比重が低いため `haiku`。
 
@@ -131,7 +131,7 @@ follow-up は明示的かつ fail-closed。前回 observe JSON の `backend_sess
 
 `delegate-x-research` は X 調査の capability bridge として扱い、運用側は `DELEGATE_X_RESEARCH_MODEL` で切り替えられるが、ユーザーに backend モデル選択を求めない。
 
-`delegate-htmldoc` は skill 同梱の固定テンプレート（`references/template.html` + `references/styleguide.md`）へ content を流し込んで自己完結型の HTML ドキュメントを生成する。デザインは実行・モデルによらず同一で、worker は CSS を生成・編集しない。出力先の明示がなければ生成物は `delegate-htmldoc-output/` 配下に置く。
+`delegate-htmldoc` は skill 同梱の固定テンプレート（`references/template.html` + `references/styleguide.md`）へ content を流し込んで自己完結型の HTML ドキュメントを生成する。デザインは実行・モデルによらず同一で、worker は CSS を生成・編集しない。グラフ・画像素材は親側で用意して（チャートは dataviz-svg、ラスタ画像は `delegate-imagegen` 等）パスで渡し、SVG は文書へインライン埋め込み、ラスタ画像は出力 HTML の隣へコピーして相対参照する。出力先の明示がなければ生成物は `delegate-htmldoc-output/` 配下に置く。
 
 ## 環境変数
 
