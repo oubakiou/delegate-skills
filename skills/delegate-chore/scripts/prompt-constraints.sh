@@ -28,7 +28,7 @@ read-only 制約: リポジトリのファイル編集・git 書き込み・push
       constraints="
 書き込み制約: 書き込みは request で指定された出力ディレクトリ配下（出力 HTML と素材ファイルのコピー）と ${response_file} への報告生成のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
 素材制約: 図・画像は request で渡された素材ファイルのみ使用し、生成・加工・外部取得はしない。SVG はインライン埋め込み、ラスタ画像は出力ディレクトリへコピーして相対パス参照する。
-テンプレート制約: 同梱テンプレートの CSS・component 構造は変更せず、content の流し込みだけを行う。"
+テンプレート制約: 同梱テンプレートの CSS・component 構造は変更せず、content の流し込みだけを行う。JavaScript（script 要素・イベントハンドラ属性・javascript: URL）は含めない。テンプレートで表現できない要求は作らずに report の Blockers で報告する。"
       ;;
   esac
   printf '%s' "$constraints"
