@@ -101,6 +101,8 @@ What the prefixes mean:
 
 All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
+In managed-policy environments where Claude's bypass permissions mode is disabled, Claude backend workers run in default permission mode. The wrapper pre-approves the minimal tools needed to read the request and write the protocol response, so the protocol can still complete, but other Bash commands or tools may be rejected. To run full tasks in that environment, add the required allowlist entries to project settings or select a non-Claude backend with `DELEGATE_<TYPE>_MODEL`; tools explicitly denied by managed policy cannot be enabled by the wrapper.
+
 ### Resumable worker sessions
 
 Normal delegate runs stay non-persistent. For larger `delegate-implement` or `delegate-chore` tasks where the main agent expects a review/fix loop, the main agent may explicitly start a resumable initial run. That opt-in records a backend resume handle, `lineage_id`, and `run_context` in the observe JSON so a later follow-up can resume the same backend session while still creating a fresh request/response/observe run.

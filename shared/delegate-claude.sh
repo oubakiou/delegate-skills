@@ -113,7 +113,7 @@ PROMPT=$(cat <<PROMPT_EOF
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業報告 Markdown を stdin で \`bash ${script_dir}/build-response.sh <status> ${RESPONDER_SESSION_ID} "${RESPONSE_FILE}"\` に渡して書く。status は completed | partial | failed | needs_input のいずれか。report の見出しは
+4. 作業報告 Markdown を \`bash ${script_dir}/build-response.sh <status> ${RESPONDER_SESSION_ID} "${RESPONSE_FILE}" <<'REPORT_EOF'\` の heredoc（stdin）で渡して書き、\`REPORT_EOF\` で閉じる。コマンドは必ず \`bash ${script_dir}/build-response.sh\` から始める（\`cat\` / \`printf\` からのパイプ形式は権限 allowlist の先頭一致に合わず拒否され得る）。status は completed | partial | failed | needs_input のいずれか。report の見出しは
    Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
 5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。
@@ -134,6 +134,10 @@ claude_args=(
   --verbose
   --dangerously-skip-permissions
 )
+# managed policy が bypass permissions mode を無効化した環境では worker が default
+# 権限モードに落ち、allowlist 外のツールは非対話で自動拒否される。protocol の完走に
+# 必要な最小ツールを常に事前許可しておく（bypass が効く環境では無害な重複許可）。
+minimal_allowed_tools="Bash(bash ${script_dir}/read-request.sh:*),Bash(bash ${script_dir}/build-response.sh:*),Read"
 
 case "$SESSION_MODE" in
   "")
@@ -152,10 +156,14 @@ esac
 # （MCP ツール名は実行環境の MCP 設定次第で、allowlist では事前に列挙できないため）
 case "$TASK_TYPE" in
   explore)
+    claude_args+=(--allowedTools "$minimal_allowed_tools")
     claude_args+=(--disallowedTools "Edit,MultiEdit,Write,NotebookEdit")
     ;;
   review)
     claude_args+=(--allowedTools "Read,Bash")
+    ;;
+  *)
+    claude_args+=(--allowedTools "${minimal_allowed_tools},Edit,Write")
     ;;
 esac
 

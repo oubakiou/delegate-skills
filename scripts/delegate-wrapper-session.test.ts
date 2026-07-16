@@ -483,6 +483,9 @@ const runCursorTaskType = (
 ): { status: number } =>
   runWrapper('delegate-cursor.sh', taskTypeArgs(fixture, 'cursor-glm-5.2-high', taskType), env)
 
+const claudeMinimalAllowedTools = (): string =>
+  `Bash(bash ${path.join(repoRoot, 'shared', 'read-request.sh')}:*),Bash(bash ${path.join(repoRoot, 'shared', 'build-response.sh')}:*),Read`
+
 // claude は `-p <prompt>`、cursor は `-p` が単独フラグでプロンプトが最終引数
 const promptFromLog = (log: FakeCliLog): string => {
   const flagIndex = log.args.indexOf('-p')
@@ -856,16 +859,18 @@ const seedCodexHomeLeftovers = (fixture: Fixture): string => {
 }
 
 describe('read-only tool config and prompt constraints', () => {
-  it('uses a repo-write denylist for claude explore instead of the allowlist', () => {
+  it('adds minimal allowed tools and keeps the repo-write denylist for claude explore', () => {
     const fixture = makeFixture('claude')
     const result = runClaudeTaskType(fixture, 'explore')
     const log = readLog(fixture.logFile)
+    const allowIndex = log.args.indexOf('--allowedTools')
     const denyIndex = log.args.indexOf('--disallowedTools')
 
     expect(result.status).toBe(0)
+    expect(allowIndex).toBeGreaterThan(-1)
+    expect(log.args[allowIndex + 1]).toBe(claudeMinimalAllowedTools())
     expect(denyIndex).toBeGreaterThan(-1)
     expect(log.args[denyIndex + 1]).toBe('Edit,MultiEdit,Write,NotebookEdit')
-    expect(log.args).not.toContain('--allowedTools')
   })
 
   it('keeps the claude review allowlist unchanged', () => {
@@ -878,6 +883,28 @@ describe('read-only tool config and prompt constraints', () => {
     expect(allowIndex).toBeGreaterThan(-1)
     expect(log.args[allowIndex + 1]).toBe('Read,Bash')
     expect(log.args).not.toContain('--disallowedTools')
+  })
+
+  it('adds minimal edit/write allowed tools for default claude task types', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'htmldoc')
+    const log = readLog(fixture.logFile)
+    const allowIndex = log.args.indexOf('--allowedTools')
+
+    expect(result.status).toBe(0)
+    expect(allowIndex).toBeGreaterThan(-1)
+    expect(log.args[allowIndex + 1]).toBe(`${claudeMinimalAllowedTools()},Edit,Write`)
+    expect(log.args).not.toContain('--disallowedTools')
+  })
+
+  it('instructs an allowlist-compatible heredoc form for the claude response command', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'htmldoc')
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain(`bash ${path.join(repoRoot, 'shared', 'build-response.sh')}`)
+    expect(prompt).toContain("<<'REPORT_EOF'")
   })
 
   it('always injects web/MCP exploration and MCP read-only constraints into the claude explore prompt', () => {
