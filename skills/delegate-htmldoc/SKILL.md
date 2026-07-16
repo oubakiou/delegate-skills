@@ -10,7 +10,7 @@ description: >
   対象は静的文書のみ。ダッシュボードなどインタラクティブ・JS を要する成果物、
   デザインの新規設計、Web アプリの UI 実装には使わない（delegate-implement を使う）。
   htmldoc の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
-allowed-tools: Bash(bash .claude/skills/delegate-htmldoc/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/dispatch.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-response.sh:*), Bash(jq:*), Bash(test -f:*), Bash(ls:*), Read
+allowed-tools: Bash(bash .claude/skills/delegate-htmldoc/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/dispatch.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-response.sh:*), Bash(jq:*), Bash(test -f:*), Bash(ls:*), Read, AskUserQuestion
 ---
 
 # delegate-htmldoc
@@ -59,6 +59,7 @@ htmldoc は文書本文の生成（出力 token）が嵩むほど効果が出る
 2. **実行**: `bash .claude/skills/delegate-htmldoc/scripts/dispatch.sh "$model" htmldoc "$request_file" "$response_file" "$run_dir" "$observe_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude）は dispatch.sh が行う。stdout は response_file のパスのみ。非対話モードの親（`claude -p` 等）では dispatch を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを `jq` で読む。`state.phase` は `prepared | running | superseded | stalled | ended`。`prepared` / `superseded` は dispatch されなかった observe（`state.started_at == null`、`usage` は未設定で jq では null 相当）なので、usage を集計する場合は分母から除外する。
 3. **レスポンス読み取り**: `bash .claude/skills/delegate-htmldoc/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合は status + index + Summary section を返すので、必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
 4. **検証**: `Changed files` のパスが存在することを `test -f` で確認する。生成 HTML 全文は main の context に読み込まない。
+5. **Artifact 共有の確認**: main（Skill 実行者）が Claude で Artifact tool が利用可能な場合のみ、生成したドキュメントを artifact にもアップロードするかを AskUserQuestion で確認する。希望された場合のみ、アップロードに必要な範囲で生成 HTML を読み込んでアップロードする（このときだけ手順 4 の「全文を読み込まない」の例外とする）。対象はインライン SVG までで完結した単一 HTML のみとする。相対参照のラスタ画像を同梱する成果物（出力ディレクトリ一式）は単体アップロードで画像が欠落するため、その旨を伝えて提案しない。Artifact が利用できない実行系（Codex / Devin / Cursor 等）ではこの手順を行わない。
 
 ## Worker report
 
@@ -66,8 +67,8 @@ report の見出しは共有 wrapper が固定する標準構成（`Summary / Ch
 
 - `Summary`: 生成したドキュメントの短い説明
 - `Changed files`: 作成した HTML ファイルのパス
-- `Verification`: テンプレート CSS を変更していないこと、外部 URL 依存が無いこと（インライン SVG と同梱アセットの相対参照は可）、JavaScript を含まないこと（script 要素・イベントハンドラ属性・`javascript:` URL が無いこと）の確認
-- `Findings`: 使用した component（hero / section / table / conclusion / tasks 等）と文書構成、source の特記事項
+- `Verification`: テンプレート CSS を変更していないこと、外部 URL 依存が無いこと（インライン SVG と同梱アセットの相対参照は可）、JavaScript を含まないこと（script 要素・イベントハンドラ属性・`javascript:` URL が無いこと）、目次 section が hero 直後にあり経緯・改訂履歴が末尾の history section に隔離されていることの確認
+- `Findings`: 使用した component（hero / toc / section / table / conclusion / tasks / history 等）と文書構成、source の特記事項
 - `Blockers`: source 不足・内容の矛盾・テンプレートで表現できない要求
 
 ## 制約
@@ -75,6 +76,7 @@ report の見出しは共有 wrapper が固定する標準構成（`Summary / Ch
 - 書き込みは指定された出力ディレクトリ配下（出力 HTML と素材コピー）と response の生成のみ。それ以外のリポジトリファイル編集・push はしない
 - 図・画像は request で渡された素材のみ使用する。worker は素材を生成・加工・取得しない
 - テンプレートの CSS・component 構造を変更しない。content の流し込みだけを行う（デザイン揺れを排除するため）
+- 目次（toc）を hero 直後に、経緯記録（history）を footer 直前に必ず置く。時系列ログ・改訂履歴など経緯は history にのみ記載し、他 section は常に最新の仕様・事実だけを記載する
 - JavaScript（script 要素・イベントハンドラ属性・`javascript:` URL）を含めない。テンプレートで表現できない要求は作らずに Blockers で報告させる
 - 単発生成の種別のため session reuse（resumable / follow-up）は使わない。修正が必要なら新しい delegate run として出し直す
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）

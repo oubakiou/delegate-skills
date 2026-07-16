@@ -210,6 +210,36 @@
       ul.plain li {
         margin-bottom: 6px;
       }
+      ol.toc {
+        padding-left: 22px;
+        margin: 0;
+      }
+      ol.toc li {
+        margin-bottom: 6px;
+      }
+      ol.toc a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      ol.toc a:hover {
+        text-decoration: underline;
+      }
+      ul.history {
+        list-style: none;
+        padding-left: 0;
+        margin: 0;
+      }
+      ul.history li {
+        border-left: 3px solid var(--border);
+        padding: 0 0 0 16px;
+        margin-bottom: 14px;
+      }
+      ul.history time {
+        display: block;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--muted);
+      }
       .note {
         font-size: 13px;
         color: var(--muted);
@@ -265,8 +295,24 @@
         <p class="subtitle">1〜2 文のサブタイトル。文書の対象と要点を短く述べる。</p>
       </header>
 
-      <!-- component: section — 本文の基本単位。h2 + 段落・リスト・表を内包する -->
-      <section>
+      <!-- component: toc — hero 直後に必ず 1 つ。本文 section の id への anchor リンクで構成し、
+       末尾の history セクションも含める -->
+      <section id="toc">
+        <h2>目次</h2>
+        <ol class="toc">
+          <li><a href="#basic">セクション見出し</a></li>
+          <li><a href="#comparison">比較・一覧セクション</a></li>
+          <li><a href="#conclusion">結論</a></li>
+          <li><a href="#tasks">残課題・補足</a></li>
+          <li><a href="#codeblock">コード・ログ</a></li>
+          <li><a href="#figures">図・画像</a></li>
+          <li><a href="#history">経緯・改訂履歴</a></li>
+        </ol>
+      </section>
+
+      <!-- component: section — 本文の基本単位。h2 + 段落・リスト・表を内包する。
+       目次からリンクできるよう section 要素に id を付与する -->
+      <section id="basic">
         <h2>セクション見出し</h2>
         <p>本文段落。インラインの用語・識別子は <code>code</code> で示す。</p>
         <ul class="plain">
@@ -277,7 +323,7 @@
 
       <!-- component: table — 比較・一覧。状態を持つセルは status-ok / status-pending / status-bad、
        セル内の状態ラベルは pill（ok / pending / bad）を併用する -->
-      <section>
+      <section id="comparison">
         <h2>比較・一覧セクション</h2>
         <table>
           <thead>
@@ -308,7 +354,7 @@
       </section>
 
       <!-- component: conclusion — 結論・最重要メッセージ。文書につき 0〜1 個 -->
-      <section>
+      <section id="conclusion">
         <h2>結論</h2>
         <div class="conclusion">
           <strong>最も伝えたい結論</strong>を 1〜3 文で書く。強調は conclusion 内の strong を使う。
@@ -316,7 +362,7 @@
       </section>
 
       <!-- component: tasks — 残課題・手順など順序付きリスト。note は出典・脚注 -->
-      <section>
+      <section id="tasks">
         <h2>残課題・補足</h2>
         <ol class="tasks">
           <li><strong>課題名</strong> — 課題の説明。</li>
@@ -326,7 +372,7 @@
       </section>
 
       <!-- component: codeblock — 複数行のコード・ログ・コマンド例 -->
-      <section>
+      <section id="codeblock">
         <h2>コード・ログ</h2>
         <pre><code>$ command --flag value
 output line</code></pre>
@@ -334,7 +380,7 @@ output line</code></pre>
 
       <!-- component: figure — 親から渡された素材の掲載。SVG は素材ファイルの内容をインライン埋め込み、
        ラスタ画像は出力ディレクトリへコピーして相対パス参照する。worker は素材を生成・加工しない -->
-      <section>
+      <section id="figures">
         <h2>図・画像</h2>
         <figure>
           <svg
@@ -355,6 +401,18 @@ output line</code></pre>
           <img src="assets/example.png" alt="画像の説明" width="320" />
           <figcaption>図 2: ラスタ画像の相対パス参照の例</figcaption>
         </figure>
+      </section>
+
+      <!-- component: history — footer 直前に必ず 1 つ。時系列ログ・改訂履歴など経緯はここにだけ書き、
+       他の section には持ち込まない（他の section は常に最新の仕様・事実のみを記載する） -->
+      <section id="history">
+        <h2>経緯・改訂履歴</h2>
+        <ul class="history">
+          <li><time datetime="2026-07-01">2026-07-01</time>初版を作成。</li>
+          <li>
+            <time datetime="2026-07-16">2026-07-16</time>項目 B の検証結果を反映し、結論を最新化。
+          </li>
+        </ul>
       </section>
 
       <!-- component: footer — 文書末尾に必ず 1 つ -->
