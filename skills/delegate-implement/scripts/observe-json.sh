@@ -762,6 +762,131 @@ delegate_observe_usage_from_codex_sessions() {
   printf '%s\n' "$usage_json"
 }
 
+# 実効 effort の抽出は「artifacts で確認できた事実」だけを記録する:
+# - measured: run artifacts に実効値そのものが残っていた
+# - backend_default: artifacts は残っているが effort 指定が無い（CLI 既定に委ねられた）
+# - not_exposed: backend が実効値を露出していない / artifacts から確認できない
+delegate_observe_effort_from_codex_sessions() {
+  local codex_home="$1"
+  local sessions_dir="$codex_home/sessions"
+
+  if [ ! -d "$sessions_dir" ]; then
+    return 1
+  fi
+  local effort_json
+  effort_json="$(
+    find "$sessions_dir" -type f -name '*.jsonl' -print0 2>/dev/null \
+      | xargs -0 cat 2>/dev/null \
+      | jq -c -R -s '
+        # effort のフィールド名は Codex CLI のバージョンで揺れる
+        # （effort / reasoning_effort / model_reasoning_effort）
+        [split("\n")[]
+         | select(length > 0) | try fromjson catch empty
+         | select(type == "object" and .type == "turn_context")
+         | .payload | select(type == "object")] as $contexts
+        | if ($contexts | length) == 0 then empty
+          else ($contexts[-1]
+                | .effort? // .reasoning_effort? // .model_reasoning_effort?) as $effort
+          | if ($effort | type) == "string"
+            then {value: $effort, source: "measured"}
+            else {value: null, source: "backend_default"}
+            end
+          end'
+  )"
+  if [ -z "$effort_json" ]; then
+    return 1
+  fi
+  printf '%s\n' "$effort_json"
+}
+
+delegate_observe_effort_from_cursor_config() {
+  local model="$1"
+  local cli_config="$2"
+
+  # slug（-high / -max）は CLI argv に載る宣言そのものなので cli-config より優先する
+  local slug_effort=""
+  case "$model" in
+    *-high) slug_effort=high ;;
+    *-max) slug_effort=max ;;
+  esac
+  local base_model="$model"
+  if [ -n "$slug_effort" ]; then
+    base_model="${model%-${slug_effort}}"
+  fi
+
+  # cli-config が無い・壊れている場合も slug からの抽出は成立させる
+  local config_json
+  config_json="$(jq -c '.' "$cli_config" 2>/dev/null || printf '{}')"
+  if [ -z "$config_json" ]; then
+    config_json='{}'
+  fi
+  jq -c -n \
+    --arg model "$model" \
+    --arg base_model "$base_model" \
+    --arg slug_effort "$slug_effort" \
+    --argjson config "$config_json" \
+    '
+    # cli-config は effort / fast を modelParameters（モデル別）と
+    # selectedModel.parameters（選択中モデルのみ）の二箇所に持ち、
+    # パラメータ名もモデルにより effort / reasoning に分かれる
+    def params_for($m):
+      ($config.modelParameters[$m]?
+       // (if ($config.selectedModel.modelId? == $m) then $config.selectedModel.parameters? else null end))
+      // [];
+    params_for($model) as $model_params
+    | (if ($model_params | length) > 0 then $model_params else params_for($base_model) end) as $params
+    | ([$params[] | select(.id == "effort" or .id == "reasoning") | .value] | first // null) as $param_effort
+    | ([$params[] | select(.id == "fast") | .value] | first // null) as $fast_raw
+    | (if $slug_effort != "" then $slug_effort else $param_effort end) as $effort
+    | {
+        value: $effort,
+        source: (if $effort != null then "measured" else "not_exposed" end)
+      }
+      + (if $fast_raw == null then {}
+         elif ($fast_raw | type) == "boolean" then {fast: $fast_raw}
+         else {fast: ($fast_raw == "true")} end)
+    ' 2>/dev/null || return 1
+}
+
+delegate_observe_record_effort() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local requested="$3"
+  local effective_json="${4:-}"
+
+  if [ -z "$effective_json" ]; then
+    effective_json='{"value":null,"source":"not_exposed"}'
+  fi
+
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_record_effort_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$requested" \
+    "$effective_json"
+}
+
+delegate_observe_record_effort_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local requested="$3"
+  local effective_json="$4"
+  local tmp
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_effort_XXXXX" --suffix=.json)"
+
+  jq \
+    --arg requested "$requested" \
+    --argjson effective "$effective_json" \
+    '.run.effort = {
+      requested: (if $requested == "" then null else $requested end),
+      effective: $effective
+    }' \
+    "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
 # Codex CLI などトークン実測は取れるが費用を報告しない backend 向けに、同梱の
 # 単価表から換算した概算を実測 cost_usd とは別フィールドで併記する（下流の集計が
 # 実測と換算の精度を区別できるようにするため）。cached_input_tokens が取れた場合は

@@ -228,6 +228,8 @@ fi
 
 measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" cursor_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" cursor_json "$measured_usage" || true
+effort_effective="$(delegate_observe_effort_from_cursor_config "$MODEL" "$CURSOR_CONFIG_ISOLATED/cli-config.json" || true)"
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "$effort_effective" || true
 
 if [ "$SESSION_MODE" = "resumable" ]; then
   if [ "$child_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ]; then

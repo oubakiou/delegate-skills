@@ -138,6 +138,8 @@ else
   response_status="$child_status"
 fi
 
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "" || true
+
 response_present=false
 if [ -s "$RESPONSE_FILE" ]; then
   response_present=true

@@ -239,6 +239,7 @@ fi
 
 measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$MODEL" "$backend" claude_stream_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" claude_stream_json "$measured_usage" || true
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "" || true
 
 if [ "$SESSION_MODE" = "resumable" ]; then
   if [ "$child_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ] && claude_session_file_exists "$CLAUDE_SESSION_HOME" "$CLAUDE_SESSION_ID"; then

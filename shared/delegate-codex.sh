@@ -207,6 +207,8 @@ fi
 
 measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$MODEL" "$backend" codex_json || delegate_observe_usage_from_codex_sessions "$CODEX_HOME_ISOLATED" "$MODEL" "$backend" || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" codex_json "$measured_usage" || true
+effort_effective="$(delegate_observe_effort_from_codex_sessions "$CODEX_HOME_ISOLATED" || true)"
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "$effort_effective" || true
 
 if [ "$SESSION_MODE" = "resumable" ]; then
   thread_id="$(extract_codex_thread_id)"

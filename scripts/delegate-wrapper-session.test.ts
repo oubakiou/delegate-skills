@@ -42,10 +42,20 @@ interface McpConfig {
   source: string | null
 }
 
+interface RunEffort {
+  requested: string | null
+  effective: {
+    value: string | null
+    source: string | null
+    fast?: boolean
+  }
+}
+
 interface ObserveJson {
   backend_session: BackendSession | null
   mcp_config: McpConfig | null
   run_context: RunContext | null
+  run_effort: RunEffort | null
 }
 
 interface Fixture {
@@ -151,6 +161,27 @@ const parseRunContext = (value: unknown): RunContext | null => {
   }
 }
 
+const parseRunEffort = (run: unknown): RunEffort | null => {
+  if (!isRecord(run) || !isRecord(run.effort)) {
+    return null
+  }
+  const { effort } = run
+  if (!isRecord(effort.effective)) {
+    return null
+  }
+  const effective: RunEffort['effective'] = {
+    source: stringOrNullValue(effort.effective.source),
+    value: stringOrNullValue(effort.effective.value),
+  }
+  if (typeof effort.effective.fast === 'boolean') {
+    effective.fast = effort.effective.fast
+  }
+  return {
+    effective,
+    requested: stringOrNullValue(effort.requested),
+  }
+}
+
 const parseMcpConfig = (value: unknown): McpConfig | null => {
   if (!isRecord(value)) {
     return null
@@ -174,6 +205,7 @@ const readObserve = (filePath: string): ObserveJson => {
     backend_session: parseBackendSession(value.backend_session),
     mcp_config: parseMcpConfig(value.mcp_config),
     run_context: parseRunContext(value.run_context),
+    run_effort: parseRunEffort(value.run),
   }
 }
 
@@ -232,6 +264,7 @@ console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_toke
 
 const codexFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
+import path from 'node:path'
 const args = process.argv.slice(2)
 if (args.join(' ') === 'mcp list --json') {
   console.log(process.env.FAKE_CODEX_MCP_LIST_JSON || '[]')
@@ -249,6 +282,11 @@ if (responseFile) {
   fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
 }
 fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+if (process.env.FAKE_CODEX_SESSION_EFFORT && process.env.CODEX_HOME && !args.includes('--ephemeral')) {
+  const sessionDir = path.join(process.env.CODEX_HOME, 'sessions', '2026', '07', '18')
+  fs.mkdirSync(sessionDir, {recursive: true})
+  fs.writeFileSync(path.join(sessionDir, 'rollout.jsonl'), JSON.stringify({type: 'turn_context', payload: {effort: process.env.FAKE_CODEX_SESSION_EFFORT}}) + '\\n')
+}
 if (process.env.FAKE_CODEX_NO_THREAD !== '1') {
   console.log(JSON.stringify({type: 'thread.started', thread_id: 'thread-1'}))
 }
@@ -1546,6 +1584,68 @@ describe('delegate-cursor.sh session modes', () => {
       model: 'cursor-glm-5.2-high',
       observe,
       result,
+    })
+  })
+})
+
+describe('wrapper effort recording', () => {
+  it('records not exposed effort for ephemeral Codex runs without session artifacts', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_SESSION_EFFORT: 'high',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: null,
+    })
+  })
+
+  it('records measured effort from persisted sessions on resumable Codex runs', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      FAKE_CODEX_SESSION_EFFORT: 'high',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'measured', value: 'high' },
+      requested: null,
+    })
+  })
+
+  it('records measured effort from the Cursor model slug', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursor(fixture)
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'measured', value: 'high' },
+      requested: null,
+    })
+  })
+
+  it('records not exposed effort for Claude and Devin runs', () => {
+    const claudeFixture = makeFixture('claude')
+    const claudeResult = runClaude(claudeFixture)
+    const devinFixture = makeFixture('devin')
+    const devinResult = runDevin(devinFixture)
+
+    expect(claudeResult.status).toBe(0)
+    expect(devinResult.status).toBe(0)
+    expect(readObserve(claudeFixture.observeFile).run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: null,
+    })
+    expect(readObserve(devinFixture.observeFile).run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: null,
     })
   })
 })

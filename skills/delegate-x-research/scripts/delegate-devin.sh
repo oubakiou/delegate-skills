@@ -178,6 +178,7 @@ fi
 
 measured_usage="$(delegate_observe_usage_from_devin_export "$devin_export" "$ORIGINAL_MODEL" "$backend" || delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" devin_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" devin_atif_export "$measured_usage" || true
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "" || true
 
 if [ "$SESSION_MODE" = "resumable" ]; then
   devin_session_id="$(extract_devin_session_id || true)"

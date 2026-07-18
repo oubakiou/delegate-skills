@@ -137,6 +137,9 @@ else
   response_status="$child_status"
 fi
 
+effort_effective="$(delegate_observe_effort_from_codex_sessions "$CODEX_HOME_ISOLATED" || true)"
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "$effort_effective" || true
+
 response_present=false
 if [ -s "$RESPONSE_FILE" ]; then
   response_present=true

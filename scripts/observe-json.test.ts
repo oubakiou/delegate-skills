@@ -29,6 +29,10 @@ interface ObserveJson {
   }
   run: {
     model_source?: string
+    effort?: {
+      requested: string | null
+      effective: { value: string | null; source: string; fast?: boolean }
+    }
   }
   run_context?: {
     dirty?: boolean
@@ -832,6 +836,161 @@ MD
 
       expectEstimatedUsage(observe)
       expect(observe.events.map((event) => event.kind)).toContain('usage_parse_failed')
+    })
+  })
+
+  describe('effort', () => {
+    it('records measured effort from the Codex session turn context', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        codex_home="$run_dir/codex-home"
+        observe="$run_dir/run_observe.json"
+        session_dir="$codex_home/sessions/2026/07/18"
+        mkdir -p "$run_dir" "$session_dir"
+        printf '%s\\n' '{"type":"session_meta","payload":{"id":"sid"}}' '{"type":"turn_context","payload":{"model":"gpt-5.5","effort":"medium"}}' >"$session_dir/session.jsonl"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+        effort="$(delegate_observe_effort_from_codex_sessions "$codex_home" || true)"
+        delegate_observe_record_effort "$observe" "$run_dir" "" "$effort"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expect(observe.run.effort).toEqual({
+        effective: { source: 'measured', value: 'medium' },
+        requested: null,
+      })
+    })
+
+    it('records measured effort from the legacy reasoning_effort field name', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        codex_home="$run_dir/codex-home"
+        observe="$run_dir/run_observe.json"
+        session_dir="$codex_home/sessions/2026/07/18"
+        mkdir -p "$run_dir" "$session_dir"
+        printf '%s\\n' '{"type":"turn_context","payload":{"model":"gpt-5.5","reasoning_effort":"high"}}' >"$session_dir/session.jsonl"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+        effort="$(delegate_observe_effort_from_codex_sessions "$codex_home" || true)"
+        delegate_observe_record_effort "$observe" "$run_dir" "" "$effort"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expect(observe.run.effort).toEqual({
+        effective: { source: 'measured', value: 'high' },
+        requested: null,
+      })
+    })
+
+    it('records backend default effort when the Codex session leaves effort unset', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        codex_home="$run_dir/codex-home"
+        observe="$run_dir/run_observe.json"
+        session_dir="$codex_home/sessions/2026/07/18"
+        mkdir -p "$run_dir" "$session_dir"
+        printf '%s\\n' '{"type":"turn_context","payload":{"model":"gpt-5.5","reasoning_effort":null}}' >"$session_dir/session.jsonl"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+        effort="$(delegate_observe_effort_from_codex_sessions "$codex_home" || true)"
+        delegate_observe_record_effort "$observe" "$run_dir" "" "$effort"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expect(observe.run.effort).toEqual({
+        effective: { source: 'backend_default', value: null },
+        requested: null,
+      })
+    })
+
+    it('records not exposed effort when Codex session artifacts are missing', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+        effort="$(delegate_observe_effort_from_codex_sessions "$run_dir/codex-home" || true)"
+        delegate_observe_record_effort "$observe" "$run_dir" "" "$effort"
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expect(observe.run.effort).toEqual({
+        effective: { source: 'not_exposed', value: null },
+        requested: null,
+      })
+    })
+
+    it('extracts Cursor effort from the model slug and cli-config parameters', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        cli_config="$run_dir/cli-config.json"
+        mkdir -p "$run_dir"
+        printf '%s' '{"modelParameters":{"glm-5.2":[{"id":"reasoning","value":"high"}],"composer-2.5":[{"id":"fast","value":"false"}],"grok-4.5":[{"id":"effort","value":"high"},{"id":"fast","value":"false"}]},"selectedModel":{"modelId":"kimi-k2.7-code","parameters":[{"id":"effort","value":"low"}]}}' >"$cli_config"
+        delegate_observe_effort_from_cursor_config glm-5.2-high "$run_dir/missing.json"
+        delegate_observe_effort_from_cursor_config glm-5.2 "$cli_config"
+        delegate_observe_effort_from_cursor_config composer-2.5 "$cli_config"
+        delegate_observe_effort_from_cursor_config grok-4.5 "$cli_config"
+        delegate_observe_effort_from_cursor_config kimi-k2.7-code "$cli_config"
+        delegate_observe_effort_from_cursor_config unknown-model "$cli_config"
+        `
+      )
+      const lines = output.trimEnd().split('\n').map(parseJson)
+
+      expect(lines).toEqual([
+        { source: 'measured', value: 'high' },
+        { source: 'measured', value: 'high' },
+        { fast: false, source: 'not_exposed', value: null },
+        { fast: false, source: 'measured', value: 'high' },
+        { source: 'measured', value: 'low' },
+        { source: 'not_exposed', value: null },
+      ])
+    })
+
+    it('records requested effort separately from the measured effective value', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore cursor-glm-5.2-high cursor req.json res.json requester
+        delegate_observe_record_effort "$observe" "$run_dir" high '{"value":"high","source":"measured","fast":false}'
+        cat "$observe"
+        `
+      )
+      const observe = parseObserveJson(output)
+
+      expect(observe.run.effort).toEqual({
+        effective: { fast: false, source: 'measured', value: 'high' },
+        requested: 'high',
+      })
     })
   })
 })
