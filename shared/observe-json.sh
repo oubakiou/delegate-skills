@@ -762,6 +762,101 @@ delegate_observe_usage_from_codex_sessions() {
   printf '%s\n' "$usage_json"
 }
 
+# model 指定子の `@effort` suffix 分解。パースをここに集約し、wrapper ごとの再実装を禁止する。
+# suffix 込み文字列が正規形（request/observe の model 系フィールドはそのまま流す）で、
+# 剥離は CLI argv を組む直前に限る
+delegate_observe_split_model_effort() {
+  local model="$1"
+  local base="$model"
+  local effort=""
+  case "$model" in
+    *@*)
+      base="${model%%@*}"
+      effort="${model#*@}"
+      ;;
+  esac
+  jq -cn --arg base "$base" --arg effort "$effort" \
+    '{base_model: $base, effort: (if $effort == "" then null else $effort end)}'
+}
+
+# effort suffix の backend 別検証。不正なら 1 行のエラーを stderr に出して非 0 を返す。
+# 許容値は実 CLI の PoC 実測に基づく（docs/feature/delegate-effort-suffix.md §2）。
+# Claude CLI は不正値を warning のみで無視して続行するため、CLI 側の検証には代替できない
+delegate_observe_validate_model_effort() {
+  local backend="$1"
+  local model="$2"
+
+  case "$model" in
+    *@*) ;;
+    *) return 0 ;;
+  esac
+
+  local base="${model%%@*}"
+  local effort="${model#*@}"
+
+  if [ -z "$base" ] || [ -z "$effort" ]; then
+    echo "ERROR: malformed effort suffix in model '$model'; expected <model>@<effort>" >&2
+    return 1
+  fi
+  case "$effort" in
+    *@*)
+      echo "ERROR: malformed effort suffix in model '$model'; expected a single @<effort>" >&2
+      return 1
+      ;;
+  esac
+
+  case "$backend" in
+    claude)
+      case "$effort" in
+        low | medium | high | xhigh | max) return 0 ;;
+      esac
+      echo "ERROR: invalid effort '$effort' for claude backend model '$model'; allowed: low|medium|high|xhigh|max" >&2
+      return 1
+      ;;
+    codex)
+      case "$effort" in
+        low | medium | high | xhigh) return 0 ;;
+      esac
+      echo "ERROR: invalid effort '$effort' for codex backend model '$model'; allowed: low|medium|high|xhigh" >&2
+      return 1
+      ;;
+    cursor)
+      local cursor_model="$base"
+      case "$cursor_model" in
+        cursor-*) cursor_model="${cursor_model#cursor-}" ;;
+      esac
+      case "$cursor_model" in
+        *-high | *-max)
+          echo "ERROR: effort suffix cannot be combined with the effort slug in cursor model '$model'; use either '$base' or '${base%-*}@<effort>'" >&2
+          return 1
+          ;;
+        glm-5.2)
+          case "$effort" in
+            high | max) return 0 ;;
+          esac
+          echo "ERROR: invalid effort '$effort' for cursor model '$model'; allowed: high|max" >&2
+          return 1
+          ;;
+        grok-4.5)
+          case "$effort" in
+            low | medium | high) return 0 ;;
+          esac
+          echo "ERROR: invalid effort '$effort' for cursor model '$model'; allowed: low|medium|high" >&2
+          return 1
+          ;;
+        *)
+          echo "ERROR: effort suffix is not supported for cursor model '$model'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high)" >&2
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      echo "ERROR: effort suffix is not supported for the $backend backend (model '$model'); remove '@$effort'" >&2
+      return 1
+      ;;
+  esac
+}
+
 # 実効 effort の抽出は「artifacts で確認できた事実」だけを記録する:
 # - measured: run artifacts に実効値そのものが残っていた
 # - backend_default: artifacts は残っているが effort 指定が無い（CLI 既定に委ねられた）

@@ -6,7 +6,7 @@ set -euo pipefail
 # Usage: prepare-imagegen.sh <parent_task_type_chain_json> <requester_session_id>
 #   リクエスト本文 Markdown は stdin から渡す。
 # stdout: {"model":"...","model_source":"env|default","task_type_chain":[...],"request_file":"...","response_file":"...","run_dir":"...","observe_file":"..."}（JSON）
-# exit: 2=引数エラー / 3=前提条件不足(npx/jq) / 4=委譲サイクル / 1=md2idx 失敗・空 index/sections
+# exit: 2=引数エラー / 3=前提条件不足(npx/jq) / 4=委譲サイクル / 6=effort 指定不正 / 1=md2idx 失敗・空 index/sections
 
 if [ $# -lt 2 ]; then
   echo "Usage: $0 <parent_task_type_chain_json> <requester_session_id>  (request body markdown on stdin)" >&2
@@ -77,6 +77,15 @@ else
   model_source="default"
 fi
 model="$("$script_dir/resolve-model.sh" "$type_env" "$default_model")"
+
+# imagegen への effort 宣言経路は提供しない（capability bridge のため）。suffix は fail-closed
+case "$model" in
+  *@*)
+    echo "ERROR: effort suffix is not supported for delegate-imagegen (model '$model'); remove '@${model#*@}'" >&2
+    exit 6
+    ;;
+esac
+
 task_type_chain="$("$script_dir/check-delegate-chain.sh" "$task_type" "$parent_chain")"
 paths="$(printf '%s' "$body" | "$script_dir/build-request.sh" "$task_type" "$model" "$task_type_chain" "$requester_session_id")"
 request_file="$(printf '%s' "$paths" | jq -r '.request_file')"

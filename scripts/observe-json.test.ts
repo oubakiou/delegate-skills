@@ -28,6 +28,8 @@ interface ObserveJson {
     source?: string
   }
   run: {
+    backend?: string
+    model?: string
     model_source?: string
     effort?: {
       requested: string | null
@@ -992,6 +994,154 @@ MD
         requested: 'high',
       })
     })
+  })
+})
+
+describe('model effort suffix', () => {
+  it('splits every documented model name with and without an effort suffix', () => {
+    const documentedModels = [
+      'fable',
+      'opus',
+      'sonnet',
+      'haiku',
+      'gpt-5.6',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-5',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.4-nano',
+      'gpt-5.3-codex-spark',
+      'swe-1.7',
+      'swe-1.7-lightning',
+      'swe-1.6',
+      'swe-1.6-fast',
+      'devin-glm-5.2',
+      'devin-deepseek-v4-pro',
+      'composer-2.5',
+      'composer-2.5-fast',
+      'cursor-grok-4.5',
+      'cursor-gemini-3.1-pro',
+      'cursor-kimi-k2.7-code',
+      'cursor-glm-5.2-high',
+      'cursor-glm-5.2-max',
+      'grok-build',
+    ]
+    const output = runBash(
+      `
+        set -euo pipefail
+        source shared/observe-json.sh
+        for model in ${documentedModels.join(' ')}; do
+          plain="$(delegate_observe_split_model_effort "$model")"
+          suffixed="$(delegate_observe_split_model_effort "$model@high")"
+          [ "$plain" = "{\\"base_model\\":\\"$model\\",\\"effort\\":null}" ] || printf 'FAIL plain %s: %s\\n' "$model" "$plain"
+          [ "$suffixed" = "{\\"base_model\\":\\"$model\\",\\"effort\\":\\"high\\"}" ] || printf 'FAIL suffixed %s: %s\\n' "$model" "$suffixed"
+        done
+        printf 'checked\\n'
+        `
+    )
+
+    expect(output.trim()).toBe('checked')
+  })
+
+  it('accepts PoC-verified effort suffixes per backend', () => {
+    const output = runBash(
+      `
+        source shared/observe-json.sh
+        set +e
+        for spec in \\
+          'claude sonnet@low' 'claude haiku@max' 'claude fable@xhigh' \\
+          'codex gpt-5.5@low' 'codex gpt-5.4-mini@xhigh' \\
+          'cursor cursor-glm-5.2@high' 'cursor cursor-glm-5.2@max' \\
+          'cursor cursor-grok-4.5@low' 'cursor cursor-grok-4.5@medium' 'cursor cursor-grok-4.5@high' \\
+          'claude sonnet' 'devin swe-1.7' 'cursor composer-2.5' 'grok grok-build'; do
+          set -- $spec
+          delegate_observe_validate_model_effort "$1" "$2" || printf 'FAIL %s\\n' "$spec"
+        done
+        printf 'checked\\n'
+        `
+    )
+
+    expect(output.trim()).toBe('checked')
+  })
+
+  it('rejects unsupported backends, invalid values, and malformed suffixes', () => {
+    const output = runBash(
+      `
+        source shared/observe-json.sh
+        set +e
+        for spec in \\
+          'claude sonnet@bogus' 'codex gpt-5.5@max' \\
+          'devin swe-1.7@high' 'devin devin-glm-5.2@low' 'grok grok-build@high' \\
+          'cursor cursor-glm-5.2-high@max' 'cursor cursor-glm-5.2-max@high' \\
+          'cursor composer-2.5@high' 'cursor cursor-kimi-k2.7-code@high' 'cursor cursor-gemini-3.1-pro@high' \\
+          'cursor cursor-glm-5.2@low' 'cursor cursor-grok-4.5@max' \\
+          'codex gpt-5.5@' 'codex @high' 'codex gpt-5.5@high@low'; do
+          set -- $spec
+          if message="$(delegate_observe_validate_model_effort "$1" "$2" 2>&1)"; then
+            printf 'FAIL accepted %s\\n' "$spec"
+          else
+            printf '%s\\n' "$message"
+          fi
+        done
+        `
+    )
+    const lines = output.trimEnd().split('\n')
+
+    expect(lines).toHaveLength(15)
+    expect(lines.every((line) => line.startsWith('ERROR: '))).toBe(true)
+    expect(output).toContain(
+      "invalid effort 'bogus' for claude backend model 'sonnet@bogus'; allowed: low|medium|high|xhigh|max"
+    )
+    expect(output).toContain(
+      "invalid effort 'max' for codex backend model 'gpt-5.5@max'; allowed: low|medium|high|xhigh"
+    )
+    expect(output).toContain('not supported for the devin backend')
+    expect(output).toContain('not supported for the grok backend')
+    expect(output).toContain('cannot be combined with the effort slug')
+    expect(output).toContain("malformed effort suffix in model 'gpt-5.5@'")
+  })
+
+  it('fails prepare with exit 6 when the resolved model carries an invalid effort suffix', () => {
+    const workDir = makeWorkDir()
+    const rejected = runBashStatus(
+      `
+        set -euo pipefail
+        DELEGATE_WORK_DIR="${workDir}" DELEGATE_CHORE_MODEL=swe-1.7@high bash shared/prepare.sh chore DELEGATE_CHORE_MODEL haiku '[]' requester <<'MD'
+# Objective
+test
+MD
+        `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+
+    expect(rejected.status).toBe(6)
+    expect(rejected.output).toContain('effort suffix is not supported for the devin backend')
+  })
+
+  it('keeps a valid effort suffix in the prepared model and observe JSON', () => {
+    const workDir = makeWorkDir()
+    const accepted = runBash(
+      `
+        set -euo pipefail
+        DELEGATE_WORK_DIR="${workDir}" DELEGATE_CHORE_MODEL=gpt-5.5@high bash shared/prepare.sh chore DELEGATE_CHORE_MODEL haiku '[]' requester <<'MD'
+# Objective
+test
+MD
+        `,
+      { DELEGATE_METRICS_FILE: '' }
+    )
+    const prepared = parseJson(accepted)
+    if (!isRecord(prepared) || typeof prepared.observe_file !== 'string') {
+      throw new Error('invalid prepare output')
+    }
+    const observe = readObserveJson(prepared.observe_file)
+
+    expect(prepared.model).toBe('gpt-5.5@high')
+    expect(observe.run.model).toBe('gpt-5.5@high')
+    expect(observe.run.backend).toBe('codex')
   })
 })
 

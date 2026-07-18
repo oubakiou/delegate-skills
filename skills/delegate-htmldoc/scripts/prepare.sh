@@ -14,7 +14,7 @@ set -euo pipefail
 #   session_mode は空（通常）| resumable | followup=<前回observe_fileパス>。
 # stdout: {"model":"...","model_source":"env|default|followup","task_type_chain":[...],"request_file":"...","response_file":"...","run_dir":"...","observe_file":"..."}（JSON）
 # telemetry: DELEGATE_METRICS_FILE が設定されたときだけ JSONL に proxy metric を追記する
-# exit: 2=引数エラー / 3=前提条件不足(npx/jq) / 4=委譲サイクル / 5=follow-up 検証失敗 / 1=md2idx 失敗・空 index/sections
+# exit: 2=引数エラー / 3=前提条件不足(npx/jq) / 4=委譲サイクル / 5=follow-up 検証失敗 / 6=effort 指定不正 / 1=md2idx 失敗・空 index/sections
 
 if [ $# -lt 5 ]; then
   echo "Usage: $0 <task_type> <type_env_name> <default_model> <parent_task_type_chain_json> <requester_session_id> [session_mode]  (request body markdown on stdin)" >&2
@@ -147,6 +147,11 @@ else
   model="$(bash "$script_dir/resolve-model.sh" "$type_env" "$default_model")"
 fi
 backend="$(delegate_observe_backend_for "$task_type" "$model")"
+
+# follow-up は前回指定子（suffix 込み）を無条件継承するため検証しない（初回時点で検証済み）
+if [ "$model_source" != "followup" ]; then
+  delegate_observe_validate_model_effort "$backend" "$model" || exit 6
+fi
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 worktree_root="$repo_root"
