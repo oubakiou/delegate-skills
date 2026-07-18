@@ -175,18 +175,24 @@ worker の token usage は run 終了時に observe JSON の `usage.measurement:
 
 上記モデル名の effort 挙動:
 
-delegate-skills は解決したモデル文字列だけを実行先 CLI に渡す。Claude `--effort`、Codex `model_reasoning_effort`、Cursor parameter override、Devin の effort option は渡さない。Codex delegate は wrapper が管理する MCP サーバーだけを含む隔離 `CODEX_HOME` の生成 config で起動するため、親の user config にある `model_reasoning_effort` は読み込まれない。
+reasoning effort はモデル文字列へ `@<effort>` suffix を付けて opt-in で宣言する。例: `DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high`。`@` が無い場合、delegate-skills は従来どおり実行先 CLI argv に effort flag を追加しない。
 
-| モデル名                                                                                                 | effort 挙動                                                                                                |
+suffix 対応は backend ごとに明示され、非対応指定は fail-closed する。Claude は `low`, `medium`, `high`, `xhigh`, `max` を受け付け、`--effort` として渡す。Codex は `low`, `medium`, `high`, `xhigh` を受け付け、`-c model_reasoning_effort=<value>` として渡す。Cursor はモデル別対応で、`cursor-glm-5.2@high|max` は `glm-5.2[reasoning=<value>]`、`cursor-grok-4.5@low|medium|high` は `grok-4.5[effort=<value>]` へ変換する。Devin、`delegate-imagegen`、`delegate-x-research` は effort suffix 宣言に対応しない。不正値、非対応 backend、Cursor の `-high` / `-max` slug と `@...` の二重指定は dispatch 前に exit 6 で停止し、stderr 1 行に許容値を列挙する。
+
+observe JSON には wrapper が完走した run の `run.effort.requested` と `run.effort.effective` を記録する。実効値が measured になるのは run artifacts が実効値を露出する場合のみ（Codex の resumable / follow-up は永続 session JSONL、Cursor は model slug または run 後の cli-config）。Claude、Devin、Grok、および ephemeral な Codex run（通常 run と `delegate-imagegen`）は `not_exposed` を記録し、宣言した effort を実 run と突合できない。model 系フィールドは suffix 込みのモデル指定子を保持し、費用概算では suffix を剥がして価格 lookup する。
+
+suffix 未指定時の backend 既定挙動:
+
+| モデル名                                                                                                 | 既定 effort 挙動                                                                                           |
 | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `fable`, `opus`, `sonnet`, `haiku`                                                                       | Claude `--effort` は明示しない。Claude CLI の alias 既定が適用される。                                     |
 | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`                                                | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
 | `gpt-5`                                                                                                  | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
-| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                                     | Codex catalog 既定は `medium`。対応 level は `low`, `medium`, `high`, `xhigh`。                            |
+| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                                     | Codex catalog 既定は `medium`。明示 suffix 対応 level は `low`, `medium`, `high`, `xhigh`。                |
 | `gpt-5.4-nano`                                                                                           | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
 | `gpt-5.3-codex-spark`                                                                                    | Codex effort は明示しない。Spark の availability と既定値はインストール済み Codex CLI/runtime 側で決まる。 |
 | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`      | Devin の separate effort flag は渡さない。選択モデルの Devin 側既定が適用される。                          |
-| `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | effort suffix も Cursor parameter override も無い。Cursor model 既定が適用される。                         |
+| `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | Cursor effort override は渡さない。Cursor model 既定が適用される。                                         |
 | `cursor-glm-5.2-high`                                                                                    | Cursor には `glm-5.2-high` を渡す。`high` は model slug に含まれる。                                       |
 | `cursor-glm-5.2-max`                                                                                     | Cursor には `glm-5.2-max` を渡す。`max` は model slug に含まれる。                                         |
 | `grok-build`（`DELEGATE_X_RESEARCH_MODEL`）                                                              | separate effort setting は渡さない。X 調査 backend の既定が適用される。                                    |

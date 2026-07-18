@@ -175,18 +175,24 @@ The list above is documented support, not a hard allowlist. The target CLI must 
 
 Effort handling for those documented names:
 
-delegate-skills passes only the resolved model string to the target CLI. It does not pass Claude `--effort`, Codex `model_reasoning_effort`, Cursor parameter overrides, or any Devin effort option. Codex delegates run with an isolated `CODEX_HOME` whose generated config contains only wrapper-managed MCP servers, so parent user config `model_reasoning_effort` is not loaded.
+Reasoning effort is declared opt-in by appending an `@<effort>` suffix to the model string, for example `DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high`. Without `@`, delegate-skills keeps the previous behavior and does not add an effort flag to the target CLI argv.
 
-| Model name(s)                                                                                            | Effort behavior                                                                                              |
+Backend support for suffixes is explicit and fail-closed. Claude accepts `low`, `medium`, `high`, `xhigh`, and `max` and passes them as `--effort`. Codex accepts `low`, `medium`, `high`, and `xhigh` and passes them as `-c model_reasoning_effort=<value>`. Cursor support is model-specific: `cursor-glm-5.2@high|max` becomes `glm-5.2[reasoning=<value>]`, and `cursor-grok-4.5@low|medium|high` becomes `grok-4.5[effort=<value>]`. Devin, `delegate-imagegen`, and `delegate-x-research` do not support suffix effort declarations. Invalid values, unsupported backends, and Cursor double declarations such as a `-high` / `-max` slug plus `@...` stop before dispatch with exit 6 and a single stderr line listing the allowed values.
+
+Observe JSON records `run.effort.requested` and `run.effort.effective` for completed wrapper runs. The effective value is measured only where run artifacts expose it: Codex resumable / follow-up runs (persisted session JSONL) and Cursor (model slug or post-run cli-config). Claude, Devin, Grok, and ephemeral Codex runs (normal runs and `delegate-imagegen`) record `not_exposed`, so a declared effort cannot be verified against the actual run there. Model fields keep the suffix-bearing model specifier; cost estimates strip the suffix for price lookup.
+
+When no suffix is specified, the backend default behavior is:
+
+| Model name(s)                                                                                            | Default effort behavior                                                                                      |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `fable`, `opus`, `sonnet`, `haiku`                                                                       | No explicit Claude `--effort`; the Claude CLI default for the alias applies.                                 |
 | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`                                                | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
 | `gpt-5`                                                                                                  | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
-| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                                     | Codex catalog default is `medium`; supported levels are `low`, `medium`, `high`, and `xhigh`.                |
+| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                                     | Codex catalog default is `medium`; supported explicit suffix levels are `low`, `medium`, `high`, `xhigh`.    |
 | `gpt-5.4-nano`                                                                                           | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
 | `gpt-5.3-codex-spark`                                                                                    | No explicit Codex effort; Spark availability and defaults are determined by the installed Codex CLI/runtime. |
 | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`      | No separate Devin effort flag is passed; the Devin-side default for the selected model applies.              |
-| `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | No effort suffix or Cursor parameter override; the Cursor model default applies.                             |
+| `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | No Cursor effort override is passed; the Cursor model default applies.                                       |
 | `cursor-glm-5.2-high`                                                                                    | Cursor receives `glm-5.2-high`; `high` is encoded in the model slug.                                         |
 | `cursor-glm-5.2-max`                                                                                     | Cursor receives `glm-5.2-max`; `max` is encoded in the model slug.                                           |
 | `grok-build` (`DELEGATE_X_RESEARCH_MODEL`)                                                               | No separate effort setting is passed; the X research backend default applies.                                |

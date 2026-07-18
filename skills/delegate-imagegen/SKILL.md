@@ -34,6 +34,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-imagegen/scripts/prepare-imageg
 ## 実行フロー
 
 1. **準備**: Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。出力先指定がなければ Constraints に `DELEGATE_IMAGEGEN_OUTPUT_DIR` の既定出力先を使う旨を書く。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
+   - `DELEGATE_IMAGEGEN_MODEL` は effort suffix に対応しない。`@` 付きモデルは prepare が exit 6 で fail-closed する。
    - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-imagegen/scripts/prepare-imagegen.sh "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）
    - `model="$(printf '%s' "$out" | jq -r .model)"` / `request_file="$(printf '%s' "$out" | jq -r .request_file)"` / `response_file="$(printf '%s' "$out" | jq -r .response_file)"` / `run_dir="$(printf '%s' "$out" | jq -r .run_dir)"` / `observe_file="$(printf '%s' "$out" | jq -r .observe_file)"`
 2. **実行系分岐**:
