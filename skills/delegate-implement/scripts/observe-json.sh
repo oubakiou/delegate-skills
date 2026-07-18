@@ -221,6 +221,41 @@ delegate_observe_usage_update_inner() {
   mv "$tmp" "$observe_file"
 }
 
+delegate_observe_mcp_config_update() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local source="$3"
+  local servers_json_array="$4"
+
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_mcp_config_update_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$source" \
+    "$servers_json_array"
+}
+
+delegate_observe_mcp_config_update_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local source="$3"
+  local servers_json_array="$4"
+  local tmp
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_mcp_config_XXXXX" --suffix=.json)"
+
+  jq \
+    --arg source "$source" \
+    --argjson servers "$servers_json_array" \
+    '.mcp_config = {
+      source: $source,
+      servers: (if ($servers | type) == "array" then $servers | map(tostring) else [] end)
+    }' \
+    "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
 delegate_observe_usage_parse_failed() {
   local observe_file="$1"
   local run_dir="$2"

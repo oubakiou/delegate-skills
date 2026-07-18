@@ -134,6 +134,8 @@ if [ "$SESSION_MODE" = "followup" ]; then
   devin_args+=(--resume "$RESUME_ARG")
 fi
 
+delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" shared '[]' || true
+
 cleanup() {
   if [ -n "${child_pid:-}" ] && kill -0 "$child_pid" 2>/dev/null; then
     kill "$child_pid" 2>/dev/null || true

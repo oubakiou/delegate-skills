@@ -23,6 +23,10 @@ interface ObserveJson {
     followup_of?: string | null
     lineage_id?: string
   }
+  mcp_config?: {
+    servers?: string[]
+    source?: string
+  }
   run: {
     model_source?: string
   }
@@ -367,6 +371,28 @@ describe('observe-json.sh', () => {
     )
 
     expect(parseObserveJson(output).run.model_source).toBe('env')
+  })
+
+  it('records only MCP config source and server names', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore gpt-5.5 codex req.json res.json requester
+      delegate_observe_mcp_config_update "$observe" "$run_dir" injected '["alpha","beta"]'
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    const content = JSON.stringify(observe)
+
+    expect(observe.mcp_config).toEqual({ servers: ['alpha', 'beta'], source: 'injected' })
+    expect(content).not.toContain('command')
+    expect(content).not.toContain('TOKEN')
   })
 
   it('returns model source in prepare output and observe JSON', () => {

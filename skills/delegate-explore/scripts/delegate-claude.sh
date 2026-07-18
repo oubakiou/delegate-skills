@@ -33,6 +33,7 @@ RESPONDER_SESSION_ID="claude:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
 source "$script_dir/prompt-constraints.sh"
+source "$script_dir/delegate-mcp.sh"
 backend="$(delegate_observe_backend_from_model "$MODEL")"
 stdout_capture="$WORK_DIR/worker-stdout.capture"
 stderr_capture="$WORK_DIR/worker-stderr.capture"
@@ -142,11 +143,32 @@ minimal_allowed_tools="Bash(bash ${script_dir}/read-request.sh:*),Bash(bash ${sc
 case "$SESSION_MODE" in
   "")
     claude_args+=(--no-session-persistence)
+    delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" shared '[]' || true
     ;;
   resumable)
+    parent_claude_config_file="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}"
+    parent_claude_config_file="${parent_claude_config_file:-$HOME/.claude.json}"
+    mcp_canonical="$(delegate_mcp_extract_claude_user "$parent_claude_config_file")"
+    if delegate_mcp_has_servers "$mcp_canonical"; then
+      mcp_config_file="$CLAUDE_SESSION_HOME/mcp-config.json"
+      delegate_mcp_render_claude_mcp_config "$mcp_canonical" >"$mcp_config_file"
+      claude_args+=(--mcp-config "$mcp_config_file")
+      mcp_servers="$(printf '%s' "$mcp_canonical" | jq -c 'keys')"
+      delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" injected "$mcp_servers" || true
+    else
+      delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" none '[]' || true
+    fi
     claude_args+=(--session-id "$CLAUDE_SESSION_ID")
     ;;
   followup)
+    mcp_config_file="$CLAUDE_SESSION_HOME/mcp-config.json"
+    if [ -s "$mcp_config_file" ]; then
+      claude_args+=(--mcp-config "$mcp_config_file")
+      mcp_servers="$(jq -c 'if (.mcpServers | type) == "object" then .mcpServers | keys else [] end' "$mcp_config_file" 2>/dev/null || printf '[]\n')"
+      delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" injected "$mcp_servers" || true
+    else
+      delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" none '[]' || true
+    fi
     claude_args+=(--resume "$CLAUDE_SESSION_ID")
     ;;
 esac

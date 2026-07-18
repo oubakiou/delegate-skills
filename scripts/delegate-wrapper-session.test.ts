@@ -37,8 +37,14 @@ interface RunContext {
   worktree_root: string | null
 }
 
+interface McpConfig {
+  servers: string[]
+  source: string | null
+}
+
 interface ObserveJson {
   backend_session: BackendSession | null
+  mcp_config: McpConfig | null
   run_context: RunContext | null
 }
 
@@ -145,6 +151,20 @@ const parseRunContext = (value: unknown): RunContext | null => {
   }
 }
 
+const parseMcpConfig = (value: unknown): McpConfig | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+  const servers: string[] = []
+  if (Array.isArray(value.servers)) {
+    servers.push(...value.servers.map(String))
+  }
+  return {
+    servers,
+    source: stringOrNullValue(value.source),
+  }
+}
+
 const readObserve = (filePath: string): ObserveJson => {
   const value = readUnknownJson(filePath)
   if (!isRecord(value)) {
@@ -152,6 +172,7 @@ const readObserve = (filePath: string): ObserveJson => {
   }
   return {
     backend_session: parseBackendSession(value.backend_session),
+    mcp_config: parseMcpConfig(value.mcp_config),
     run_context: parseRunContext(value.run_context),
   }
 }
@@ -212,6 +233,10 @@ console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_toke
 const codexFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
+if (args.join(' ') === 'mcp list --json') {
+  console.log(process.env.FAKE_CODEX_MCP_LIST_JSON || '[]')
+  process.exit(0)
+}
 const prompt = args[args.length - 1] || ''
 if (process.env.FAKE_CODEX_EXIT_WITHOUT_RESPONSE === '1') {
   fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
@@ -717,11 +742,199 @@ const prepareCodexSessionHome = (workDir: string): string => {
   return sessionHome
 }
 
+const mcpServers: Record<string, unknown> = {
+  alpha: { args: ['--fast'], command: 'alpha-server', env: { TOKEN: 'secret' } },
+  beta: { url: 'https://example.test/mcp' },
+}
+
+const codexMcpListFixture = JSON.stringify([
+  {
+    enabled: true,
+    name: 'alpha',
+    transport: {
+      args: ['--fast'],
+      command: 'alpha-server',
+      env: { TOKEN: 'secret' },
+      type: 'stdio',
+    },
+  },
+  {
+    enabled: true,
+    name: 'beta',
+    transport: { url: 'https://example.test/mcp' },
+  },
+])
+
+const writeClaudeUserMcp = (fixture: Fixture, servers = mcpServers): void => {
+  writeFileSync(
+    path.join(fixture.workDir, 'home', '.claude.json'),
+    JSON.stringify({ mcpServers: servers })
+  )
+}
+
+const writeCursorGlobalMcp = (fixture: Fixture, servers = mcpServers): void => {
+  writeFileSync(
+    path.join(fixture.workDir, 'home', '.cursor', 'mcp.json'),
+    JSON.stringify({ mcpServers: servers })
+  )
+}
+
+const requireMcpConfig = (observe: ObserveJson): McpConfig => {
+  if (!observe.mcp_config) {
+    throw new Error('missing mcp_config')
+  }
+  return observe.mcp_config
+}
+
+const expectNoMcpPayloadInObserve = (observeFile: string): void => {
+  const content = readFileSync(observeFile, 'utf8')
+  expect(content).not.toContain('alpha-server')
+  expect(content).not.toContain('secret')
+  expect(content).not.toContain('https://example.test/mcp')
+}
+
+const expectClaudeMcpConfigArg = (fixture: Fixture, log: FakeCliLog): string => {
+  const mcpConfigFile = path.join(fixture.runDir, 'claude-config', 'mcp-config.json')
+  expect(log.args).toContain('--mcp-config')
+  expect(log.args).toContain(mcpConfigFile)
+  return mcpConfigFile
+}
+
+const expectInjectedMcpObserve = (observe: ObserveJson): void => {
+  expect(requireMcpConfig(observe)).toEqual({ servers: ['alpha', 'beta'], source: 'injected' })
+}
+
+const expectCodexMcpToml = (configToml: string): void => {
+  expect(configToml).toContain('[mcp_servers."alpha"]')
+  expect(configToml).toContain('command = "alpha-server"')
+  expect(configToml).toContain('[mcp_servers."alpha".env]')
+  expect(configToml).toContain('[mcp_servers."beta"]')
+  expect(configToml).not.toContain('model')
+}
+
+const prepareClaudeFollowupMcpConfig = (
+  fixture: Fixture
+): { mcpConfigFile: string; sessionHome: string } => {
+  writeClaudeUserMcp(fixture, { changed: { command: 'changed-server' } })
+  const sessionHome = prepareClaudeSessionHome(fixture.workDir)
+  const mcpConfigFile = path.join(sessionHome, 'mcp-config.json')
+  writeFileSync(mcpConfigFile, JSON.stringify({ mcpServers }))
+  return { mcpConfigFile, sessionHome }
+}
+
 const expectFailedWithoutChild = (fixture: Fixture, result: { status: number }): void => {
   expect(result.status).toBe(5)
   expect(readResponseStatus(fixture.responseFile)).toBe('failed')
   expect(existsSync(fixture.logFile)).toBe(false)
 }
+
+describe('wrapper MCP config injection', () => {
+  it('keeps Claude normal runs on shared MCP config without generated files', () => {
+    const fixture = makeFixture('claude')
+    writeClaudeUserMcp(fixture)
+    const result = runClaude(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).not.toContain('--mcp-config')
+    expect(existsSync(path.join(fixture.runDir, 'claude-config', 'mcp-config.json'))).toBe(false)
+    expect(requireMcpConfig(readObserve(fixture.observeFile)).source).toBe('shared')
+  })
+
+  it('injects parent MCP config for Claude resumable runs', () => {
+    const fixture = makeFixture('claude')
+    writeClaudeUserMcp(fixture)
+    const result = runClaude(fixture, ['resumable', '', ''])
+    const mcpConfigFile = expectClaudeMcpConfigArg(fixture, readLog(fixture.logFile))
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(readUnknownJson(mcpConfigFile)).toEqual({ mcpServers })
+    expectInjectedMcpObserve(observe)
+    expectNoMcpPayloadInObserve(fixture.observeFile)
+  })
+
+  it('does not inject Claude resumable MCP config when parent MCP is absent', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaude(fixture, ['resumable', '', ''])
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).not.toContain('--mcp-config')
+    expect(existsSync(path.join(fixture.runDir, 'claude-config', 'mcp-config.json'))).toBe(false)
+    expect(requireMcpConfig(readObserve(fixture.observeFile)).source).toBe('none')
+  })
+
+  it('reuses the existing Claude follow-up MCP config without regenerating it', () => {
+    const fixture = makeFixture('claude')
+    const { mcpConfigFile, sessionHome } = prepareClaudeFollowupMcpConfig(fixture)
+
+    const result = runClaude(fixture, ['followup', 'sid-1', sessionHome])
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain(mcpConfigFile)
+    expect(readUnknownJson(mcpConfigFile)).toEqual({ mcpServers })
+    expectInjectedMcpObserve(readObserve(fixture.observeFile))
+  })
+
+  it('generates isolated Codex MCP config from the parent list output', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_MCP_LIST_JSON: codexMcpListFixture,
+    })
+    const configToml = readFileSync(path.join(fixture.runDir, 'codex-home', 'config.toml'), 'utf8')
+
+    expect(result.status).toBe(0)
+    expectCodexMcpToml(configToml)
+    expectInjectedMcpObserve(readObserve(fixture.observeFile))
+  })
+
+  it('does not generate Codex MCP config when parent MCP is absent', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture)
+
+    expect(result.status).toBe(0)
+    expect(existsSync(path.join(fixture.runDir, 'codex-home', 'config.toml'))).toBe(false)
+    expect(requireMcpConfig(readObserve(fixture.observeFile)).source).toBe('none')
+  })
+
+  it('records injected MCP for Codex follow-up when the session config exists', () => {
+    const fixture = makeFixture('codex')
+    const sessionHome = prepareCodexSessionHome(fixture.workDir)
+    writeFileSync(
+      path.join(sessionHome, 'config.toml'),
+      [
+        '[mcp_servers."alpha"]',
+        'command = "alpha"',
+        '',
+        '[mcp_servers."alpha".env]',
+        'TOKEN = "secret"',
+        '',
+        '[mcp_servers."beta"]',
+        'url = "https://example.test/mcp"',
+      ].join('\n')
+    )
+    const result = runCodex(fixture, ['followup', 'thread-1', sessionHome])
+
+    expect(result.status).toBe(0)
+    expectInjectedMcpObserve(readObserve(fixture.observeFile))
+  })
+
+  it('generates Cursor MCP config and approves MCPs when parent MCP exists', () => {
+    const fixture = makeFixture('cursor')
+    writeCursorGlobalMcp(fixture)
+    const result = runCursor(fixture)
+    const log = readLog(fixture.logFile)
+    const mcpConfigFile = path.join(fixture.runDir, 'cursor-config', 'mcp.json')
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--approve-mcps')
+    expect(readUnknownJson(mcpConfigFile)).toEqual({ mcpServers })
+    expectInjectedMcpObserve(readObserve(fixture.observeFile))
+  })
+})
 
 describe('delegate-claude.sh session modes', () => {
   it('keeps normal runs non-persistent', () => {
@@ -734,6 +947,7 @@ describe('delegate-claude.sh session modes', () => {
     expect(log.args).not.toContain('--session-id')
     expect(log.args).not.toContain('--resume')
     expect(log.env.CLAUDE_CONFIG_DIR).toBeNull()
+    expect(requireMcpConfig(readObserve(fixture.observeFile)).source).toBe('shared')
   })
 
   it('injects Bash tool timeout caps into the child env by default', () => {
@@ -940,6 +1154,7 @@ describe('delegate-codex.sh session modes', () => {
     expect(log.args).toContain('--ephemeral')
     expect(log.args).toContain('--sandbox')
     expect(log.args).toContain('-C')
+    expect(log.args).not.toContain('--ignore-user-config')
     expect(log.args).not.toContain('resume')
   })
 
@@ -1122,6 +1337,7 @@ describe('delegate-devin.sh session modes', () => {
     expect(result.status).toBe(0)
     expect(log.args).toContain('--export')
     expect(log.args).not.toContain('--resume')
+    expect(requireMcpConfig(readObserve(fixture.observeFile)).source).toBe('shared')
   })
 
   it('records export session_id for resumable runs', () => {
@@ -1207,6 +1423,8 @@ describe('delegate-cursor.sh session modes', () => {
     expect(log.args).not.toContain('create-chat')
     expect(log.args).not.toContain('--resume')
     expect(log.args.join(' ')).toContain('--output-format stream-json')
+    expect(log.args).not.toContain('--approve-mcps')
+    expect(requireMcpConfig(readObserve(fixture.observeFile)).source).toBe('none')
   })
 
   it('isolates CURSOR_CONFIG_DIR into the run dir and copies cli-config.json', () => {

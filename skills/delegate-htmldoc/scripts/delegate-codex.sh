@@ -31,6 +31,7 @@ mkdir -p "$WORK_DIR/tmp"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
 source "$script_dir/prompt-constraints.sh"
+source "$script_dir/delegate-mcp.sh"
 backend="$(delegate_observe_backend_from_model "$MODEL")"
 stdout_capture="$WORK_DIR/worker-stdout.capture"
 stderr_capture="$WORK_DIR/worker-stderr.capture"
@@ -95,6 +96,24 @@ mkdir -p "$CODEX_HOME_ISOLATED"
 REAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 [ -f "$REAL_CODEX_HOME/auth.json" ] && cp "$REAL_CODEX_HOME/auth.json" "$CODEX_HOME_ISOLATED/auth.json"
 
+if [ "$SESSION_MODE" = "followup" ]; then
+  if [ -s "$CODEX_HOME_ISOLATED/config.toml" ]; then
+    mcp_servers="$(delegate_mcp_toml_server_names "$CODEX_HOME_ISOLATED/config.toml")"
+    delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" injected "$mcp_servers" || true
+  else
+    delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" none '[]' || true
+  fi
+else
+  mcp_canonical="$(delegate_mcp_extract_codex_user "$REAL_CODEX_HOME")"
+  if delegate_mcp_has_servers "$mcp_canonical"; then
+    delegate_mcp_render_codex_toml "$mcp_canonical" >"$CODEX_HOME_ISOLATED/config.toml"
+    mcp_servers="$(printf '%s' "$mcp_canonical" | jq -c 'keys')"
+    delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" injected "$mcp_servers" || true
+  else
+    delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" none '[]' || true
+  fi
+fi
+
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
 REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_report_XXXXX" --suffix=.md)"
 
@@ -133,7 +152,6 @@ if [ "$SESSION_MODE" = "followup" ]; then
     resume "$RESUME_ARG"
     -m "$MODEL"
     --skip-git-repo-check
-    --ignore-user-config
     -c "sandbox_mode=${CODEX_DELEGATE_SANDBOX:-danger-full-access}"
     --json
     --output-last-message "$LAST_MSG"
@@ -143,7 +161,6 @@ else
   codex_args+=(
     -m "$MODEL"
     --skip-git-repo-check
-    --ignore-user-config
     --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}"
     --json
     --output-last-message "$LAST_MSG"

@@ -43,6 +43,7 @@ RESPONDER_SESSION_ID="cursor:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
 source "$script_dir/prompt-constraints.sh"
+source "$script_dir/delegate-mcp.sh"
 
 readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
 
@@ -120,6 +121,15 @@ if [ -z "$REAL_CURSOR_CONFIG_DIR" ]; then
 fi
 [ -f "$REAL_CURSOR_CONFIG_DIR/cli-config.json" ] && cp "$REAL_CURSOR_CONFIG_DIR/cli-config.json" "$CURSOR_CONFIG_ISOLATED/cli-config.json"
 
+mcp_canonical="$(delegate_mcp_extract_cursor_global "$REAL_CURSOR_CONFIG_DIR/mcp.json")"
+mcp_config_source=none
+mcp_servers='[]'
+if delegate_mcp_has_servers "$mcp_canonical"; then
+  delegate_mcp_render_cursor_mcp_json "$mcp_canonical" >"$CURSOR_CONFIG_ISOLATED/mcp.json"
+  mcp_config_source=injected
+  mcp_servers="$(printf '%s' "$mcp_canonical" | jq -c 'keys')"
+fi
+
 if [ "$SESSION_MODE" = "resumable" ]; then
   # cursor-agent の create-chat は起動途中で racy に停止し、stdin を /dev/null に
   # 固定していても無応答の孤児プロセスとして残り得る。正常応答は 2〜5 秒で返るため、
@@ -164,9 +174,15 @@ agent_args=(
   --output-format stream-json
 )
 
+if [ "$mcp_config_source" = injected ]; then
+  agent_args+=(--approve-mcps)
+fi
+
 if [ -n "$CURSOR_CHAT_ID" ]; then
   agent_args+=(--resume "$CURSOR_CHAT_ID")
 fi
+
+delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" "$mcp_config_source" "$mcp_servers" || true
 
 agent_args+=("$PROMPT")
 
