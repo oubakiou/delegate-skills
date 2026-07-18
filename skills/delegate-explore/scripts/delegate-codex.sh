@@ -16,6 +16,7 @@ if [ $# -lt 4 ]; then
 fi
 
 MODEL="$1"
+ORIGINAL_MODEL="$MODEL"
 TASK_TYPE="$2"
 REQUEST_FILE="$3"
 RESPONSE_FILE="$4"
@@ -32,14 +33,22 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
 source "$script_dir/prompt-constraints.sh"
 source "$script_dir/delegate-mcp.sh"
-backend="$(delegate_observe_backend_from_model "$MODEL")"
+
+# ORIGINAL_MODEL（suffix 込み）は observe 記録用、MODEL（base）は CLI argv・RESPONDER_SESSION_ID 用。
+# observe を base に落とすと resumable 初回の backend_session.model から suffix が消え、
+# follow-up validation（suffix 込みの解決値と完全一致比較）が黙って壊れる
+model_split="$(delegate_observe_split_model_effort "$ORIGINAL_MODEL")"
+MODEL="$(jq -r '.base_model' <<<"$model_split")"
+EFFORT="$(jq -r '.effort // empty' <<<"$model_split")"
+
+backend="$(delegate_observe_backend_from_model "$ORIGINAL_MODEL")"
 stdout_capture="$WORK_DIR/worker-stdout.capture"
 stderr_capture="$WORK_DIR/worker-stderr.capture"
 : >"$stdout_capture"
 : >"$stderr_capture"
 
 if [ ! -s "$OBSERVE_FILE" ]; then
-  delegate_observe_init "$OBSERVE_FILE" "$WORK_DIR" "$TASK_TYPE" "$MODEL" "$backend" "$REQUEST_FILE" "$RESPONSE_FILE" ""
+  delegate_observe_init "$OBSERVE_FILE" "$WORK_DIR" "$TASK_TYPE" "$ORIGINAL_MODEL" "$backend" "$REQUEST_FILE" "$RESPONSE_FILE" ""
 fi
 
 finish_without_child() {
@@ -74,6 +83,11 @@ extract_codex_thread_id() {
     | last // empty
   ' "$stdout_capture"
 }
+
+# prepare を経ない直接起動でも不正な effort 指定を黙って通さない（二重検証）
+if ! effort_error="$(delegate_observe_validate_model_effort "$backend" "$ORIGINAL_MODEL" 2>&1)"; then
+  finish_without_child 6 "$effort_error"
+fi
 
 CODEX_HOME_ISOLATED="$WORK_DIR/codex-home"
 if [ "$SESSION_MODE" = "followup" ]; then
@@ -151,6 +165,11 @@ if [ "$SESSION_MODE" = "followup" ]; then
   codex_args+=(
     resume "$RESUME_ARG"
     -m "$MODEL"
+  )
+  if [ -n "$EFFORT" ]; then
+    codex_args+=(-c "model_reasoning_effort=${EFFORT}")
+  fi
+  codex_args+=(
     --skip-git-repo-check
     -c "sandbox_mode=${CODEX_DELEGATE_SANDBOX:-danger-full-access}"
     --json
@@ -160,6 +179,11 @@ if [ "$SESSION_MODE" = "followup" ]; then
 else
   codex_args+=(
     -m "$MODEL"
+  )
+  if [ -n "$EFFORT" ]; then
+    codex_args+=(-c "model_reasoning_effort=${EFFORT}")
+  fi
+  codex_args+=(
     --skip-git-repo-check
     --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}"
     --json
@@ -205,25 +229,25 @@ if [ "$response_generated_by_worker" -eq 1 ]; then
   fi
 fi
 
-measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$MODEL" "$backend" codex_json || delegate_observe_usage_from_codex_sessions "$CODEX_HOME_ISOLATED" "$MODEL" "$backend" || true)"
-delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" codex_json "$measured_usage" || true
+measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" codex_json || delegate_observe_usage_from_codex_sessions "$CODEX_HOME_ISOLATED" "$ORIGINAL_MODEL" "$backend" || true)"
+delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" codex_json "$measured_usage" || true
 effort_effective="$(delegate_observe_effort_from_codex_sessions "$CODEX_HOME_ISOLATED" || true)"
-delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "$effort_effective" || true
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "$EFFORT" "$effort_effective" || true
 
 if [ "$SESSION_MODE" = "resumable" ]; then
   thread_id="$(extract_codex_thread_id)"
   if [ "$child_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ] && [ -n "$thread_id" ]; then
-    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$thread_id" codex_json resumable "$CODEX_HOME_ISOLATED" || true
+    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$thread_id" codex_json resumable "$CODEX_HOME_ISOLATED" || true
   elif [ "$child_status" -ne 0 ] || [ "$response_allows_resume" -ne 1 ]; then
-    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "Codex run did not complete successfully" "$CODEX_HOME_ISOLATED" || true
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Codex run did not complete successfully" "$CODEX_HOME_ISOLATED" || true
   else
-    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "Codex thread.started event was not found" "$CODEX_HOME_ISOLATED" || true
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Codex thread.started event was not found" "$CODEX_HOME_ISOLATED" || true
   fi
 elif [ "$SESSION_MODE" = "followup" ]; then
   if [ "$child_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ]; then
-    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "$RESUME_ARG" codex_json resumable "$CODEX_HOME_ISOLATED" || true
+    delegate_observe_backend_session_update "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$RESUME_ARG" codex_json resumable "$CODEX_HOME_ISOLATED" || true
   else
-    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$MODEL" "Codex follow-up did not complete successfully" "$CODEX_HOME_ISOLATED" || true
+    delegate_observe_resume_unavailable "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "Codex follow-up did not complete successfully" "$CODEX_HOME_ISOLATED" || true
   fi
 fi
 record_run_context

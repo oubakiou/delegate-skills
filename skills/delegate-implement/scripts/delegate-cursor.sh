@@ -27,23 +27,27 @@ SESSION_MODE="${7:-}"
 RESUME_ARG="${8:-}"
 SESSION_HOME="${9:-}"
 
-# cursor-* プレフィックスは剥離して agent CLI に渡す（cursor-glm-5.2-high → glm-5.2-high）
-# composer-* は Cursor 専用モデルなのでそのまま渡す
+WORK_DIR="$RUN_DIR"
+mkdir -p "$WORK_DIR/tmp"
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/observe-json.sh"
+source "$script_dir/prompt-constraints.sh"
+source "$script_dir/delegate-mcp.sh"
+
+# ORIGINAL_MODEL（suffix 込み）は observe 記録用。effort 分解 → cursor-* プレフィックス剥離の順で
+# CLI に渡す base を得る（cursor-glm-5.2-high → glm-5.2-high、cursor-glm-5.2@high → glm-5.2 + effort）
+# composer-* は Cursor 専用モデルなのでプレフィックスはそのまま渡す
+model_split="$(delegate_observe_split_model_effort "$ORIGINAL_MODEL")"
+MODEL="$(jq -r '.base_model' <<<"$model_split")"
+EFFORT="$(jq -r '.effort // empty' <<<"$model_split")"
 case "$MODEL" in
   cursor-*)
     MODEL="${MODEL#cursor-}"
     ;;
 esac
 
-WORK_DIR="$RUN_DIR"
-mkdir -p "$WORK_DIR/tmp"
-
 RESPONDER_SESSION_ID="cursor:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
-
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$script_dir/observe-json.sh"
-source "$script_dir/prompt-constraints.sh"
-source "$script_dir/delegate-mcp.sh"
 
 readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
 
@@ -80,6 +84,24 @@ record_run_context() {
     delegate_observe_run_context_update "$OBSERVE_FILE" "$WORK_DIR" "$REPO_ROOT" "$WORKTREE_ROOT" || true
   fi
 }
+
+# prepare を経ない直接起動でも不正な effort 指定を黙って通さない（二重検証）
+if ! effort_error="$(delegate_observe_validate_model_effort "$backend" "$ORIGINAL_MODEL" 2>&1)"; then
+  finish_without_child 6 "$effort_error"
+fi
+
+# 検証済みの effort を bracket parameter override へ変換する。パラメータ名はモデル別
+# （PoC 実測。docs/feature/delegate-effort-suffix.md §2）
+CURSOR_CLI_MODEL="$MODEL"
+if [ -n "$EFFORT" ]; then
+  case "$MODEL" in
+    glm-5.2) CURSOR_CLI_MODEL="glm-5.2[reasoning=${EFFORT}]" ;;
+    grok-4.5) CURSOR_CLI_MODEL="grok-4.5[effort=${EFFORT}]" ;;
+    *)
+      finish_without_child 6 "ERROR: no bracket override mapping for cursor model '$ORIGINAL_MODEL'"
+      ;;
+  esac
+fi
 
 CURSOR_CHAT_ID=""
 case "$SESSION_MODE" in
@@ -170,7 +192,7 @@ agent_args=(
   -p
   --trust
   --force
-  --model "$MODEL"
+  --model "$CURSOR_CLI_MODEL"
   --output-format stream-json
 )
 
@@ -229,7 +251,7 @@ fi
 measured_usage="$(delegate_observe_usage_from_capture "$stdout_capture" "$ORIGINAL_MODEL" "$backend" cursor_json || true)"
 delegate_observe_record_usage "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$ORIGINAL_MODEL" "$REQUEST_FILE" "$RESPONSE_FILE" cursor_json "$measured_usage" || true
 effort_effective="$(delegate_observe_effort_from_cursor_config "$MODEL" "$CURSOR_CONFIG_ISOLATED/cli-config.json" || true)"
-delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "" "$effort_effective" || true
+delegate_observe_record_effort "$OBSERVE_FILE" "$WORK_DIR" "$EFFORT" "$effort_effective" || true
 
 if [ "$SESSION_MODE" = "resumable" ]; then
   if [ "$child_status" -eq 0 ] && [ "$response_allows_resume" -eq 1 ]; then

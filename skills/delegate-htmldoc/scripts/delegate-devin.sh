@@ -79,6 +79,11 @@ record_run_context() {
   fi
 }
 
+# effort suffix は devin backend に指定手段がないため、CLI 起動前に fail-closed にする
+if ! effort_error="$(delegate_observe_validate_model_effort "$backend" "$ORIGINAL_MODEL" 2>&1)"; then
+  finish_without_child 6 "$effort_error"
+fi
+
 extract_devin_session_id() {
   if [ ! -s "$devin_export" ]; then
     return 1

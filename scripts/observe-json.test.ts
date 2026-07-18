@@ -768,6 +768,50 @@ MD
         expect(usage.pricing_source).toBe('model-token-prices.json:cursor')
       })
 
+      it('resolves effort-suffixed models against the base price entry', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore gpt-5.5@high codex req.json res.json requester
+          measured='{"input_tokens":100,"cached_input_tokens":null,"output_tokens":10,"total_tokens":110,"cost_usd":null,"measurement":"measured","source":"codex_json","model":"gpt-5.5@high","backend":"codex"}'
+          delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.5@high req.json res.json codex_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
+
+        // gpt-5.5 非キャッシュ単価: 100*5 + 10*30 per 1M tokens
+        expect(usage.model).toBe('gpt-5.5@high')
+        expect(usage.cost_usd_estimated).toBeCloseTo(0.0008, 10)
+        expect(usage.pricing_source).toBe('model-token-prices.json:openai')
+      })
+
+      it('resolves effort-suffixed aliases through the price table', () => {
+        const workDir = makeWorkDir()
+        const output = runBash(
+          `
+          set -euo pipefail
+          source shared/observe-json.sh
+          run_dir="${workDir}/run"
+          observe="$run_dir/run_observe.json"
+          mkdir -p "$run_dir"
+          delegate_observe_init "$observe" "$run_dir" chore gpt-5.6@low codex req.json res.json requester
+          measured='{"input_tokens":1000000,"cached_input_tokens":400000,"output_tokens":1000000,"total_tokens":2000000,"cost_usd":null,"measurement":"measured","source":"codex_json","model":"gpt-5.6@low","backend":"codex"}'
+          delegate_observe_record_usage "$observe" "$run_dir" codex gpt-5.6@low req.json res.json codex_json "$measured"
+          cat "$observe"
+          `
+        )
+        const usage = requireUsage(parseObserveJson(output))
+
+        expect(usage.cost_usd_estimated).toBeCloseTo(33.2, 10)
+        expect(usage.pricing_source).toBe('model-token-prices.json:openai')
+      })
+
       it('omits the cost estimate when the price table has no usable entry', () => {
         const workDir = makeWorkDir()
         const output = runBash(
@@ -991,6 +1035,35 @@ MD
 
       expect(observe.run.effort).toEqual({
         effective: { fast: false, source: 'measured', value: 'high' },
+        requested: 'high',
+      })
+    })
+
+    it('appends an effort_mismatch event only when measured effort differs from requested', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        mkdir -p "$run_dir"
+        delegate_observe_init "$observe" "$run_dir" chore gpt-5.5@high codex req.json res.json requester
+        delegate_observe_record_effort "$observe" "$run_dir" high '{"value":"high","source":"measured"}'
+        jq -c '[.events[] | select(.kind == "effort_mismatch")] | length' "$observe"
+        delegate_observe_record_effort "$observe" "$run_dir" high '{"value":null,"source":"not_exposed"}'
+        jq -c '[.events[] | select(.kind == "effort_mismatch")] | length' "$observe"
+        delegate_observe_record_effort "$observe" "$run_dir" high '{"value":"medium","source":"measured"}'
+        jq -c '[.events[] | select(.kind == "effort_mismatch")] | .[-1] | {kind, requested, effective}' "$observe"
+        `
+      )
+      const lines = output.trimEnd().split('\n')
+
+      expect(lines[0]).toBe('0')
+      expect(lines[1]).toBe('0')
+      expect(parseJson(lines[2])).toEqual({
+        effective: 'medium',
+        kind: 'effort_mismatch',
         requested: 'high',
       })
     })

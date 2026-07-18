@@ -26,6 +26,7 @@ interface FakeCliLog {
 
 interface BackendSession {
   home_dir: string | null
+  model: string | null
   persistence: string | null
   resume_id: string | null
   resume_source: string | null
@@ -53,6 +54,7 @@ interface RunEffort {
 
 interface ObserveJson {
   backend_session: BackendSession | null
+  event_kinds: string[]
   mcp_config: McpConfig | null
   run_context: RunContext | null
   run_effort: RunEffort | null
@@ -144,6 +146,7 @@ const parseBackendSession = (value: unknown): BackendSession | null => {
   }
   return {
     home_dir: stringOrNullValue(value.home_dir),
+    model: stringOrNullValue(value.model),
     persistence: stringOrNullValue(value.persistence),
     resume_id: stringOrNullValue(value.resume_id),
     resume_source: stringOrNullValue(value.resume_source),
@@ -182,6 +185,19 @@ const parseRunEffort = (run: unknown): RunEffort | null => {
   }
 }
 
+const parseEventKinds = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  const kinds: string[] = []
+  for (const event of value) {
+    if (isRecord(event) && typeof event.kind === 'string') {
+      kinds.push(event.kind)
+    }
+  }
+  return kinds
+}
+
 const parseMcpConfig = (value: unknown): McpConfig | null => {
   if (!isRecord(value)) {
     return null
@@ -203,6 +219,7 @@ const readObserve = (filePath: string): ObserveJson => {
   }
   return {
     backend_session: parseBackendSession(value.backend_session),
+    event_kinds: parseEventKinds(value.events),
     mcp_config: parseMcpConfig(value.mcp_config),
     run_context: parseRunContext(value.run_context),
     run_effort: parseRunEffort(value.run),
@@ -1647,5 +1664,165 @@ describe('wrapper effort recording', () => {
       effective: { source: 'not_exposed', value: null },
       requested: null,
     })
+  })
+})
+
+const wrapperModelArgs = (fixture: Fixture, model: string, modeArgs: string[] = []): string[] => [
+  model,
+  'implement',
+  fixture.requestFile,
+  fixture.responseFile,
+  fixture.runDir,
+  fixture.observeFile,
+  ...modeArgs,
+]
+
+describe('wrapper effort suffix', () => {
+  it('passes --effort to Claude and strips the suffix from --model', () => {
+    const fixture = makeFixture('claude')
+    const result = runWrapper(
+      'delegate-claude.sh',
+      wrapperModelArgs(fixture, 'sonnet@high'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+    const modelIndex = log.args.indexOf('--model')
+
+    expect(result.status).toBe(0)
+    expect(log.args.slice(modelIndex, modelIndex + 4)).toEqual([
+      '--model',
+      'sonnet',
+      '--effort',
+      'high',
+    ])
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: 'high',
+    })
+  })
+
+  it('passes model_reasoning_effort to Codex and keeps --ephemeral on normal runs', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper(
+      'delegate-codex.sh',
+      wrapperModelArgs(fixture, 'gpt-5.5@high'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--ephemeral')
+    expect(log.args.join(' ')).toContain('-m gpt-5.5 -c model_reasoning_effort=high')
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: 'high',
+    })
+  })
+
+  it('converts the suffix to a Cursor bracket override', () => {
+    const fixture = makeFixture('cursor')
+    const result = runWrapper(
+      'delegate-cursor.sh',
+      wrapperModelArgs(fixture, 'cursor-glm-5.2@high'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('glm-5.2[reasoning=high]')
+    expect(log.args).not.toContain('glm-5.2')
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: 'high',
+    })
+  })
+
+  it('fails closed before launching the CLI for unsupported suffixes', () => {
+    const devinFixture = makeFixture('devin')
+    const devinResult = runWrapper(
+      'delegate-devin.sh',
+      wrapperModelArgs(devinFixture, 'devin-glm-5.2@low'),
+      devinFixture.env
+    )
+    const cursorFixture = makeFixture('cursor')
+    const cursorResult = runWrapper(
+      'delegate-cursor.sh',
+      wrapperModelArgs(cursorFixture, 'composer-2.5@high'),
+      cursorFixture.env
+    )
+
+    expect(devinResult.status).toBe(6)
+    expect(cursorResult.status).toBe(6)
+    expect(existsSync(devinFixture.logFile)).toBe(false)
+    expect(existsSync(cursorFixture.logFile)).toBe(false)
+    expect(readResponseStatus(devinFixture.responseFile)).toBe('failed')
+    expect(readResponseStatus(cursorFixture.responseFile)).toBe('failed')
+  })
+
+  it('keeps launch argv free of effort flags when no suffix is given', () => {
+    const claudeFixture = makeFixture('claude')
+    runClaude(claudeFixture)
+    const codexFixture = makeFixture('codex')
+    runCodex(codexFixture)
+    const claudeArgsLog = readLog(claudeFixture.logFile).args
+    const codexArgsLog = readLog(codexFixture.logFile).args
+
+    expect(claudeArgsLog).not.toContain('--effort')
+    expect(codexArgsLog.some((arg) => arg.startsWith('model_reasoning_effort'))).toBe(false)
+  })
+
+  it('records the suffixed model as the resumable follow-up base', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper(
+      'delegate-codex.sh',
+      wrapperModelArgs(fixture, 'gpt-5.5@high', ['resumable', '', '']),
+      { ...fixture.env, FAKE_CODEX_SESSION_EFFORT: 'high' }
+    )
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(requireBackendSession(observe).model).toBe('gpt-5.5@high')
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'measured', value: 'high' },
+      requested: 'high',
+    })
+    expect(observe.event_kinds).not.toContain('effort_mismatch')
+  })
+
+  it('reuses the effort flag on follow-up and fails validation for a respecified base model', () => {
+    const fixture = makeFixture('codex')
+    const sessionHome = prepareCodexSessionHome(fixture.workDir)
+    const result = runWrapper(
+      'delegate-codex.sh',
+      wrapperModelArgs(fixture, 'gpt-5.5@high', ['followup', 'thread-1', sessionHome]),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const validation = runFollowupValidation(fixture, 'codex', 'gpt-5.5')
+
+    expect(result.status).toBe(0)
+    expect(log.args.join(' ')).toContain('-m gpt-5.5 -c model_reasoning_effort=high')
+    expect(validation.status).not.toBe(0)
+    expect(validation.output).toContain('model mismatch')
+  })
+
+  it('appends an effort mismatch event when the measured effort differs', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper(
+      'delegate-codex.sh',
+      wrapperModelArgs(fixture, 'gpt-5.5@high', ['resumable', '', '']),
+      { ...fixture.env, FAKE_CODEX_SESSION_EFFORT: 'medium' }
+    )
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'measured', value: 'medium' },
+      requested: 'high',
+    })
+    expect(observe.event_kinds).toContain('effort_mismatch')
   })
 })

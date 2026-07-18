@@ -961,6 +961,24 @@ delegate_observe_record_effort() {
     "$run_dir" \
     "$requested" \
     "$effective_json"
+
+  # 宣言が CLI に効いていない事故の検出。判定は measured の場合のみ可能で、
+  # not_exposed / backend_default は「判定不能」としてフィールド突合に委ねる
+  if [ -n "$requested" ]; then
+    local effective_source effective_value
+    effective_source="$(jq -r '.source // empty' <<<"$effective_json")"
+    effective_value="$(jq -r '.value // empty' <<<"$effective_json")"
+    if [ "$effective_source" = "measured" ] && [ "$effective_value" != "$requested" ]; then
+      local now event_json
+      now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      event_json="$(jq -cn \
+        --arg ts "$now" \
+        --arg requested "$requested" \
+        --arg effective "$effective_value" \
+        '{kind: "effort_mismatch", ts: $ts, requested: $requested, effective: $effective}')"
+      delegate_observe_event_json "$observe_file" "$run_dir" "$event_json"
+    fi
+  fi
 }
 
 delegate_observe_record_effort_inner() {
@@ -1001,14 +1019,15 @@ delegate_observe_augment_cost_estimate() {
   jq -c --slurpfile prices "$prices_file" --arg backend "$backend" '
     def provider_for($b):
       {codex: "openai", claude: "anthropic", devin: "cognition", cursor: "cursor"}[$b] // null;
-    # observe usage の model は backend 固定プレフィックス付きの documented name
-    # （devin-glm-5.2 等）だが、単価表は基底 model 名で持つため lookup 前に剥がす。
-    # cursor は effort が model slug に載る（-high / -max）ため、完全一致が無い場合に
-    # 限り suffix を剥がした基底名でも照合する
+    # observe usage の model は backend 固定プレフィックス・@effort suffix 付きの
+    # documented name（devin-glm-5.2 / gpt-5.5@high 等）だが、単価表は基底 model 名で
+    # 持つため lookup 前に剥がす。cursor は effort が model slug に載る（-high / -max）
+    # ため、完全一致が無い場合に限り suffix を剥がした基底名でも照合する
     def normalized_model($m; $b):
-      if $b == "devin" and ($m | startswith("devin-")) then $m[6:]
-      elif $b == "cursor" and ($m | startswith("cursor-")) then $m[7:]
-      else $m end;
+      ($m | sub("@.*$"; "")) as $m
+      | if $b == "devin" and ($m | startswith("devin-")) then $m[6:]
+        elif $b == "cursor" and ($m | startswith("cursor-")) then $m[7:]
+        else $m end;
     def matches_for($name; $models; $aliases):
       ([$aliases[] | select(.alias == $name) | .alias_for] | first // $name) as $resolved
       | [$models[] | select(.model == $resolved)];
