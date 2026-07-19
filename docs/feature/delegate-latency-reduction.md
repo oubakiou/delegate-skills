@@ -134,15 +134,15 @@ sequenceDiagram
 
 この計測では worker が `build-response.sh` を使わず `npx md2idx` + `jq` を手組みで実行しており、プロンプト指示によるプロトコル遵守が backend によって揺れることも確認された（儀式を wrapper 側へ移す動機の一つ）。
 
-### 確認済みの CLI 側事実（2026-07-18、報告の構造化回収と prompt 受け渡し）
+### 確認済みの CLI 側事実（2026-07-19 Step 3 PoC 実測で更新）
 
-| Backend | 構造化出力の回収手段                                                                | prompt の非 argv 受け渡し                      | 確認状況                                                                 |
-| ------- | ----------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------ |
-| Claude  | `--json-schema <schema>`（structured output）                                       | `-p` の stdin prompt                           | フラグ実在を確認（claude 2.1.x `--help`）。遵守度は Step 3 PoC           |
-| Codex   | `--output-schema <FILE>` + 最終 message 回収（`LAST_MSG` の下地が wrapper に既存）  | stdin prompt（piped stdin は `<stdin>` block） | フラグ・stdin とも実在を確認（codex exec `--help`）。遵守度は Step 3 PoC |
-| Cursor  | stream-json の最終 result event（usage parse の既存実装あり）                       | Step 3 PoC で確認                              | result parse は実装済み。report 回収への流用は Step 3 PoC                |
-| Devin   | export（ATIF）の最終 assistant message                                              | `--prompt-file`（Step 3 PoC で確認）           | いずれも Step 3 PoC                                                      |
-| Grok    | `--json-schema`（structured output、`--output-format json` を含意）/ streaming-json | `--prompt-file`                                | フラグ実在を確認（grok `--help`）。遵守度は Step 3 PoC                   |
+| Backend | 構造化出力の回収手段                                                                                                             | prompt の非 argv 受け渡し               | 確認状況                                                                                               |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Claude  | `--json-schema <schema>`: stream-json の result event に parse 済み `structured_output` object と `result`（JSON 文字列）の両方  | `-p` の piped stdin（実測 ✓）           | 実測 ✓（haiku、Read tool 併用 + 構造化最終応答の両立を確認）                                           |
+| Codex   | `--output-schema <FILE>`: `-o`（LAST_MSG）に schema 準拠 JSON がそのまま書かれる                                                 | positional `-` で piped stdin（実測 ✓） | 実測 ✓（gpt-5.5、tool 併用可。ambient config の非互換 effort は turn.failed になるため隔離 home 前提） |
+| Cursor  | schema 強制フラグ無し。stream-json の最終 result event `.result` に最終 message 全文（prompt 指示で JSON を返させて parse する） | `-p` の piped stdin（実測 ✓）           | 実測 ✓（遵守は prompt 依存）                                                                           |
+| Devin   | schema 強制フラグ無し。`--export`（ATIF）の最終 `source: "agent"` step の `.message` に最終 message 全文（stdout にも同文）      | `--prompt-file`（実測 ✓）               | 実測 ✓（swe-1.7、遵守は prompt 依存。step に `timestamp` があり timing 材料にもなる）                  |
+| Grok    | 未確認（`--json-schema` / streaming-json は `--help` 記載のみ）                                                                  | `--prompt-file`（`--help` 記載のみ）    | CLI 未導入環境のため未実測。fail-closed で report.md 方式を既定にする                                  |
 
 ### 現行実装の扱い
 
@@ -175,7 +175,7 @@ sequenceDiagram
 | response の検証            | worker（jq 検証 = 1 往復）                      | wrapper（既存の envelope 検証を流用）                                             |
 | status の伝達              | worker（envelope の `.status`）                 | 構造化出力の `status` フィールドを wrapper が envelope へ転記                     |
 
-**報告方式は起動前に選択する**（§5-c）。wrapper は子プロセス起動前に、Step 3 PoC で確定した backend 対応状況と task 種別ヒューリスティック（implement の詳細報告など、最終 message の出力上限に当たり得る長大報告の見込み）に基づいて、構造化最終応答方式か report.md 方式（front-matter `status:` 付き Markdown の 1 回書込 = + 1 往復）かを決め、prompt と tool 許可をその方式に合わせて構成する。
+**報告方式は起動前に選択する**（§5-c）。wrapper は子プロセス起動前に、構造化最終応答方式か report.md 方式（front-matter `status:` 付き Markdown の 1 回書込 = + 1 往復)かを決め、prompt と tool 許可をその方式に合わせて構成する。初期実装の選択規則は機械判定可能な backend 既定のみとする: **claude / codex は構造化最終応答、cursor / devin / grok は report.md**（Step 3 実施結果）。task 種別による上書き（最終 message の出力上限に当たり得る長大報告種別を report.md へ倒す等）は初期実装では入れず、Step 4 の truncate 検知（failed response）と parse 失敗率テレメトリで必要が確認された種別にのみ導入する。
 
 **実行後の parse 失敗・truncate は failed response（fail-closed）とする**。wrapper が失敗を検知する時点で非永続セッションの worker は終了済みであり、そこから report.md へ切り替えることはできない。リトライは丸ごと再実行（コストは worker wall 全額）になるため wrapper は自動で行わず、failed response を受けた親の判断に委ねる。parse 失敗率は `timing` テレメトリで監視し、高止まりする backend は起動前選択を report.md 方式へ倒す。構造化出力の `status` は protocol の 4 値（`completed | partial | failed | needs_input`）に schema で制約し、語彙外の値が返った場合も parse 失敗と同じ failed response とする。
 
@@ -243,7 +243,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 成果物: 親の Bash 往復 3 → 1（親 LLM 2 ターン相当の削減、1 回あたり 30〜80 秒見込み）。wrapper 改修と独立に先行投入できる
 
-### Step 3: (未着手) PoC — 構造化出力回収の backend 別確定
+### Step 3: (実施済み 2026-07-19。Grok のみ CLI 未導入で未実測) PoC — 構造化出力回収の backend 別確定
 
 実モデルを呼ぶ live 実行で以下を確定させる（`delegate-worker-mcp-config.archive.md` Step 1 と同じ流儀）:
 
@@ -256,6 +256,13 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 - 長文 report の truncate 発生条件（起動前選択のヒューリスティック閾値の材料）
 
 成果物: §2 の表の「Step 3 PoC」を解消した確定仕様と、backend 別の起動前選択既定（構造化最終応答 / report.md）。効かない backend は report.md 方式を既定として §8 へ記録
+
+実施結果（2026-07-19。§2 の表を実測で更新済み）:
+
+- **起動前選択の backend 別既定**: schema を CLI で強制できる Claude（`--json-schema` → result event の `structured_output`）と Codex（`--output-schema` → LAST_MSG）は**構造化最終応答を既定**とする。schema 強制手段が無い Cursor / Devin は最終 message の全文回収は実測できたが遵守が prompt 依存のため、**report.md 方式を初期既定**とし、Step 4 以降 parse 失敗率テレメトリが低位で安定した backend から構造化最終応答へ切り替える。CLI 未導入で未実測の Grok は fail-closed で **report.md 方式を既定**とする
+- **prompt の非 argv 受け渡し**: Claude / Codex / Cursor は piped stdin（Codex は positional `-`）、Devin / Grok は `--prompt-file`（Step 5 の実装手段が全 backend で確定）
+- **長文 report の truncate 発生条件**: 実測は未実施（コスト対効果から見送り）。上限は各モデルの最大出力トークンに一致する。初期実装は task 種別上書きなし（全種別 backend 既定に従う）で開始し、Step 4 の truncate 検知（failed response）・parse 失敗率テレメトリで必要が確認された種別にのみ report.md 上書きを導入する（§3.1 と同規則）
+- **注意事項**: Codex は ambient config の非互換 `model_reasoning_effort` で turn.failed になり得る（wrapper は隔離 CODEX_HOME を使うため通常影響しないが、follow-up の継承 config では注意）
 
 ### Step 4: (未着手) wrapper 側 report 回収
 
@@ -375,7 +382,8 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 ### 手動確認
 
 - [ ] Step 1 完了時に着手前ベースライン（backend / model 別。p95 は 20 run 以上）を記録済み
-- [ ] Step 3 PoC の全項目を実 CLI で確定済み（§2 の表の「Step 3 PoC」解消、起動前選択の backend 別既定を決定）
+- [x] Step 3 PoC: 実測対象 backend（Claude / Codex / Cursor / Devin）の回収経路・prompt 受け渡し・起動前選択の backend 別既定を確定済み（§2 の表・§4 Step 3 実施結果）
+- [ ] follow-up（Step 3 残）: Grok の streaming-json 回収は CLI 導入後に PoC する（それまで report.md 既定を維持）。長文 truncate 発生条件は実測せず、Step 4 以降のテレメトリ（truncate 検知・parse 失敗率）で監視する
 - [ ] Step 5 完了時に §2 と同一の trivial リクエストで削減効果を再計測し、見込み（§5-f）と比較
 - [ ] managed-policy 環境相当（bypass 無効）で Claude backend worker の報告回収が成立すること
 - [ ] `npm run sync-shared:check` / `vp check` / `vp test` が全パス
@@ -394,7 +402,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 | リスク                                                                       | 回避策                                                                                                                                                                                        |
 | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 構造化出力の遵守度が backend / モデルによって揺れ、parse 失敗が頻発する      | Step 3 PoC で backend 別に実測してから起動前既定を決める。実行後失敗は failed response（fail-closed）とし、parse 失敗率をテレメトリで監視。高止まりする backend は既定を report.md 方式へ倒す |
-| 長大な report が最終 message の出力上限で truncate される                    | 起動前選択のヒューリスティック（task 種別・request 規模）で最初から report.md 方式を選ぶ。閾値は Step 3 PoC の truncate 発生条件から決める。実行後に検知した truncate は failed response      |
+| 長大な report が最終 message の出力上限で truncate される                    | 初期実装は task 種別上書きなしの backend 既定で開始し、truncate 検知（failed response）と parse 失敗率テレメトリで必要が確認された種別にのみ report.md 上書きを導入する（§3.1 / §4 Step 3）   |
 | parse 失敗のリトライコストが「+1 往復」ではなく再実行全額になる              | wrapper は自動リトライしない（§5-c）。§5-f の見込みに失敗率前提を明記し、失敗率が見込みを崩す水準ならその backend の主経路採用を見直す                                                        |
 | request の prompt 埋め込みがモデル context 上限に当たる                      | context 上限に対する gate で超過時は現行のファイル読取方式へ fallback（§5-a）。gate 既定値は Step 1 の実測と各 backend の context 長から決める                                                |
 | signal・外部 Bash timeout で run.sh が強制終了し構造化 stdout を返せない     | one-shot 保証の対象外と明記（§3.2）。run.sh は dispatch 前に observe_file を stderr へ出しておき、親は observe / response_file 経由の既存経路で回収する                                       |
