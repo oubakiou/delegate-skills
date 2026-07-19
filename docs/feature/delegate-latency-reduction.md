@@ -260,7 +260,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 実施結果（2026-07-19。§2 の表を実測で更新済み）:
 
 - **起動前選択の backend 別既定**: schema を CLI で強制できる Claude（`--json-schema` → result event の `structured_output`）と Codex（`--output-schema` → LAST_MSG）は**構造化最終応答を既定**とする。schema 強制手段が無い Cursor / Devin は最終 message の全文回収は実測できたが遵守が prompt 依存のため、**report.md 方式を初期既定**とし、Step 4 以降 parse 失敗率テレメトリが低位で安定した backend から構造化最終応答へ切り替える。CLI 未導入で未実測の Grok は fail-closed で **report.md 方式を既定**とする
-- **prompt の非 argv 受け渡し**: Claude / Codex / Cursor は piped stdin（Codex は positional `-`）、Devin / Grok は `--prompt-file`（Step 5 の実装手段が全 backend で確定）
+- **prompt の非 argv 受け渡し**: Claude / Codex / Cursor は piped stdin（Codex は positional `-`）、Devin は `--prompt-file` を実測で確定。Grok の `--prompt-file` と Codex `exec resume` の stdin は未実測のため、この 2 経路は暫定的に argv を維持し、単一引数上限（MAX_ARG_STRLEN ≈128KiB）に収まる縮小 gate（96KB）で埋め込みを制御する
 - **長文 report の truncate 発生条件**: 実測は未実施（コスト対効果から見送り）。上限は各モデルの最大出力トークンに一致する。初期実装は task 種別上書きなし（全種別 backend 既定に従う）で開始し、Step 4 の truncate 検知（failed response）・parse 失敗率テレメトリで必要が確認された種別にのみ report.md 上書きを導入する（§3.1 と同規則）
 - **注意事項**: Codex は ambient config の非互換 `model_reasoning_effort` で turn.failed になり得る（wrapper は隔離 CODEX_HOME を使うため通常影響しないが、follow-up の継承 config では注意）
 
@@ -274,7 +274,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 成果物: report 関連の儀式往復を削減し、この時点では 6 → 2（read-request と最終応答が残る。report.md 方式は 3）。6 → 1 は Step 5 との合成成果。プロトコル遵守が backend のプロンプト追従性に依存しなくなる
 
-### Step 5: (未着手) request の初期 prompt 埋め込み
+### Step 5: (実装済み) request の初期 prompt 埋め込み
 
 - wrapper（専用 2 wrapper を含む）が**検証済み request JSON の `.sections`（と `task_type_chain` 等のメタデータ）から prompt を組み立て**、stdin / prompt-file で渡す。companion `.md` は実行入力に使わない（§5-a）
 - gate は OS の argv 制限ではなくモデル context 上限に対して設け、超過時のみ現行の `read-request.sh` 指示へ fallback
@@ -295,12 +295,12 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 ### a. request の受け渡し方式
 
-| 候補                                                                                 | 採用 | 理由                                                                                                                                                             |
-| ------------------------------------------------------------------------------------ | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **正本 request JSON から抽出し stdin / prompt-file で埋め込み（context 上限 gate）** | ✓    | worker の初回往復が丸ごと消える。argv を経由しないため ARG_MAX に縛られず、gate はモデル context 上限にだけ置けばよい。prompt が `ps` から見えない副次効果もある |
-| companion `.md` を prompt に流用                                                     | ✗    | `.md` は `\|\| true` の best-effort 派生物で protocol の正本ではない（protocol-v1）。黙って欠落・不整合し得るものを実行入力にすると source of truth が崩れる     |
-| argv（`-p` 引数）へ inline + ARG_MAX 閾値 fallback                                   | ✗    | OS 制限が binding になり、閾値設計が本質（モデル context）とずれる                                                                                               |
-| 常にファイル読取（現行）                                                             | ✗    | 「読み飛ばせる情報は無い」request を読むためだけに毎回 1 往復（≒5 秒 + tool 結果の再入力）を払う                                                                 |
+| 候補                                                                                 | 採用 | 理由                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **正本 request JSON から抽出し stdin / prompt-file で埋め込み（context 上限 gate）** | ✓    | worker の初回往復が丸ごと消える。argv を経由しないため ARG_MAX に縛られず、gate はモデル context 上限にだけ置けばよい。prompt が `ps` から見えない副次効果もある。暫定例外: 未実測の Grok と Codex follow-up は argv を維持し、単一引数上限に収まる縮小 gate を適用する（Step 5 実施結果） |
+| companion `.md` を prompt に流用                                                     | ✗    | `.md` は `\|\| true` の best-effort 派生物で protocol の正本ではない（protocol-v1）。黙って欠落・不整合し得るものを実行入力にすると source of truth が崩れる                                                                                                                               |
+| argv（`-p` 引数）へ inline + ARG_MAX 閾値 fallback                                   | ✗    | OS 制限が binding になり、閾値設計が本質（モデル context）とずれる                                                                                                                                                                                                                         |
+| 常にファイル読取（現行）                                                             | ✗    | 「読み飛ばせる情報は無い」request を読むためだけに毎回 1 往復（≒5 秒 + tool 結果の再入力）を払う                                                                                                                                                                                           |
 
 ### b. report の回収方式
 

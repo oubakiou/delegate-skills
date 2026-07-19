@@ -83,6 +83,12 @@ npx md2idx request.md | jq --argjson c "$task_type_chain" --arg model "$MODEL" -
 jq -r '.sections | join("\n\n")' "$request_file" >"${request_file%.json}.md"
 ```
 
+### request の worker への受け渡し
+
+wrapper は検証済み request JSON（正本）の `.sections` と `task_type_chain` を**初期 prompt に埋め込んで**渡す。worker が read-request で 1 往復を使う必要はない。gate は `DELEGATE_REQUEST_INLINE_MAX`（既定 256KB。モデル context 上限に対する保守的なバイト近似）で、超過時のみ従来の `read-request.sh` 指示へ fallback する。companion `.md` は best-effort の監査用派生物であり、実行入力には使わない。
+
+prompt 自体の受け渡しは argv ではなく Claude / Codex / Cursor は stdin、Devin は `--prompt-file`（ARG_MAX 非依存、`ps` にも載らない）。Grok と Codex follow-up（`exec resume`）は stdin 受け渡しが未実測のため argv を維持しており、この 2 経路のみ埋め込み gate を単一引数上限（MAX_ARG_STRLEN ≈128KiB）に収まる縮小値（96KB）に絞る。request_file は fallback・監査・多段委譲の追跡用に従来どおり生成される。
+
 ## レスポンスファイル（sub → main）
 
 トップレベルキー: `protocol_version` / `type` / `status` / `responder_session_id` / `index` / `sections`

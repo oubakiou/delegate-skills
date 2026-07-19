@@ -1836,6 +1836,66 @@ delegate_observe_report_schema_json() {
   printf '%s' '{"type":"object","properties":{"status":{"type":"string","enum":["completed","partial","failed","needs_input"]},"report_markdown":{"type":"string","minLength":1}},"required":["status","report_markdown"],"additionalProperties":false}'
 }
 
+# request 本文の初期 prompt 埋め込み gate。閾値は OS の ARG_MAX ではなくモデル context
+# 上限に対する保守的なバイト近似（既定 256KB ≒ 64k tokens）。超過時は従来の
+# read-request.sh 指示へ fallback する
+delegate_observe_request_inline_max() {
+  case "${DELEGATE_REQUEST_INLINE_MAX:-262144}" in
+    '' | *[!0-9]*) printf '%s' 262144 ;;
+    *) printf '%s' "${DELEGATE_REQUEST_INLINE_MAX:-262144}" ;;
+  esac
+}
+
+# 検証済み request JSON（正本）から初期 prompt へ埋め込む本文を作る。companion .md は
+# best-effort 派生物で正本ではないため実行入力に使わない（protocol-v1）
+delegate_observe_request_inline_body() {
+  local request_file="$1"
+  [ -s "$request_file" ] || return 1
+  jq -e -r '
+    select((.sections | type) == "array" and (.sections | length) > 0)
+    | "task_type_chain: " + ((.task_type_chain // []) | tojson) + "\n\n" + (.sections | join("\n\n"))
+  ' "$request_file" 2>/dev/null
+}
+
+# prompt を argv で渡す経路（stdin / prompt-file が未実測の CLI）用の縮小 gate。
+# Linux は総 ARG_MAX とは別に単一引数を MAX_ARG_STRLEN（≈128KiB）で制限するため、
+# 既定の inline gate（256KB）のままでは E2BIG で CLI 起動前に失敗する
+DELEGATE_REQUEST_ARGV_INLINE_MAX=98304
+
+# 初期 prompt の手順 1（request の取得方法）を組み立てる。埋め込み成立時は stdout に
+# 本文込みの手順を返し、gate 超過・抽出不能時は read-request 指示へ fallback する。
+# 第 2 引数は fallback 時の read-request.sh のあるディレクトリ。第 3 引数（任意）は
+# gate の追加上限で、既定 gate より小さい場合のみ適用される（argv 渡し経路用）
+delegate_observe_request_prompt_step() {
+  local request_file="$1"
+  local scripts_dir="$2"
+  local max_override="${3:-}"
+
+  local gate_max
+  gate_max="$(delegate_observe_request_inline_max)"
+  case "$max_override" in
+    '' | *[!0-9]*) ;;
+    *)
+      if [ "$max_override" -lt "$gate_max" ]; then
+        gate_max="$max_override"
+      fi
+      ;;
+  esac
+
+  local request_bytes request_body
+  request_bytes="$(wc -c <"$request_file" 2>/dev/null | tr -d '[:space:]' || printf '%s' 0)"
+  if [ "${request_bytes:-0}" -gt 0 ] && [ "$request_bytes" -le "$gate_max" ] \
+    && request_body="$(delegate_observe_request_inline_body "$request_file")"; then
+    printf '%s' "1. リクエスト本文は以下に全文埋め込み済み（${request_file} と同内容。読み直しは不要）。<request> 内の task_type_chain に自種別を含む種別への再委譲は禁止。
+<request>
+${request_body}
+</request>"
+    return 0
+  fi
+  printf '%s' "1. リクエストを読む: \`bash ${scripts_dir}/read-request.sh \"${request_file}\" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。task_type_chain（${request_file} の .task_type_chain）に自種別を含む種別への再委譲は禁止。"
+  return 1
+}
+
 delegate_observe_valid_protocol_status() {
   case "$1" in
     completed | partial | failed | needs_input) return 0 ;;

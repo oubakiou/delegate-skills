@@ -177,23 +177,30 @@ if [ "$SESSION_MODE" = "resumable" ]; then
   fi
 fi
 
+# request は初期 prompt へ埋め込み、read-request の初回往復を消す（gate 超過時は fallback）
+request_inline=true
+if ! request_step="$(delegate_observe_request_prompt_step "$REQUEST_FILE" "$script_dir")"; then
+  request_inline=false
+fi
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
-1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
+${request_step}
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
-3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業報告を front-matter 付き Markdown で "${REPORT_FILE}" に 1 回の書込で作る。ファイルの 1 行目から
+3. 作業報告を front-matter 付き Markdown で "${REPORT_FILE}" に 1 回の書込で作る。ファイルの 1 行目から
    ---
    status: <completed | partial | failed | needs_input のいずれか>
    ---
    の front-matter を置き、その下に見出し Summary / Changed files / Commands / Verification / Findings / Blockers / Error の本文を書く。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
    md2idx / jq / build-response.sh によるレスポンス生成はしない（レスポンス生成は wrapper が行う）。
-5. 最終応答は status の一語のみ。
+4. 最終応答は status の一語のみ。
 PROMPT_EOF
 )
+PROMPT_FILE="$WORK_DIR/worker-prompt.txt"
+printf '%s' "$PROMPT" >"$PROMPT_FILE"
 
 # stream-json は最終 result イベントに実測 usage を含み、イベントが逐次流れるため
 # stream 無変化ベースの stall 検出も機能する（text モードは応答完了まで無音）
@@ -215,8 +222,6 @@ fi
 
 delegate_observe_mcp_config_update "$OBSERVE_FILE" "$WORK_DIR" "$mcp_config_source" "$mcp_servers" || true
 
-agent_args+=("$PROMPT")
-
 cleanup() {
   if [ -n "${child_pid:-}" ] && kill -0 "$child_pid" 2>/dev/null; then
     kill "$child_pid" 2>/dev/null || true
@@ -224,8 +229,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# prompt は argv ではなく stdin で渡す（ARG_MAX 非依存。ps からも見えない）
 cd "$REPO_ROOT"
-CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent "${agent_args[@]}" </dev/null \
+CURSOR_CONFIG_DIR="$CURSOR_CONFIG_ISOLATED" TMPDIR="$WORK_DIR/tmp" agent "${agent_args[@]}" <"$PROMPT_FILE" \
   >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 

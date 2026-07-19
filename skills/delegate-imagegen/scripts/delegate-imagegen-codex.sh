@@ -91,19 +91,27 @@ REPORT_MODE="$(delegate_observe_report_mode_for_backend codex)"
 REPORT_SCHEMA_FILE="$WORK_DIR/report-schema.json"
 delegate_observe_report_schema_json >"$REPORT_SCHEMA_FILE"
 
+# request は初期 prompt へ埋め込み、read-request の初回往復を消す（gate 超過時は fallback）
+request_inline=true
+if ! request_step="$(delegate_observe_request_prompt_step "$REQUEST_FILE" "$script_dir")"; then
+  request_inline=false
+fi
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の画像生成ワーカー（task_type=imagegen）です。protocol v1 に従ってください。
 
-1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
+${request_step}
 2. リクエストの指示に従い、利用可能な画像生成・画像編集 capability を使って成果物を生成する。AGENTS.md / CLAUDE.md の規約に従うこと。
 3. 出力先がリクエストで明示されていない場合は、リポジトリ root からの相対パス \`${OUTPUT_DIR}/\` 配下に保存する。
-4. 生成できない場合も、原因、試したパラメータ、必要な追加入力を report に残して failed または needs_input で response を生成する。
+4. 生成できない場合も、原因、試したパラメータ、必要な追加入力を report_markdown に残して failed または needs_input を返す。
 5. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
    Summary / Generated files / Parameters / Verification / Blockers の Markdown。
    report は簡潔に書く: Summary は 5 行以内。試行錯誤ログや生ログは貼らず、Parameters は最終採用値と重要な生成条件のみ。該当が無い見出しは省く。
    report をファイルに書いたり md2idx / jq でレスポンスを生成したりしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。
 PROMPT_EOF
 )
+PROMPT_FILE="$WORK_DIR/worker-prompt.txt"
+printf '%s' "$PROMPT" >"$PROMPT_FILE"
 
 cleanup() {
   if [ -n "${child_pid:-}" ] && kill -0 "$child_pid" 2>/dev/null; then
@@ -112,6 +120,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# prompt は argv ではなく positional `-` + stdin で渡す（ARG_MAX 非依存。ps からも見えない）
 CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   codex exec \
   -m "$MODEL" \
@@ -121,7 +130,7 @@ CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   --output-last-message "$LAST_MSG" \
   --output-schema "$REPORT_SCHEMA_FILE" \
   -C "$REPO_ROOT" \
-  "$PROMPT" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
+  - <"$PROMPT_FILE" >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture" "$RESPONSE_FILE"; then

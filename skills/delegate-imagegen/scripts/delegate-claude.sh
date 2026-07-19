@@ -124,19 +124,26 @@ readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE
 # 報告方式は起動前に確定する（claude は構造化最終応答が既定。§docs/feature/delegate-latency-reduction.md）
 REPORT_MODE="$(delegate_observe_report_mode_for_backend "$backend")"
 
+# request は初期 prompt へ埋め込み、read-request の初回往復を消す（gate 超過時は fallback）
+request_inline=true
+if ! request_step="$(delegate_observe_request_prompt_step "$REQUEST_FILE" "$script_dir")"; then
+  request_inline=false
+fi
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
-1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
+${request_step}
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
-3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
+3. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
    Summary / Changed files / Commands / Verification / Findings / Blockers / Error の Markdown。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
    report をファイルに書いたり build-response.sh を実行したりしない（レスポンス生成は wrapper が行う）。
 PROMPT_EOF
 )
+PROMPT_FILE="$WORK_DIR/worker-prompt.txt"
+printf '%s' "$PROMPT" >"$PROMPT_FILE"
 
 cleanup() {
   if [ -n "${child_pid:-}" ] && kill -0 "$child_pid" 2>/dev/null; then
@@ -145,8 +152,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# prompt は argv ではなく stdin で渡す（ARG_MAX 非依存。ps からも見えない）
 claude_args=(
-  -p "$PROMPT"
+  -p
   --model "$MODEL"
   --json-schema "$(delegate_observe_report_schema_json)"
 )
@@ -161,8 +169,13 @@ claude_args+=(
 # managed policy が bypass permissions mode を無効化した環境では worker が default
 # 権限モードに落ち、allowlist 外のツールは非対話で自動拒否される。protocol の完走に
 # 必要な最小ツールを常に事前許可しておく（bypass が効く環境では無害な重複許可）。
-# 報告は構造化最終応答で回収するため build-response.sh の許可は不要
-minimal_allowed_tools="Bash(bash ${script_dir}/read-request.sh:*),Read"
+# 報告は構造化最終応答で回収するため build-response.sh の許可は不要。
+# request 埋め込み時は read-request.sh の許可も不要
+if [ "$request_inline" = true ]; then
+  minimal_allowed_tools="Read"
+else
+  minimal_allowed_tools="Bash(bash ${script_dir}/read-request.sh:*),Read"
+fi
 
 case "$SESSION_MODE" in
   "")
@@ -229,7 +242,7 @@ if [ -n "$CLAUDE_SESSION_HOME" ]; then
 fi
 
 cd "$REPO_ROOT"
-env "${child_env[@]}" claude "${claude_args[@]}" </dev/null \
+env "${child_env[@]}" claude "${claude_args[@]}" <"$PROMPT_FILE" \
   >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 

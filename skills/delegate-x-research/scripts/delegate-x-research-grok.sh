@@ -84,10 +84,18 @@ REPORT_MODE="$(delegate_observe_report_mode_for_backend grok)"
 REPORT_FILE="$WORK_DIR/report.md"
 RESPONDER_SESSION_ID="grok:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
+# request は初期 prompt へ埋め込み、read-request の初回往復を消す（gate 超過時は fallback）。
+# grok CLI の stdin / --prompt-file は未実測のため prompt は argv で渡す。argv 経路は
+# 単一引数上限（MAX_ARG_STRLEN）に収まる縮小 gate を適用する
+request_inline=true
+if ! request_step="$(delegate_observe_request_prompt_step "$REQUEST_FILE" "$script_dir" "$DELEGATE_REQUEST_ARGV_INLINE_MAX")"; then
+  request_inline=false
+fi
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の x.com 調査ワーカー（task_type=xresearch）です。protocol v1 に従ってください。
 
-1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
+${request_step}
 2. リクエストの Scope に従い、利用可能な X / x.com 調査能力と web search を使って調査する。AGENTS.md / CLAUDE.md の規約に従うこと。
 3. 投稿URL、投稿者、投稿日時、確認時刻、検索語を Sources / Method に残す。事実、推測、未確認情報を混ぜない。
 4. 非公開・削除済み・ログイン不足・検索結果の偏り・時点依存がある場合は、Limitations または Blockers に書く。

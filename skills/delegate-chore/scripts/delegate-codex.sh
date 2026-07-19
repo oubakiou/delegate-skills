@@ -148,19 +148,32 @@ trap cleanup EXIT INT TERM
 
 readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
 
+# request は初期 prompt へ埋め込み、read-request の初回往復を消す（gate 超過時は fallback）。
+# follow-up は prompt を argv で渡す（`exec resume` の stdin が未実測）ため、単一引数上限
+# （MAX_ARG_STRLEN）に収まる縮小 gate を適用する
+request_inline_gate=""
+if [ "$SESSION_MODE" = "followup" ]; then
+  request_inline_gate="$DELEGATE_REQUEST_ARGV_INLINE_MAX"
+fi
+request_inline=true
+if ! request_step="$(delegate_observe_request_prompt_step "$REQUEST_FILE" "$script_dir" "$request_inline_gate")"; then
+  request_inline=false
+fi
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
-1. リクエストを読む: \`bash ${script_dir}/read-request.sh "${REQUEST_FILE}" all\` で全 section を 1 回で丸読みする（読み飛ばせる情報は無いので、段階読みで往復を増やさない）。
+${request_step}
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
-3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
+3. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
    Summary / Changed files / Commands / Verification / Findings / Blockers / Error の Markdown。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
    report をファイルに書いたり md2idx / jq でレスポンスを生成したりしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。
 PROMPT_EOF
 )
+PROMPT_FILE="$WORK_DIR/worker-prompt.txt"
+printf '%s' "$PROMPT" >"$PROMPT_FILE"
 
 codex_args=(exec)
 if [ "$SESSION_MODE" = "followup" ]; then
@@ -171,6 +184,8 @@ if [ "$SESSION_MODE" = "followup" ]; then
   if [ -n "$EFFORT" ]; then
     codex_args+=(-c "model_reasoning_effort=${EFFORT}")
   fi
+  # `codex exec resume` での stdin prompt（positional `-`）は未実測のため、follow-up は
+  # argv 渡しを維持する（通常 run は stdin）
   codex_args+=(
     --skip-git-repo-check
     -c "sandbox_mode=${CODEX_DELEGATE_SANDBOX:-danger-full-access}"
@@ -197,12 +212,17 @@ else
   if [ "$SESSION_MODE" = "" ]; then
     codex_args+=(--ephemeral)
   fi
-  codex_args+=("$PROMPT")
+  # prompt は argv ではなく positional `-` + stdin で渡す（ARG_MAX 非依存。ps からも見えない）
+  codex_args+=(-)
 fi
 
 # --ignore-rules は付けない: AGENTS.md を読ませて規約遵守させる
 cd "$REPO_ROOT"
-CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" codex "${codex_args[@]}" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
+if [ "$SESSION_MODE" = "followup" ]; then
+  CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" codex "${codex_args[@]}" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
+else
+  CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" codex "${codex_args[@]}" <"$PROMPT_FILE" >"$stdout_capture" 2>"$stderr_capture" &
+fi
 child_pid=$!
 
 if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture" "$RESPONSE_FILE"; then

@@ -14,6 +14,7 @@ interface FakeCliLog {
   args: string[]
   command: string | null
   cwd: string
+  prompt: string | null
   env: {
     BASH_DEFAULT_TIMEOUT_MS: string | null
     BASH_MAX_TIMEOUT_MS: string | null
@@ -114,6 +115,7 @@ const readLog = (filePath: string): FakeCliLog => {
       CURSOR_CONFIG_DIR: stringOrNullValue(record.env.CURSOR_CONFIG_DIR),
       TMPDIR: stringOrNullValue(record.env.TMPDIR),
     },
+    prompt: stringOrNullValue(record.prompt),
   }
 }
 
@@ -136,6 +138,7 @@ const readLogs = (filePath: string): FakeCliLog[] => {
         CURSOR_CONFIG_DIR: stringOrNullValue(record.env.CURSOR_CONFIG_DIR),
         TMPDIR: stringOrNullValue(record.env.TMPDIR),
       },
+      prompt: stringOrNullValue(record.prompt),
     }
   })
 }
@@ -252,7 +255,8 @@ const claudeFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 import path from 'node:path'
 const args = process.argv.slice(2)
-const prompt = args[args.indexOf('-p') + 1] || ''
+let prompt = ''
+try { prompt = fs.readFileSync(0, 'utf8') } catch {}
 const loggedEnv = () => ({
   BASH_DEFAULT_TIMEOUT_MS: process.env.BASH_DEFAULT_TIMEOUT_MS,
   BASH_MAX_TIMEOUT_MS: process.env.BASH_MAX_TIMEOUT_MS,
@@ -260,7 +264,7 @@ const loggedEnv = () => ({
   TMPDIR: process.env.TMPDIR,
 })
 if (process.env.FAKE_CLAUDE_EXIT_WITHOUT_RESPONSE === '1') {
-  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: loggedEnv()}))
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, cwd: process.cwd(), env: loggedEnv()}))
   process.exit(9)
 }
 const status = process.env.FAKE_CLAUDE_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
@@ -270,7 +274,7 @@ if (sessionIdIndex !== -1 && process.env.CLAUDE_CONFIG_DIR && process.env.FAKE_C
   fs.mkdirSync(sessionDir, {recursive: true})
   fs.writeFileSync(path.join(sessionDir, args[sessionIdIndex + 1] + '.jsonl'), '{}\\n')
 }
-fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: loggedEnv()}))
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, cwd: process.cwd(), env: loggedEnv()}))
 if (process.env.FAKE_CLAUDE_NO_STRUCTURED === '1') {
   console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_tokens: 1}}))
 } else if (process.env.FAKE_CLAUDE_EMPTY_REPORT === '1') {
@@ -288,8 +292,13 @@ if (args.join(' ') === 'mcp list --json') {
   console.log(process.env.FAKE_CODEX_MCP_LIST_JSON || '[]')
   process.exit(0)
 }
+let prompt = args[args.length - 1] || ''
+if (prompt === '-') {
+  prompt = ''
+  try { prompt = fs.readFileSync(0, 'utf8') } catch {}
+}
 if (process.env.FAKE_CODEX_EXIT_WITHOUT_RESPONSE === '1') {
-  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
   process.exit(9)
 }
 const status = process.env.FAKE_CODEX_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
@@ -297,7 +306,7 @@ const lastMsgIndex = args.indexOf('--output-last-message')
 if (lastMsgIndex !== -1 && process.env.FAKE_CODEX_NO_LAST_MSG !== '1') {
   fs.writeFileSync(args[lastMsgIndex + 1], JSON.stringify({status, report_markdown: '# Summary\\nok'}))
 }
-fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
 if (process.env.FAKE_CODEX_SESSION_EFFORT && process.env.CODEX_HOME && !args.includes('--ephemeral')) {
   const sessionDir = path.join(process.env.CODEX_HOME, 'sessions', '2026', '07', '18')
   fs.mkdirSync(sessionDir, {recursive: true})
@@ -312,9 +321,13 @@ console.log(JSON.stringify({type: 'turn.completed', usage: {input_tokens: 1, out
 const devinFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
-const prompt = args[args.indexOf('-p') + 1] || ''
+const promptFileIndex = args.indexOf('--prompt-file')
+let prompt = args[args.indexOf('-p') + 1] || ''
+if (promptFileIndex !== -1) {
+  try { prompt = fs.readFileSync(args[promptFileIndex + 1], 'utf8') } catch {}
+}
 if (process.env.FAKE_DEVIN_EXIT_WITHOUT_RESPONSE === '1') {
-  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
   process.exit(9)
 }
 const reportMatches = [...prompt.matchAll(/"([^"]+report\\.md)"/g)].map((match) => match[1])
@@ -331,13 +344,15 @@ const exportIndex = args.indexOf('--export')
 if (exportIndex !== -1 && process.env.FAKE_DEVIN_NO_SESSION !== '1') {
   fs.writeFileSync(args[exportIndex + 1], JSON.stringify({session_id: 'devin-session-1', final_metrics: {prompt_tokens: 1, completion_tokens: 1}}))
 }
-fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
 `
 
 const cursorFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
-const entry = {args, command: 'agent', cwd: process.cwd(), env: {CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}
+let prompt = ''
+try { prompt = fs.readFileSync(0, 'utf8') } catch {}
+const entry = {args, prompt, command: 'agent', cwd: process.cwd(), env: {CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}
 let logs = []
 try {
   logs = JSON.parse(fs.readFileSync(process.env.FAKE_CLI_LOG, 'utf8'))
@@ -363,7 +378,6 @@ if (args[0] === 'create-chat') {
 if (process.env.FAKE_CURSOR_EXIT_WITHOUT_RESPONSE === '1') {
   process.exit(9)
 }
-const prompt = args[args.length - 1] || ''
 const reportMatches = [...prompt.matchAll(/"([^"]+report\\.md)"/g)].map((match) => match[1])
 const reportFile = reportMatches[reportMatches.length - 1]
 const status = process.env.FAKE_CURSOR_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
@@ -566,11 +580,14 @@ const runCursorTaskType = (
 ): { status: number } =>
   runWrapper('delegate-cursor.sh', taskTypeArgs(fixture, 'cursor-glm-5.2-high', taskType), env)
 
-const claudeMinimalAllowedTools = (): string =>
-  `Bash(bash ${path.join(repoRoot, 'shared', 'read-request.sh')}:*),Read`
+// request が prompt へ埋め込まれる既定経路では read-request.sh の許可も不要
+const claudeMinimalAllowedTools = (): string => 'Read'
 
 // claude は `-p <prompt>`、cursor は `-p` が単独フラグでプロンプトが最終引数
 const promptFromLog = (log: FakeCliLog): string => {
+  if (log.prompt !== null && log.prompt !== '') {
+    return log.prompt
+  }
   const flagIndex = log.args.indexOf('-p')
   if (flagIndex !== -1) {
     const candidate = log.args[flagIndex + 1] ?? ''
@@ -1995,5 +2012,95 @@ describe('wrapper report collection', () => {
     expect(response.status).toBe('completed')
     expect(response.responder_session_id).toMatch(/^cursor:composer-2\.5:/)
     expect(structuredParseFrom(fixture.observeFile)).toBeNull()
+  })
+})
+
+describe('request prompt embedding', () => {
+  it('embeds the request sections and task_type_chain into the initial prompt', () => {
+    const fixture = makeFixture('claude')
+    const result = runWrapper(
+      'delegate-claude.sh',
+      taskTypeArgs(fixture, 'haiku', 'chore'),
+      fixture.env
+    )
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('<request>')
+    expect(prompt).toContain('task_type_chain: []')
+    expect(prompt).toContain('request')
+    expect(prompt).not.toContain('read-request.sh')
+  })
+
+  it('falls back to read-request instructions above the inline gate', () => {
+    const fixture = makeFixture('claude')
+    const result = runWrapper('delegate-claude.sh', taskTypeArgs(fixture, 'haiku', 'chore'), {
+      ...fixture.env,
+      DELEGATE_REQUEST_INLINE_MAX: '1',
+    })
+    const log = readLog(fixture.logFile)
+    const prompt = promptFromLog(log)
+    const allowIndex = log.args.indexOf('--allowedTools')
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('read-request.sh')
+    expect(prompt).not.toContain('<request>')
+    expect(log.args[allowIndex + 1]).toContain('read-request.sh')
+  })
+
+  it('passes the embedded prompt to devin via --prompt-file', () => {
+    const fixture = makeFixture('devin')
+    const result = runWrapper(
+      'delegate-devin.sh',
+      taskTypeArgs(fixture, 'swe-1.7', 'chore'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const prompt = promptFromLog(log)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--prompt-file')
+    expect(prompt).toContain('<request>')
+  })
+})
+
+describe('argv-path inline gate', () => {
+  it('shrinks the inline gate below MAX_ARG_STRLEN for codex follow-up prompts', () => {
+    const fixture = makeFixture('codex')
+    const bigSection = 'x'.repeat(120_000)
+    writeFileSync(
+      fixture.requestFile,
+      JSON.stringify({ sections: [bigSection], task_type_chain: ['chore'] })
+    )
+    const followupHome = path.join(fixture.workDir, 'codex-home')
+    mkdirSync(followupHome, { recursive: true })
+    const result = runWrapper(
+      'delegate-codex.sh',
+      [...taskTypeArgs(fixture, 'gpt-5.5', 'chore'), 'followup', 'thread-1', followupHome],
+      fixture.env
+    )
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('read-request.sh')
+    expect(prompt).not.toContain('<request>')
+  })
+
+  it('keeps the same request inline for normal codex runs passed via stdin', () => {
+    const fixture = makeFixture('codex')
+    const bigSection = 'x'.repeat(120_000)
+    writeFileSync(
+      fixture.requestFile,
+      JSON.stringify({ sections: [bigSection], task_type_chain: ['chore'] })
+    )
+    const result = runWrapper(
+      'delegate-codex.sh',
+      taskTypeArgs(fixture, 'gpt-5.5', 'chore'),
+      fixture.env
+    )
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('<request>')
   })
 })
