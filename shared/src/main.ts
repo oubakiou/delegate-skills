@@ -1,14 +1,13 @@
 import { md2idx } from 'md2idx'
+import { runCheckDelegateChain } from './check-delegate-chain.ts'
+import type { CliResult } from './cli-result.ts'
+import { runResolveModel } from './resolve-model.ts'
 
 // delegate-cli のバージョン。gh skill publish のリリースタグと同期させる運用は
 // 全スクリプト移行完了後に確定する（それまでは 0.0.0-dev のまま）。
 export const CLI_VERSION = '0.0.0-dev'
 
-export interface CliResult {
-  exitCode: number
-  stdout: string
-  stderr: string
-}
+export type { CliResult } from './cli-result.ts'
 
 const versionResult = (): CliResult => ({
   exitCode: 0,
@@ -35,7 +34,7 @@ export const runCli = (argv: readonly string[]): CliResult => {
       stdout: '',
     }
   }
-  const [subcommand] = argv
+  const [subcommand, ...rest] = argv
   switch (subcommand) {
     case '--version':
     case 'version': {
@@ -43,6 +42,12 @@ export const runCli = (argv: readonly string[]): CliResult => {
     }
     case 'md2idx-smoke': {
       return md2idxSmokeResult()
+    }
+    case 'resolve-model': {
+      return runResolveModel(rest, process.env)
+    }
+    case 'check-delegate-chain': {
+      return runCheckDelegateChain(rest)
     }
     default: {
       return {

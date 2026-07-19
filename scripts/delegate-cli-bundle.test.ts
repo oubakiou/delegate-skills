@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -70,5 +70,81 @@ describe('delegate-cli bundle', () => {
     } finally {
       rmSync(isolatedDir, { force: true, recursive: true })
     }
+  })
+})
+
+describe('delegate-cli subcommand shims', () => {
+  const runShim = (
+    shimRelPath: string,
+    args: string[],
+    env: NodeJS.ProcessEnv = {}
+  ): SpawnSyncReturns<string> =>
+    spawnSync('bash', [path.join(repoRoot, shimRelPath), ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    })
+
+  it('resolves models through the shared/ shim with the bash contract', () => {
+    const fromDefault = runShim('shared/resolve-model.sh', ['DELEGATE_SHIM_TEST_MODEL', 'haiku'])
+    expect(fromDefault.status).toBe(0)
+    expect(fromDefault.stdout).toBe('haiku\n')
+    const fromEnv = runShim('shared/resolve-model.sh', ['DELEGATE_SHIM_TEST_MODEL', 'haiku'], {
+      DELEGATE_SHIM_TEST_MODEL: 'gpt-5.5@high',
+    })
+    expect(fromEnv.stdout).toBe('gpt-5.5@high\n')
+  })
+
+  it('resolves models through the distributed skill copy of the shim', () => {
+    const result = runShim(
+      'skills/delegate-explore/scripts/resolve-model.sh',
+      ['DELEGATE_SHIM_TEST_MODEL', 'haiku'],
+      { DELEGATE_SHIM_TEST_MODEL: '' }
+    )
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('haiku\n')
+  })
+
+  it('preserves whitespace in arguments passed through the shim', () => {
+    const result = runShim('shared/check-delegate-chain.sh', ['task type with space', '[]'])
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('["task type with space"]\n')
+  })
+
+  it('fails closed with exit 3 when node is missing from PATH', () => {
+    const result = spawnSync(
+      '/bin/sh',
+      [path.join(repoRoot, 'shared', 'resolve-model.sh'), 'DELEGATE_SHIM_TEST_MODEL', 'haiku'],
+      { encoding: 'utf8', env: { ...process.env, PATH: '/nonexistent-path-for-test' } }
+    )
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('node')
+  })
+
+  it('runs directly via its shebang from a spaced directory beside the bundle', () => {
+    const isolatedDir = mkdtempSync(path.join(tmpdir(), 'delegate shim spaced '))
+    try {
+      const shim = path.join(isolatedDir, 'check-delegate-chain.sh')
+      copyFileSync(path.join(repoRoot, 'shared', 'check-delegate-chain.sh'), shim)
+      copyFileSync(distPath, path.join(isolatedDir, 'delegate-cli.mjs'))
+      chmodSync(shim, 0o755)
+      const result = spawnSync(shim, ['chore', '["explore"]'], { encoding: 'utf8' })
+      expect(result.status).toBe(0)
+      expect(result.stdout).toBe('["explore","chore"]\n')
+    } finally {
+      rmSync(isolatedDir, { force: true, recursive: true })
+    }
+  })
+
+  it('keeps the check-delegate-chain exit code table through the shim', () => {
+    const ok = runShim('shared/check-delegate-chain.sh', ['chore', '["explore"]'])
+    expect(ok.status).toBe(0)
+    expect(ok.stdout).toBe('["explore","chore"]\n')
+    const cycle = runShim('shared/check-delegate-chain.sh', ['explore', '["explore"]'])
+    expect(cycle.status).toBe(4)
+    expect(cycle.stderr).toContain('委譲チェーン')
+    const malformed = runShim('shared/check-delegate-chain.sh', ['explore', 'not-json'])
+    expect(malformed.status).toBe(5)
+    const usage = runShim('shared/check-delegate-chain.sh', [])
+    expect(usage.status).toBe(2)
   })
 })

@@ -138,6 +138,64 @@ var md2idx = (markdown) => {
 	};
 };
 //#endregion
+//#region shared/src/check-delegate-chain.ts
+var failure = (exitCode, stderr) => ({
+	exitCode,
+	stderr,
+	stdout: ""
+});
+var normalizeChain = (rawChain) => {
+	if (rawChain === "") return "[]";
+	return rawChain;
+};
+var parseChain = (rawChain) => {
+	let parsed = null;
+	try {
+		parsed = JSON.parse(rawChain);
+	} catch {
+		return failure(5, `ERROR: parent_task_type_chain is not valid JSON: ${rawChain}\n`);
+	}
+	if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) return failure(5, `ERROR: parent_task_type_chain is not a JSON string array: ${rawChain}\n`);
+	return parsed.map(String);
+};
+var runCheckDelegateChain = (argv) => {
+	if (argv.length < 2) return failure(2, "Usage: check-delegate-chain <task_type> <parent_task_type_chain_json>\n");
+	const [taskType, rawChainArg] = argv;
+	const rawChain = normalizeChain(rawChainArg);
+	const chain = parseChain(rawChain);
+	if (!Array.isArray(chain)) return chain;
+	if (chain.includes(taskType)) return failure(4, `ERROR: 委譲チェーンに '${taskType}' が既に存在します（同一種別の多段委譲は禁止）: ${rawChain}\n`);
+	return {
+		exitCode: 0,
+		stderr: "",
+		stdout: `${JSON.stringify([...chain, taskType])}\n`
+	};
+};
+//#endregion
+//#region shared/src/resolve-model.ts
+var nonEmptyEnvValue = (value) => {
+	if (typeof value === "string" && value !== "") return value;
+	return null;
+};
+var runResolveModel = (argv, env) => {
+	if (argv.length < 2) return {
+		exitCode: 2,
+		stderr: "Usage: resolve-model <TYPE_ENV_NAME> <DEFAULT_MODEL>\n",
+		stdout: ""
+	};
+	const [typeEnvName, defaultModel] = argv;
+	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(typeEnvName)) return {
+		exitCode: 1,
+		stderr: `ERROR: invalid environment variable name: ${typeEnvName}\n`,
+		stdout: ""
+	};
+	return {
+		exitCode: 0,
+		stderr: "",
+		stdout: `${nonEmptyEnvValue(env[typeEnvName] ?? null) ?? defaultModel}\n`
+	};
+};
+//#endregion
 //#region shared/src/main.ts
 var CLI_VERSION = "0.0.0-dev";
 var versionResult = () => ({
@@ -162,11 +220,13 @@ var runCli = (argv) => {
 		stderr: "delegate-cli: missing subcommand (try --version)\n",
 		stdout: ""
 	};
-	const [subcommand] = argv;
+	const [subcommand, ...rest] = argv;
 	switch (subcommand) {
 		case "--version":
 		case "version": return versionResult();
 		case "md2idx-smoke": return md2idxSmokeResult();
+		case "resolve-model": return runResolveModel(rest, process.env);
+		case "check-delegate-chain": return runCheckDelegateChain(rest);
 		default: return {
 			exitCode: 2,
 			stderr: `delegate-cli: unknown subcommand: ${subcommand}\n`,
