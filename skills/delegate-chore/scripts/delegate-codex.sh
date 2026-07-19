@@ -129,7 +129,11 @@ else
 fi
 
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
-REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_report_XXXXX" --suffix=.md)"
+
+# 報告方式は起動前に確定する（codex は構造化最終応答が既定。§docs/feature/delegate-latency-reduction.md）
+REPORT_MODE="$(delegate_observe_report_mode_for_backend "$backend")"
+REPORT_SCHEMA_FILE="$WORK_DIR/report-schema.json"
+delegate_observe_report_schema_json >"$REPORT_SCHEMA_FILE"
 
 # Codex 子は自身の session id を prompt 内から素直に取得できないため、ラッパが
 # response_file のペアトークン（main 事前確保の一意トークン）から responder_session_id を導出して渡す。
@@ -151,12 +155,10 @@ PROMPT=$(cat <<PROMPT_EOF
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業報告を Markdown("${REPORT_FILE}") に書き、レスポンスを生成する:
-   \`npx md2idx "${REPORT_FILE}" | jq --arg s "<status>" --arg sid "${RESPONDER_SESSION_ID}" '{protocol_version: 1, type: "response", status: \$s, responder_session_id: \$sid} + .' > "${RESPONSE_FILE}"\`
-   status は completed | partial | failed | needs_input のいずれか。report.md の見出しは
-   Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
+4. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
+   Summary / Changed files / Commands / Verification / Findings / Blockers / Error の Markdown。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
-5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。リポジトリ root に report.md を作らない。
+   report をファイルに書いたり md2idx / jq でレスポンスを生成したりしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。
 PROMPT_EOF
 )
 
@@ -174,6 +176,7 @@ if [ "$SESSION_MODE" = "followup" ]; then
     -c "sandbox_mode=${CODEX_DELEGATE_SANDBOX:-danger-full-access}"
     --json
     --output-last-message "$LAST_MSG"
+    --output-schema "$REPORT_SCHEMA_FILE"
     "$PROMPT"
   )
 else
@@ -188,6 +191,7 @@ else
     --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}"
     --json
     --output-last-message "$LAST_MSG"
+    --output-schema "$REPORT_SCHEMA_FILE"
     -C "$REPO_ROOT"
   )
   if [ "$SESSION_MODE" = "" ]; then
@@ -206,8 +210,20 @@ if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "
 else
   child_status=$?
 fi
+
+# 構造化最終応答の回収 → wrapper 側で response を組み立てる。parse 失敗は failed response
+# へ倒す（fail-closed。後段の response 欠落分岐が処理する）
+structured_parse=""
+if [ "$REPORT_MODE" = structured ] && [ ! -s "$RESPONSE_FILE" ]; then
+  structured_parse=false
+  if structured_json="$(delegate_observe_structured_from_last_message "$LAST_MSG")" \
+    && delegate_observe_build_response_from_structured "$structured_json" "$RESPONDER_SESSION_ID" "$RESPONSE_FILE" "$WORK_DIR"; then
+    structured_parse=true
+    DELEGATE_OBSERVE_REPORT_READY_MS="${DELEGATE_OBSERVE_REPORT_READY_MS:-$DELEGATE_OBSERVE_WAIT_TOTAL_MS}"
+  fi
+fi
 delegate_observe_record_timing "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$stdout_capture" \
-  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" || true
+  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" "" "$structured_parse" || true
 
 response_generated_by_worker=1
 if [ ! -s "$RESPONSE_FILE" ]; then

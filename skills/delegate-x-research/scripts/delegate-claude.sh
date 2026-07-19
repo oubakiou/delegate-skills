@@ -121,6 +121,9 @@ fi
 
 readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
 
+# 報告方式は起動前に確定する（claude は構造化最終応答が既定。§docs/feature/delegate-latency-reduction.md）
+REPORT_MODE="$(delegate_observe_report_mode_for_backend "$backend")"
+
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の隔離ワーカー（task_type=${TASK_TYPE}）です。protocol v1 に従ってください。
 
@@ -128,10 +131,10 @@ PROMPT=$(cat <<PROMPT_EOF
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業報告 Markdown を \`bash ${script_dir}/build-response.sh <status> ${RESPONDER_SESSION_ID} "${RESPONSE_FILE}" <<'REPORT_EOF'\` の heredoc（stdin）で渡して書き、\`REPORT_EOF\` で閉じる。コマンドは必ず \`bash ${script_dir}/build-response.sh\` から始める（\`cat\` / \`printf\` からのパイプ形式は権限 allowlist の先頭一致に合わず拒否され得る）。status は completed | partial | failed | needs_input のいずれか。report の見出しは
-   Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
+4. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
+   Summary / Changed files / Commands / Verification / Findings / Blockers / Error の Markdown。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
-5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。
+   report をファイルに書いたり build-response.sh を実行したりしない（レスポンス生成は wrapper が行う）。
 PROMPT_EOF
 )
 
@@ -145,6 +148,7 @@ trap cleanup EXIT INT TERM
 claude_args=(
   -p "$PROMPT"
   --model "$MODEL"
+  --json-schema "$(delegate_observe_report_schema_json)"
 )
 if [ -n "$EFFORT" ]; then
   claude_args+=(--effort "$EFFORT")
@@ -157,7 +161,8 @@ claude_args+=(
 # managed policy が bypass permissions mode を無効化した環境では worker が default
 # 権限モードに落ち、allowlist 外のツールは非対話で自動拒否される。protocol の完走に
 # 必要な最小ツールを常に事前許可しておく（bypass が効く環境では無害な重複許可）。
-minimal_allowed_tools="Bash(bash ${script_dir}/read-request.sh:*),Bash(bash ${script_dir}/build-response.sh:*),Read"
+# 報告は構造化最終応答で回収するため build-response.sh の許可は不要
+minimal_allowed_tools="Bash(bash ${script_dir}/read-request.sh:*),Read"
 
 case "$SESSION_MODE" in
   "")
@@ -233,8 +238,20 @@ if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "
 else
   child_status=$?
 fi
+
+# 構造化最終応答の回収 → wrapper 側で response を組み立てる。parse 失敗は failed response
+# へ倒す（fail-closed。後段の response 欠落分岐が処理する）
+structured_parse=""
+if [ "$REPORT_MODE" = structured ] && [ ! -s "$RESPONSE_FILE" ]; then
+  structured_parse=false
+  if structured_json="$(delegate_observe_structured_from_claude_capture "$stdout_capture")" \
+    && delegate_observe_build_response_from_structured "$structured_json" "$RESPONDER_SESSION_ID" "$RESPONSE_FILE" "$WORK_DIR"; then
+    structured_parse=true
+    DELEGATE_OBSERVE_REPORT_READY_MS="${DELEGATE_OBSERVE_REPORT_READY_MS:-$DELEGATE_OBSERVE_WAIT_TOTAL_MS}"
+  fi
+fi
 delegate_observe_record_timing "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$stdout_capture" \
-  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" || true
+  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" "" "$structured_parse" || true
 
 response_generated_by_worker=1
 if [ ! -s "$RESPONSE_FILE" ]; then

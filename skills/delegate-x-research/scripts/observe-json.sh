@@ -1767,8 +1767,8 @@ delegate_observe_timing_stream_counts() {
 }
 
 # observe JSON の timing 契約: 時間値はすべて monotonic clock 由来の経過 ms（時刻ではない）。
-# 計測できなかった値は null。structured_output_parse は wrapper 側 report 回収の
-# 導入までは常に null（契約フィールドとして先に固定する）
+# 計測できなかった値は null。structured_output_parse は構造化最終応答方式の run でのみ
+# true / false（第 9 引数）になり、report.md 方式・非対応 backend では null（空文字）
 delegate_observe_record_timing() {
   local observe_file="$1"
   local run_dir="$2"
@@ -1778,6 +1778,7 @@ delegate_observe_record_timing() {
   local first_useful_ms="$6"
   local report_ready_ms="$7"
   local devin_export="${8:-}"
+  local structured_output_parse="${9:-}"
 
   local counts timing
   counts="$(delegate_observe_timing_stream_counts "$backend" "$stdout_capture" "$devin_export")"
@@ -1785,6 +1786,7 @@ delegate_observe_record_timing() {
     --arg total "$total_ms" \
     --arg first_useful "$first_useful_ms" \
     --arg report_ready "$report_ready_ms" \
+    --arg structured_output_parse "$structured_output_parse" \
     --argjson counts "$counts" \
     '
     def elapsed($value): if $value == "" then null else ($value | tonumber) end;
@@ -1794,7 +1796,7 @@ delegate_observe_record_timing() {
       report_ready_at_ms: elapsed($report_ready),
       model_turns: $counts.model_turns,
       tool_calls: $counts.tool_calls,
-      structured_output_parse: null,
+      structured_output_parse: (if $structured_output_parse == "" then null else ($structured_output_parse == "true") end),
       measurement_source: $counts.source
     }')"
 
@@ -1816,6 +1818,141 @@ delegate_observe_record_timing_inner() {
 
   jq --argjson timing "$timing_json" '.timing = $timing' "$observe_file" >"$tmp"
   mv "$tmp" "$observe_file"
+}
+
+# 報告方式の起動前選択（Step 3 PoC の backend 既定）。schema を CLI で強制できる
+# claude / codex は構造化最終応答、強制手段が無い cursor / devin / grok は report.md。
+# task 種別上書きは parse 失敗率・truncate テレメトリで必要が確認された種別にのみ導入する
+delegate_observe_report_mode_for_backend() {
+  case "$1" in
+    claude | codex) printf '%s' structured ;;
+    *) printf '%s' report_md ;;
+  esac
+}
+
+# 構造化最終応答 {status, report_markdown} の JSON schema（Claude --json-schema には
+# 文字列で、Codex --output-schema にはファイルで渡す）
+delegate_observe_report_schema_json() {
+  printf '%s' '{"type":"object","properties":{"status":{"type":"string","enum":["completed","partial","failed","needs_input"]},"report_markdown":{"type":"string","minLength":1}},"required":["status","report_markdown"],"additionalProperties":false}'
+}
+
+delegate_observe_valid_protocol_status() {
+  case "$1" in
+    completed | partial | failed | needs_input) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Claude stream-json capture の最終 result event から構造化出力を取り出す。
+# --json-schema 実行では parse 済み structured_output が入り、無ければ result 文字列の
+# JSON parse を試す。取り出せなければ非 0（呼び出し側が fail-closed に倒す）
+delegate_observe_structured_from_claude_capture() {
+  local capture="$1"
+  [ -s "$capture" ] || return 1
+  local structured
+  structured="$(jq -c -R -s '
+    [split("\n")[] | select(length > 0) | try fromjson catch empty
+     | select(type == "object" and .type == "result")] | last
+    | if . == null then empty
+      else (.structured_output? // (try (.result | fromjson) catch empty))
+      end
+    | select(type == "object")' <"$capture" 2>/dev/null | tail -n 1)"
+  [ -n "$structured" ] || return 1
+  printf '%s\n' "$structured"
+}
+
+# Codex --output-last-message ファイル（--output-schema 実行では schema 準拠 JSON が
+# そのまま書かれる）から構造化出力を取り出す
+delegate_observe_structured_from_last_message() {
+  local last_msg="$1"
+  [ -s "$last_msg" ] || return 1
+  local structured
+  structured="$(jq -c 'select(type == "object")' "$last_msg" 2>/dev/null | tail -n 1)"
+  [ -n "$structured" ] || return 1
+  printf '%s\n' "$structured"
+}
+
+# 構造化出力 {status, report_markdown} から protocol response を組み立てる。
+# status の語彙外・report_markdown 欠落/空は parse 失敗として非 0（fail-closed。
+# 非永続セッションでは worker 終了後の方式切替が原理的に不可能なため、リトライは
+# 親判断に委ねる）
+delegate_observe_build_response_from_structured() {
+  local structured_json="$1"
+  local responder_session_id="$2"
+  local response_file="$3"
+  local run_dir="$4"
+
+  local status
+  status="$(jq -r '.status // empty' <<<"$structured_json" 2>/dev/null || true)"
+  delegate_observe_valid_protocol_status "$status" || return 1
+
+  local report_file
+  report_file="$(mktemp --tmpdir="$run_dir" "$(basename "$response_file" .json)_structured_XXXXX" --suffix=.md)"
+  if ! jq -e -r '.report_markdown | strings' <<<"$structured_json" >"$report_file" 2>/dev/null; then
+    rm -f "$report_file"
+    return 1
+  fi
+  if [ ! -s "$report_file" ]; then
+    rm -f "$report_file"
+    return 1
+  fi
+
+  delegate_observe_assemble_response "$status" "$responder_session_id" "$response_file" "$run_dir" "$report_file"
+}
+
+# report 本文から response を組み立てる共通処理。build-response.sh は response を書いて
+# から index/sections を検証するため、失敗時に部分生成物が正 response パスに残ると
+# wrapper の response 欠落判定（fail-closed）をすり抜ける。一時パスへ組み立てて
+# 成功時のみ rename する
+delegate_observe_assemble_response() {
+  local status="$1"
+  local responder_session_id="$2"
+  local response_file="$3"
+  local run_dir="$4"
+  local report_file="$5"
+
+  # 空白のみの本文は md2idx が空 sections を返す前に弾く
+  if [ -z "$(tr -d '[:space:]' <"$report_file")" ]; then
+    return 1
+  fi
+
+  local tmp_response
+  tmp_response="$(mktemp --tmpdir="$run_dir" "$(basename "$response_file" .json)_assemble_XXXXX" --suffix=.json)"
+  local observe_script_dir
+  observe_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if ! bash "$observe_script_dir/build-response.sh" "$status" "$responder_session_id" "$tmp_response" \
+    <"$report_file" >/dev/null 2>&1; then
+    rm -f "$tmp_response" "${tmp_response%.json}.md"
+    return 1
+  fi
+  mv "$tmp_response" "$response_file"
+}
+
+# report.md 方式: front-matter「---\nstatus: <値>\n---」付き Markdown から status と
+# 本文を取り出して protocol response を組み立てる。front-matter 欠落・status 語彙外・
+# 本文空は失敗として非 0
+delegate_observe_build_response_from_report_md() {
+  local report_file="$1"
+  local responder_session_id="$2"
+  local response_file="$3"
+  local run_dir="$4"
+
+  [ -s "$report_file" ] || return 1
+  [ "$(head -n 1 "$report_file")" = "---" ] || return 1
+
+  local status
+  status="$(awk 'NR > 1 && /^---[[:space:]]*$/ {exit} sub(/^status:[[:space:]]*/, "") {print; exit}' "$report_file" | tr -d '[:space:]')"
+  delegate_observe_valid_protocol_status "$status" || return 1
+
+  local body_file
+  body_file="$(mktemp --tmpdir="$run_dir" "$(basename "$response_file" .json)_reportbody_XXXXX" --suffix=.md)"
+  awk 'in_body {print; next} /^---[[:space:]]*$/ {count++; if (count == 2) in_body = 1}' "$report_file" >"$body_file"
+  if [ ! -s "$body_file" ]; then
+    rm -f "$body_file"
+    return 1
+  fi
+
+  delegate_observe_assemble_response "$status" "$responder_session_id" "$response_file" "$run_dir" "$body_file"
 }
 
 # dispatch 完了時の JSONL telemetry。observe JSON の timing を転記するため、

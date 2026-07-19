@@ -49,7 +49,12 @@ esac
 
 RESPONDER_SESSION_ID="cursor:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
-readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
+# 報告方式は起動前に確定する（cursor は schema 強制手段が無いため report.md が既定。
+# §docs/feature/delegate-latency-reduction.md）
+REPORT_MODE="$(delegate_observe_report_mode_for_backend cursor)"
+REPORT_FILE="$RUN_DIR/report.md"
+
+readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$REPORT_FILE")"
 
 backend="$(delegate_observe_backend_from_model "$ORIGINAL_MODEL")"
 stdout_capture="$WORK_DIR/worker-stdout.capture"
@@ -179,10 +184,14 @@ PROMPT=$(cat <<PROMPT_EOF
 2. リクエストの指示に従って作業する。AGENTS.md / CLAUDE.md の規約に従うこと。${readonly_constraints}
    長時間走り得るコマンドは \`timeout\` 付きで実行し、headless 実行するスクリプトには必ず終了処理（quit 等）を入れ、検証コマンドをバックグラウンド化して放置しない。
 3. task_type_chain（${REQUEST_FILE} の .task_type_chain）に自種別を含む種別への再委譲は禁止。
-4. 作業報告 Markdown を stdin で \`bash ${script_dir}/build-response.sh <status> ${RESPONDER_SESSION_ID} "${RESPONSE_FILE}"\` に渡して書く。status は completed | partial | failed | needs_input のいずれか。report の見出しは
-   Summary / Changed files / Commands / Verification / Findings / Blockers / Error。
+4. 作業報告を front-matter 付き Markdown で "${REPORT_FILE}" に 1 回の書込で作る。ファイルの 1 行目から
+   ---
+   status: <completed | partial | failed | needs_input のいずれか>
+   ---
+   の front-matter を置き、その下に見出し Summary / Changed files / Commands / Verification / Findings / Blockers / Error の本文を書く。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。
-5. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。
+   md2idx / jq / build-response.sh によるレスポンス生成はしない（レスポンス生成は wrapper が行う）。
+5. 最終応答は status の一語のみ。
 PROMPT_EOF
 )
 
@@ -224,6 +233,15 @@ if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "
   child_status=0
 else
   child_status=$?
+fi
+
+# report.md 方式: worker が書いた front-matter 付き report から wrapper が response を
+# 組み立てる。欠落・不正は failed response へ倒す（後段の response 欠落分岐が処理する）
+if [ "$REPORT_MODE" = report_md ] && [ ! -s "$RESPONSE_FILE" ]; then
+  delegate_observe_build_response_from_report_md "$REPORT_FILE" "$RESPONDER_SESSION_ID" "$RESPONSE_FILE" "$WORK_DIR" || true
+  if [ -s "$RESPONSE_FILE" ]; then
+    DELEGATE_OBSERVE_REPORT_READY_MS="${DELEGATE_OBSERVE_REPORT_READY_MS:-$DELEGATE_OBSERVE_WAIT_TOTAL_MS}"
+  fi
 fi
 delegate_observe_record_timing "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$stdout_capture" \
   "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" || true

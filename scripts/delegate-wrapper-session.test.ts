@@ -263,12 +263,7 @@ if (process.env.FAKE_CLAUDE_EXIT_WITHOUT_RESPONSE === '1') {
   fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: loggedEnv()}))
   process.exit(9)
 }
-const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
-const responseFile = responseMatches[responseMatches.length - 1]
 const status = process.env.FAKE_CLAUDE_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
-if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
-}
 const sessionIdIndex = args.indexOf('--session-id')
 if (sessionIdIndex !== -1 && process.env.CLAUDE_CONFIG_DIR && process.env.FAKE_CLAUDE_NO_SESSION !== '1') {
   const sessionDir = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'fake-project')
@@ -276,7 +271,13 @@ if (sessionIdIndex !== -1 && process.env.CLAUDE_CONFIG_DIR && process.env.FAKE_C
   fs.writeFileSync(path.join(sessionDir, args[sessionIdIndex + 1] + '.jsonl'), '{}\\n')
 }
 fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: loggedEnv()}))
-console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_tokens: 1}}))
+if (process.env.FAKE_CLAUDE_NO_STRUCTURED === '1') {
+  console.log(JSON.stringify({type: 'result', usage: {input_tokens: 1, output_tokens: 1}}))
+} else if (process.env.FAKE_CLAUDE_EMPTY_REPORT === '1') {
+  console.log(JSON.stringify({type: 'result', structured_output: {status, report_markdown: '   '}, usage: {input_tokens: 1, output_tokens: 1}}))
+} else {
+  console.log(JSON.stringify({type: 'result', structured_output: {status, report_markdown: '# Summary\\nok'}, usage: {input_tokens: 1, output_tokens: 1}}))
+}
 `
 
 const codexFakeScript = (): string => `#!/usr/bin/env node
@@ -287,16 +288,14 @@ if (args.join(' ') === 'mcp list --json') {
   console.log(process.env.FAKE_CODEX_MCP_LIST_JSON || '[]')
   process.exit(0)
 }
-const prompt = args[args.length - 1] || ''
 if (process.env.FAKE_CODEX_EXIT_WITHOUT_RESPONSE === '1') {
   fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
   process.exit(9)
 }
-const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
-const responseFile = responseMatches[responseMatches.length - 1]
 const status = process.env.FAKE_CODEX_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
-if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+const lastMsgIndex = args.indexOf('--output-last-message')
+if (lastMsgIndex !== -1 && process.env.FAKE_CODEX_NO_LAST_MSG !== '1') {
+  fs.writeFileSync(args[lastMsgIndex + 1], JSON.stringify({status, report_markdown: '# Summary\\nok'}))
 }
 fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
 if (process.env.FAKE_CODEX_SESSION_EFFORT && process.env.CODEX_HOME && !args.includes('--ephemeral')) {
@@ -318,11 +317,15 @@ if (process.env.FAKE_DEVIN_EXIT_WITHOUT_RESPONSE === '1') {
   fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
   process.exit(9)
 }
-const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
-const responseFile = responseMatches[responseMatches.length - 1]
+const reportMatches = [...prompt.matchAll(/"([^"]+report\\.md)"/g)].map((match) => match[1])
+const reportFile = reportMatches[reportMatches.length - 1]
 const status = process.env.FAKE_DEVIN_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
-if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+if (reportFile && process.env.FAKE_DEVIN_NO_REPORT !== '1') {
+  if (process.env.FAKE_DEVIN_EMPTY_REPORT === '1') {
+    fs.writeFileSync(reportFile, '---\\nstatus: ' + status + '\\n---\\n   \\n')
+  } else {
+    fs.writeFileSync(reportFile, '---\\nstatus: ' + status + '\\n---\\n# Summary\\nok\\n')
+  }
 }
 const exportIndex = args.indexOf('--export')
 if (exportIndex !== -1 && process.env.FAKE_DEVIN_NO_SESSION !== '1') {
@@ -361,11 +364,11 @@ if (process.env.FAKE_CURSOR_EXIT_WITHOUT_RESPONSE === '1') {
   process.exit(9)
 }
 const prompt = args[args.length - 1] || ''
-const responseMatches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
-const responseFile = responseMatches[responseMatches.length - 1]
+const reportMatches = [...prompt.matchAll(/"([^"]+report\\.md)"/g)].map((match) => match[1])
+const reportFile = reportMatches[reportMatches.length - 1]
 const status = process.env.FAKE_CURSOR_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
-if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status, responder_session_id: 'fake', sections: ['# Summary\\nok']}))
+if (reportFile) {
+  fs.writeFileSync(reportFile, '---\\nstatus: ' + status + '\\n---\\n# Summary\\nok\\n')
 }
 console.log(JSON.stringify({type: 'result', subtype: 'success', usage: {inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0}}))
 `
@@ -564,7 +567,7 @@ const runCursorTaskType = (
   runWrapper('delegate-cursor.sh', taskTypeArgs(fixture, 'cursor-glm-5.2-high', taskType), env)
 
 const claudeMinimalAllowedTools = (): string =>
-  `Bash(bash ${path.join(repoRoot, 'shared', 'read-request.sh')}:*),Bash(bash ${path.join(repoRoot, 'shared', 'build-response.sh')}:*),Read`
+  `Bash(bash ${path.join(repoRoot, 'shared', 'read-request.sh')}:*),Read`
 
 // claude は `-p <prompt>`、cursor は `-p` が単独フラグでプロンプトが最終引数
 const promptFromLog = (log: FakeCliLog): string => {
@@ -1166,14 +1169,20 @@ describe('read-only tool config and prompt constraints', () => {
     expect(log.args).not.toContain('--disallowedTools')
   })
 
-  it('instructs an allowlist-compatible heredoc form for the claude response command', () => {
+  it('instructs a structured final answer and passes the report schema to claude', () => {
     const fixture = makeFixture('claude')
     const result = runClaudeTaskType(fixture, 'htmldoc')
-    const prompt = promptFromLog(readLog(fixture.logFile))
+    const log = readLog(fixture.logFile)
+    const prompt = promptFromLog(log)
+    const schemaIndex = log.args.indexOf('--json-schema')
 
     expect(result.status).toBe(0)
-    expect(prompt).toContain(`bash ${path.join(repoRoot, 'shared', 'build-response.sh')}`)
-    expect(prompt).toContain("<<'REPORT_EOF'")
+    expect(prompt).toContain('構造化出力 {status, report_markdown}')
+    expect(prompt).not.toContain('build-response.sh <status>')
+    expect(schemaIndex).toBeGreaterThan(-1)
+    expect(JSON.parse(log.args[schemaIndex + 1])).toMatchObject({
+      required: ['status', 'report_markdown'],
+    })
   })
 
   it('always injects web/MCP exploration and MCP read-only constraints into the claude explore prompt', () => {
@@ -1689,13 +1698,10 @@ describe('wrapper effort suffix', () => {
     const observe = readObserve(fixture.observeFile)
     const modelIndex = log.args.indexOf('--model')
 
+    const effortIndex = log.args.indexOf('--effort')
     expect(result.status).toBe(0)
-    expect(log.args.slice(modelIndex, modelIndex + 4)).toEqual([
-      '--model',
-      'sonnet',
-      '--effort',
-      'high',
-    ])
+    expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', 'sonnet'])
+    expect(log.args.slice(effortIndex, effortIndex + 2)).toEqual(['--effort', 'high'])
     expect(observe.run_effort).toEqual({
       effective: { source: 'not_exposed', value: null },
       requested: 'high',
@@ -1824,5 +1830,170 @@ describe('wrapper effort suffix', () => {
       requested: 'high',
     })
     expect(observe.event_kinds).toContain('effort_mismatch')
+  })
+})
+
+// Step 4: wrapper 側 report 回収（構造化最終応答 / report.md）の分岐と fail-closed
+const protocolResponse = (
+  filePath: string
+): { responder_session_id: string; sections: string[]; status: string } => {
+  const value = readUnknownJson(filePath)
+  if (
+    !isRecord(value) ||
+    typeof value.status !== 'string' ||
+    typeof value.responder_session_id !== 'string' ||
+    !Array.isArray(value.sections)
+  ) {
+    throw new Error('invalid protocol response')
+  }
+  return {
+    responder_session_id: value.responder_session_id,
+    sections: value.sections.map(String),
+    status: value.status,
+  }
+}
+
+const structuredParseFrom = (observeFile: string): boolean | null => {
+  const value = readUnknownJson(observeFile)
+  if (!isRecord(value) || !isRecord(value.timing)) {
+    return null
+  }
+  const parse = value.timing.structured_output_parse
+  if (typeof parse === 'boolean') {
+    return parse
+  }
+  return null
+}
+
+describe('wrapper report collection', () => {
+  it('builds the response from the claude structured final answer', () => {
+    const fixture = makeFixture('claude')
+    const result = runWrapper(
+      'delegate-claude.sh',
+      taskTypeArgs(fixture, 'haiku', 'chore'),
+      fixture.env
+    )
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(0)
+    expect(response.status).toBe('completed')
+    expect(response.responder_session_id).toMatch(/^claude:haiku:/)
+    expect(response.sections.join('\n')).toContain('# Summary')
+    expect(structuredParseFrom(fixture.observeFile)).toBe(true)
+  })
+
+  it('fails closed when the claude structured output is missing', () => {
+    const fixture = makeFixture('claude')
+    const result = runWrapper('delegate-claude.sh', taskTypeArgs(fixture, 'haiku', 'chore'), {
+      ...fixture.env,
+      FAKE_CLAUDE_NO_STRUCTURED: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(1)
+    expect(response.status).toBe('failed')
+    expect(structuredParseFrom(fixture.observeFile)).toBe(false)
+  })
+
+  it('builds the response from the codex output-schema last message', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper(
+      'delegate-codex.sh',
+      taskTypeArgs(fixture, 'gpt-5.5', 'chore'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--output-schema')
+    expect(response.status).toBe('completed')
+    expect(response.responder_session_id).toMatch(/^codex:gpt-5\.5:/)
+    expect(structuredParseFrom(fixture.observeFile)).toBe(true)
+  })
+
+  it('fails closed when the codex last message is missing', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper('delegate-codex.sh', taskTypeArgs(fixture, 'gpt-5.5', 'chore'), {
+      ...fixture.env,
+      FAKE_CODEX_NO_LAST_MSG: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(1)
+    expect(response.status).toBe('failed')
+    expect(structuredParseFrom(fixture.observeFile)).toBe(false)
+  })
+
+  it('builds the response from the devin front-matter report file', () => {
+    const fixture = makeFixture('devin')
+    const result = runWrapper(
+      'delegate-devin.sh',
+      taskTypeArgs(fixture, 'swe-1.7', 'chore'),
+      fixture.env
+    )
+    const prompt = promptFromLog(readLog(fixture.logFile))
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('status: <completed | partial | failed | needs_input のいずれか>')
+    expect(response.status).toBe('completed')
+    expect(response.responder_session_id).toMatch(/^devin:swe-1\.7:/)
+    expect(structuredParseFrom(fixture.observeFile)).toBeNull()
+  })
+
+  it('fails closed without leaving a partial response when the claude report body is blank', () => {
+    const fixture = makeFixture('claude')
+    const result = runWrapper('delegate-claude.sh', taskTypeArgs(fixture, 'haiku', 'chore'), {
+      ...fixture.env,
+      FAKE_CLAUDE_EMPTY_REPORT: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(1)
+    expect(response.status).toBe('failed')
+    expect(response.sections.join('\n')).toContain('did not write a response')
+    expect(structuredParseFrom(fixture.observeFile)).toBe(false)
+  })
+
+  it('fails closed without leaving a partial response when the devin report body is blank', () => {
+    const fixture = makeFixture('devin')
+    const result = runWrapper('delegate-devin.sh', taskTypeArgs(fixture, 'swe-1.7', 'chore'), {
+      ...fixture.env,
+      FAKE_DEVIN_EMPTY_REPORT: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(1)
+    expect(response.status).toBe('failed')
+    expect(response.sections.join('\n')).toContain('did not write a response')
+  })
+
+  it('fails closed when the devin report file is missing', () => {
+    const fixture = makeFixture('devin')
+    const result = runWrapper('delegate-devin.sh', taskTypeArgs(fixture, 'swe-1.7', 'chore'), {
+      ...fixture.env,
+      FAKE_DEVIN_NO_REPORT: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(1)
+    expect(response.status).toBe('failed')
+    expect(structuredParseFrom(fixture.observeFile)).toBeNull()
+  })
+
+  it('builds the response from the cursor front-matter report file', () => {
+    const fixture = makeFixture('cursor')
+    const result = runWrapper(
+      'delegate-cursor.sh',
+      taskTypeArgs(fixture, 'composer-2.5', 'chore'),
+      fixture.env
+    )
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(0)
+    expect(response.status).toBe('completed')
+    expect(response.responder_session_id).toMatch(/^cursor:composer-2\.5:/)
+    expect(structuredParseFrom(fixture.observeFile)).toBeNull()
   })
 })

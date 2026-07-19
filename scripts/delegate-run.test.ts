@@ -37,20 +37,15 @@ const parseRunJson = (stdout: string): RunJson => {
 }
 
 const fakeClaudeScript = `#!/usr/bin/env node
-import fs from 'node:fs'
 const args = process.argv.slice(2)
-const prompt = args[args.indexOf('-p') + 1] || ''
-const matches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
-const responseFile = matches[matches.length - 1]
 if (process.env.FAKE_CLAUDE_EXIT_WITHOUT_RESPONSE === '1') process.exit(9)
-if (responseFile && process.env.FAKE_CLAUDE_CORRUPT_RESPONSE === '1') {
-  fs.writeFileSync(responseFile, 'not json')
-} else if (responseFile) {
-  let summary = '# Summary\\nok from fake worker'
-  if (process.env.FAKE_CLAUDE_MULTIBYTE === '1') summary = '# Summary\\nあいうえおかきくけこ'
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', index: '- Summary', sections: [summary]}))
+if (process.env.FAKE_CLAUDE_CORRUPT_RESPONSE === '1') {
+  console.log(JSON.stringify({type: 'result', structured_output: {status: 'bogus', report_markdown: 'x'}, usage: {input_tokens: 1, output_tokens: 1}}))
+  process.exit(0)
 }
-console.log(JSON.stringify({type: 'result', num_turns: 1, usage: {input_tokens: 1, output_tokens: 1}}))
+let summary = '# Summary\\nok from fake worker'
+if (process.env.FAKE_CLAUDE_MULTIBYTE === '1') summary = '# Summary\\nあいうえおかきくけこ'
+console.log(JSON.stringify({type: 'result', num_turns: 1, structured_output: {status: 'completed', report_markdown: summary}, usage: {input_tokens: 1, output_tokens: 1}}))
 `
 
 const fakeGrokScript = `#!/usr/bin/env node
@@ -61,10 +56,10 @@ if (args[0] === 'models') {
   process.exit(0)
 }
 const prompt = args[args.indexOf('-p') + 1] || ''
-const matches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
-const responseFile = matches[matches.length - 1]
-if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', index: '- Summary', sections: ['# Summary\\nx research ok']}))
+const matches = [...prompt.matchAll(/"([^"]+report\\.md)"/g)].map((match) => match[1])
+const reportFile = matches[matches.length - 1]
+if (reportFile) {
+  fs.writeFileSync(reportFile, '---\\nstatus: completed\\n---\\n# Summary\\nx research ok\\n')
 }
 console.log('plain output')
 `
@@ -72,11 +67,9 @@ console.log('plain output')
 const fakeCodexScript = `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
-const prompt = args[args.length - 1] || ''
-const matches = [...prompt.matchAll(/"([^"]+_res\\.json)"/g)].map((match) => match[1])
-const responseFile = matches[matches.length - 1]
-if (responseFile) {
-  fs.writeFileSync(responseFile, JSON.stringify({protocol_version: 1, type: 'response', status: 'completed', responder_session_id: 'fake', index: '- Summary', sections: ['# Summary\\nimagegen ok']}))
+const lastMsgIndex = args.indexOf('--output-last-message')
+if (lastMsgIndex !== -1) {
+  fs.writeFileSync(args[lastMsgIndex + 1], JSON.stringify({status: 'completed', report_markdown: '# Summary\\nimagegen ok'}))
 }
 console.log(JSON.stringify({type: 'turn.completed', usage: {input_tokens: 1, output_tokens: 1}}))
 `
@@ -272,7 +265,7 @@ describe('run.sh one-shot', () => {
     expectRunPaths(json)
   })
 
-  it('returns the failure schema when the worker response is corrupt JSON', () => {
+  it('returns the failure schema when the structured output has an invalid status', () => {
     const harness = makeHarness()
     const outcome = runOneShot(harness, chorArgs(), { FAKE_CLAUDE_CORRUPT_RESPONSE: '1' })
     expect(outcome.status).toBeGreaterThan(0)

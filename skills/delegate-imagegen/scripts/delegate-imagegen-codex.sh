@@ -84,8 +84,12 @@ REAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 [ -f "$REAL_CODEX_HOME/auth.json" ] && cp "$REAL_CODEX_HOME/auth.json" "$CODEX_HOME_ISOLATED/auth.json"
 
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
-REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_report_XXXXX" --suffix=.md)"
 RESPONDER_SESSION_ID="codex:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
+
+# 報告方式は起動前に確定する（codex は構造化最終応答が既定。§docs/feature/delegate-latency-reduction.md）
+REPORT_MODE="$(delegate_observe_report_mode_for_backend codex)"
+REPORT_SCHEMA_FILE="$WORK_DIR/report-schema.json"
+delegate_observe_report_schema_json >"$REPORT_SCHEMA_FILE"
 
 PROMPT=$(cat <<PROMPT_EOF
 あなたは delegate-skills の画像生成ワーカー（task_type=imagegen）です。protocol v1 に従ってください。
@@ -94,12 +98,10 @@ PROMPT=$(cat <<PROMPT_EOF
 2. リクエストの指示に従い、利用可能な画像生成・画像編集 capability を使って成果物を生成する。AGENTS.md / CLAUDE.md の規約に従うこと。
 3. 出力先がリクエストで明示されていない場合は、リポジトリ root からの相対パス \`${OUTPUT_DIR}/\` 配下に保存する。
 4. 生成できない場合も、原因、試したパラメータ、必要な追加入力を report に残して failed または needs_input で response を生成する。
-5. 作業報告を Markdown("${REPORT_FILE}") に書き、レスポンスを生成する:
-   \`npx md2idx "${REPORT_FILE}" | jq --arg s "<status>" --arg sid "${RESPONDER_SESSION_ID}" '{protocol_version: 1, type: "response", status: \$s, responder_session_id: \$sid} + .' > "${RESPONSE_FILE}"\`
-   status は completed | partial | failed | needs_input のいずれか。report.md の見出しは
-   Summary / Generated files / Parameters / Verification / Blockers。
+5. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し
+   Summary / Generated files / Parameters / Verification / Blockers の Markdown。
    report は簡潔に書く: Summary は 5 行以内。試行錯誤ログや生ログは貼らず、Parameters は最終採用値と重要な生成条件のみ。該当が無い見出しは省く。
-6. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。リポジトリ root に report.md を作らない。
+   report をファイルに書いたり md2idx / jq でレスポンスを生成したりしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。
 PROMPT_EOF
 )
 
@@ -117,6 +119,7 @@ CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   --ignore-user-config \
   --sandbox "${CODEX_DELEGATE_SANDBOX:-danger-full-access}" \
   --output-last-message "$LAST_MSG" \
+  --output-schema "$REPORT_SCHEMA_FILE" \
   -C "$REPO_ROOT" \
   "$PROMPT" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
@@ -126,8 +129,20 @@ if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "
 else
   child_status=$?
 fi
+
+# 構造化最終応答の回収 → wrapper 側で response を組み立てる。parse 失敗は failed response
+# へ倒す（fail-closed。後段の response 欠落分岐が処理する）
+structured_parse=""
+if [ "$REPORT_MODE" = structured ] && [ ! -s "$RESPONSE_FILE" ]; then
+  structured_parse=false
+  if structured_json="$(delegate_observe_structured_from_last_message "$LAST_MSG")" \
+    && delegate_observe_build_response_from_structured "$structured_json" "$RESPONDER_SESSION_ID" "$RESPONSE_FILE" "$WORK_DIR"; then
+    structured_parse=true
+    DELEGATE_OBSERVE_REPORT_READY_MS="${DELEGATE_OBSERVE_REPORT_READY_MS:-$DELEGATE_OBSERVE_WAIT_TOTAL_MS}"
+  fi
+fi
 delegate_observe_record_timing "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$stdout_capture" \
-  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" || true
+  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" "" "$structured_parse" || true
 
 if [ ! -s "$RESPONSE_FILE" ]; then
   response_status="$child_status"

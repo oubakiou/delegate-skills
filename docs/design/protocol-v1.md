@@ -114,6 +114,15 @@ npx md2idx report.md | jq --arg s "$status" --arg sid "$RESPONDER_SESSION_ID" \
 jq -r '.sections | join("\n\n")' "$response_file" >"${response_file%.json}.md"
 ```
 
+### 誰が response を組み立てるか（worker / wrapper の責務）
+
+ファイル形式は上記のまま、組み立ての責務は wrapper 側にある。worker は LLM 往復を増やす md2idx / jq の実行をせず、**報告本体だけ**を返す。報告方式は wrapper が子プロセス起動前に backend で確定する:
+
+- **構造化最終応答方式**（schema を CLI で強制できる backend が既定: Claude `--json-schema`、Codex `--output-schema`）: worker は最終 assistant message として `{status, report_markdown}` の構造化出力だけを返す。wrapper が回収（Claude は stream-json result event の `structured_output`、Codex は `--output-last-message` ファイル）して md2idx 変換・envelope 付与・検証を行う。報告用のファイル書込許可は不要
+- **report.md 方式**（schema 強制手段が無い backend が既定: Cursor / Devin / Grok）: worker は wrapper 指定のパスに front-matter `status: <値>` 付き Markdown を 1 回で書き、最終応答は status 一語のみ。wrapper が front-matter を剥がして md2idx 変換・envelope 付与を行う
+
+いずれの方式でも、回収失敗（構造化出力の欠落・`status` の語彙外・report ファイル欠落や front-matter 不正）は wrapper が failed response を生成する（fail-closed。方式の実行後切替や自動リトライはしない）。構造化最終応答方式の parse 成否は observe JSON `timing.structured_output_parse` に記録される。
+
 段階読み取り（main 側）:
 
 ```bash

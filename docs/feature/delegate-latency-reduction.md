@@ -264,7 +264,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 - **長文 report の truncate 発生条件**: 実測は未実施（コスト対効果から見送り）。上限は各モデルの最大出力トークンに一致する。初期実装は task 種別上書きなし（全種別 backend 既定に従う）で開始し、Step 4 の truncate 検知（failed response）・parse 失敗率テレメトリで必要が確認された種別にのみ report.md 上書きを導入する（§3.1 と同規則）
 - **注意事項**: Codex は ambient config の非互換 `model_reasoning_effort` で turn.failed になり得る（wrapper は隔離 CODEX_HOME を使うため通常影響しないが、follow-up の継承 config では注意）
 
-### Step 4: (未着手) wrapper 側 report 回収
+### Step 4: (実装済み) wrapper 側 report 回収
 
 - generic 4 backend wrapper と専用 2 wrapper（`delegate-imagegen-codex.sh` / `delegate-x-research-grok.sh`。固有の report 見出し・出力検証を含む）に、起動前の報告方式選択（§3.1）と、構造化出力の回収 → `build-response.sh` 組み立てを実装
 - 実行後の parse 失敗・truncate は failed response（fail-closed）。parse 成否を `timing` テレメトリへ記録

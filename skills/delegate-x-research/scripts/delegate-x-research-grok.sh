@@ -78,7 +78,10 @@ fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
-REPORT_FILE="$(mktemp --tmpdir="$WORK_DIR" "$(basename "$RESPONSE_FILE" .json)_report_XXXXX" --suffix=.md)"
+# 報告方式は起動前に確定する（grok は schema 強制の実測が未了のため report.md が既定。
+# §docs/feature/delegate-latency-reduction.md）
+REPORT_MODE="$(delegate_observe_report_mode_for_backend grok)"
+REPORT_FILE="$WORK_DIR/report.md"
 RESPONDER_SESSION_ID="grok:${MODEL}:$(basename "$RESPONSE_FILE" .json)"
 
 PROMPT=$(cat <<PROMPT_EOF
@@ -88,12 +91,14 @@ PROMPT=$(cat <<PROMPT_EOF
 2. リクエストの Scope に従い、利用可能な X / x.com 調査能力と web search を使って調査する。AGENTS.md / CLAUDE.md の規約に従うこと。
 3. 投稿URL、投稿者、投稿日時、確認時刻、検索語を Sources / Method に残す。事実、推測、未確認情報を混ぜない。
 4. 非公開・削除済み・ログイン不足・検索結果の偏り・時点依存がある場合は、Limitations または Blockers に書く。
-5. 作業報告を Markdown("${REPORT_FILE}") に書き、レスポンスを生成する:
-   \`npx md2idx "${REPORT_FILE}" | jq --arg s "<status>" --arg sid "${RESPONDER_SESSION_ID}" '{protocol_version: 1, type: "response", status: \$s, responder_session_id: \$sid} + .' > "${RESPONSE_FILE}"\`
-   status は completed | partial | failed | needs_input のいずれか。report.md の見出しは
-   Summary / Findings / Sources / Method / Limitations / Blockers。
+5. 作業報告を front-matter 付き Markdown で "${REPORT_FILE}" に 1 回の書込で作る。ファイルの 1 行目から
+   ---
+   status: <completed | partial | failed | needs_input のいずれか>
+   ---
+   の front-matter を置き、その下に見出し Summary / Findings / Sources / Method / Limitations / Blockers の本文を書く。
    report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞り、探索ログや検索結果の生貼りはしない。該当が無い見出しは省く。
-6. 最終応答は status の一語のみ（本文は ${RESPONSE_FILE} に書く）。リポジトリ root に report.md を作らない。
+   md2idx / jq によるレスポンス生成はしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。
+6. 最終応答は status の一語のみ。
 PROMPT_EOF
 )
 
@@ -126,6 +131,15 @@ if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "
   child_status=0
 else
   child_status=$?
+fi
+
+# report.md 方式: worker が書いた front-matter 付き report から wrapper が response を
+# 組み立てる。欠落・不正は failed response へ倒す（後段の response 欠落分岐が処理する）
+if [ "$REPORT_MODE" = report_md ] && [ ! -s "$RESPONSE_FILE" ]; then
+  delegate_observe_build_response_from_report_md "$REPORT_FILE" "$RESPONDER_SESSION_ID" "$RESPONSE_FILE" "$WORK_DIR" || true
+  if [ -s "$RESPONSE_FILE" ]; then
+    DELEGATE_OBSERVE_REPORT_READY_MS="${DELEGATE_OBSERVE_REPORT_READY_MS:-$DELEGATE_OBSERVE_WAIT_TOTAL_MS}"
+  fi
 fi
 delegate_observe_record_timing "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$stdout_capture" \
   "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" || true
