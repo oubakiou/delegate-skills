@@ -8,12 +8,12 @@ delegate 1 回あたり約 3 分かかっている委譲オーバーヘッド（
 
 ## 1. 対応スコープ
 
-| 要件                                                                                    | 開始時の状態                                                                                                  | 完了条件                                                                                                                                                                                                                                                                            | 最終状態 | 状態                                                                   |
-| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------- |
-| [MUST] worker のプロトコル儀式往復を実作業 + 1 往復（最終応答が report を兼ねる）へ削減 | trivial タスクで 7 往復中 6 往復が儀式（read-request 実行、response 変換・検証等）。実測 37 秒（§2 計測記録） | generic 4 backend wrapper と専用 2 wrapper（imagegen / x-research）のすべてで、worker の最終 assistant message（構造化出力 `{status, report_markdown}`）を wrapper が response へ組み立てる。報告方式は起動前に選択し（§3.1）、実行後の parse 失敗は failed response（fail-closed） | -        | 未着手                                                                 |
-| [MUST] 親側のスクリプト呼び出しを 1 Bash 往復に集約                                     | prepare → dispatch → read-response の 3 呼び出し（親 LLM の 3 ターン以上）                                    | 通常 run は `run.sh`（専用 2 skill は同一出力契約の `run-*.sh`）1 回で完結する。成功・失敗とも単一 JSON 契約の stdout を返し、失敗時にも親の追加往復を要求しない。既存 3 スクリプトの個別利用も引き続き可能                                                                         | -        | 未着手                                                                 |
-| [SHOULD] フェーズ別 wall time と worker 往復回数のテレメトリ                            | `DELEGATE_METRICS_FILE` はトークン proxy のみで所要時間の記録なし                                             | backend / model 別に p50/p95 を集計できる契約（monotonic duration・欠損規則・最低サンプル数・backend 別抽出仕様）で、フェーズ wall time・`model_turns`・`tool_calls`・`time_to_first_useful_event`・構造化出力 parse 失敗率が読める                                                 | -        | 着手中（計測契約・抽出・集計は実装済み。実運用ベースラインの蓄積が残） |
-| [SHOULD] 待ち時間隠蔽（background dispatch）の利用ガイドを整備                          | SKILL.md は非対話親向けに「フォアグラウンド必須」とだけ記載                                                   | 対話親では background 実行 + observe 監視で待ちを隠蔽できることを SKILL.md / README に明記（体感改善であり、wall time 削減の集計には含めない）                                                                                                                                      | -        | 未着手                                                                 |
+| 要件                                                                                    | 開始時の状態                                                                                                  | 完了条件                                                                                                                                                                                                                                                                            | 最終状態                                                                                                                                           | 状態                                                                 |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | --- |
+| [MUST] worker のプロトコル儀式往復を実作業 + 1 往復（最終応答が report を兼ねる）へ削減 | trivial タスクで 7 往復中 6 往復が儀式（read-request 実行、response 変換・検証等）。実測 37 秒（§2 計測記録） | generic 4 backend wrapper と専用 2 wrapper（imagegen / x-research）のすべてで、worker の最終 assistant message（構造化出力 `{status, report_markdown}`）を wrapper が response へ組み立てる。報告方式は起動前に選択し（§3.1）、実行後の parse 失敗は failed response（fail-closed） | trivial 実測（gpt-5.5、2026-07-19）: worker 往復 = 実作業 1 + 構造化最終応答 1。wall 37s → 14〜16s、tool 往復 6 → 1、worker input 98k → 31k tokens | 完了（Step 4 + 5）                                                   |
+| [MUST] 親側のスクリプト呼び出しを 1 Bash 往復に集約                                     | prepare → dispatch → read-response の 3 呼び出し（親 LLM の 3 ターン以上）                                    | 通常 run は `run.sh`（専用 2 skill は同一出力契約の `run-*.sh`）1 回で完結する。成功・失敗とも単一 JSON 契約の stdout を返し、失敗時にも親の追加往復を要求しない。既存 3 スクリプトの個別利用も引き続き可能                                                                         | run.sh / run-imagegen.sh / run-x-research.sh が単一 JSON 契約で完結（成功・失敗・引数エラー・UTF-8 切り詰めを fake CLI テストで固定）              | 完了（Step 2）                                                       |     |
+| [SHOULD] フェーズ別 wall time と worker 往復回数のテレメトリ                            | `DELEGATE_METRICS_FILE` はトークン proxy のみで所要時間の記録なし                                             | backend / model 別に p50/p95 を集計できる契約（monotonic duration・欠損規則・最低サンプル数・backend 別抽出仕様）で、フェーズ wall time・`model_turns`・`tool_calls`・`time_to_first_useful_event`・構造化出力 parse 失敗率が読める                                                 | timing / dispatch record / p50・p95 集計を実装済み。structured_output_parse も記録                                                                 | 実装完了（p95 を語る 20 run 以上の実運用ベースライン蓄積のみ継続中） |     |
+| [SHOULD] 待ち時間隠蔽（background dispatch）の利用ガイドを整備                          | SKILL.md は非対話親向けに「フォアグラウンド必須」とだけ記載                                                   | 対話親では background 実行 + observe 監視で待ちを隠蔽できることを SKILL.md / README に明記（体感改善であり、wall time 削減の集計には含めない）                                                                                                                                      | 全 7 SKILL.md に「待ち時間の隠蔽（対話親向け）」節、README / README_ja に明記                                                                      | 完了（Step 2）                                                       |     |
 
 スコープ外:
 
@@ -283,11 +283,24 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 成果物: worker の初回往復（read-request）削減。Step 4 と合わせて trivial タスクの worker wall 37 秒 → 10 秒前後（§2 の往復単価から見込み）
 
-### Step 6: (未着手) 実測記録と archive 化
+### Step 6: (実測記録済み。archive リネームはユーザー確認待ち) 実測記録と archive 化
 
 - Step 1 のベースラインと比較した削減実測（wall time の p50/p95 と、observe JSON `usage` による worker トークン消費の before/after（Step 1 と同一の比較条件）。§5-f）を本ドキュメントの最終状態欄へ記録
 - 公開ドキュメントは各 Step で更新済みのため、ここでは整合の最終確認のみ行う
 - 本ドキュメントを `docs/archive/delegate-latency-reduction.archive.md` へリネーム（ユーザー確認後）
+
+実施結果（2026-07-19。§2 と同一の trivial リクエスト・同一 backend/model（Codex / gpt-5.5）・`measurement: "measured"` の単発比較。p50/p95 は 20 run 蓄積後にテレメトリで評価する）:
+
+| 指標                    | 計画前（§2, 07-18） | Step 1 実装後 | Step 4 実装後 | Step 5 実装後                |
+| ----------------------- | ------------------- | ------------- | ------------- | ---------------------------- |
+| worker wall（total_ms） | 37 秒               | 30.2 秒       | 14.2 秒       | 16.2 秒                      |
+| worker tool 往復        | 6                   | 6             | 2             | 1（実作業のみ）              |
+| worker LLM 往復         | 7                   | 7             | 3             | 2（実作業 + 構造化最終応答） |
+| worker input tokens     | 98k                 | 94k           | 47k           | 31k                          |
+| 親側 Bash 往復          | 3                   | 3             | 1（run.sh）   | 1（run.sh）                  |
+| structured_output_parse | -                   | -（null）     | true          | true                         |
+
+worker 側の儀式 6 往復は Step 4（報告の wrapper 回収）と Step 5（request 埋め込み）で解消され、trivial 実測は目標帯（worker 10 秒前後 + 親 2 ターン）に到達した。単発値のため wall の p50/p95 と失敗率は Step 1 テレメトリの実運用蓄積（20 run 以上）で継続監視する。
 
 成果物: 削減効果の実測記録と計画のクローズ
 
