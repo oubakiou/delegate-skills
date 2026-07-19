@@ -28,6 +28,9 @@ export default {
       // import の並びは fmt (oxfmt sortImports) が所有する。lint の sort-imports は
       // member 構文順 (none→all→multiple→single) という別アルゴリズムで衝突するため off。
       'sort-imports': 'off',
+      // protocol v1 の JSON (request/response envelope・metrics record) は bash(jq)
+      // 実装との byte 互換のため挿入順が契約。自動整列は契約を壊すため off。
+      'sort-keys': 'off',
       'unicorn/no-null': 'off',
     },
   },

@@ -1,6 +1,11 @@
+import { readFileSync } from 'node:fs'
 import { md2idx } from 'md2idx'
+import { runBuildRequest } from './build-request.ts'
+import { runBuildResponse } from './build-response.ts'
 import { runCheckDelegateChain } from './check-delegate-chain.ts'
 import type { CliResult } from './cli-result.ts'
+import { runReadRequest } from './read-request.ts'
+import { runReadResponse } from './read-response.ts'
 import { runResolveModel } from './resolve-model.ts'
 
 // delegate-cli のバージョン。gh skill publish のリリースタグと同期させる運用は
@@ -26,7 +31,25 @@ const md2idxSmokeResult = (): CliResult => {
   }
 }
 
-export const runCli = (argv: readonly string[]): CliResult => {
+// stdin から本文を受けるサブコマンド。それ以外では stdin を読まない
+// (対話起動した delegate-cli --version が入力待ちで止まらないように)
+const STDIN_SUBCOMMANDS = new Set(['build-request', 'build-response'])
+
+type SubcommandHandler = (rest: readonly string[], stdin: Buffer) => CliResult
+
+const HANDLERS: Readonly<Partial<Record<string, SubcommandHandler>>> = {
+  '--version': () => versionResult(),
+  version: () => versionResult(),
+  'md2idx-smoke': () => md2idxSmokeResult(),
+  'resolve-model': (rest) => runResolveModel(rest, process.env),
+  'check-delegate-chain': (rest) => runCheckDelegateChain(rest),
+  'build-request': (rest, stdin) => runBuildRequest(rest, process.env, stdin),
+  'read-request': (rest) => runReadRequest(rest, process.env),
+  'build-response': (rest, stdin) => runBuildResponse(rest, process.env, stdin),
+  'read-response': (rest) => runReadResponse(rest, process.env),
+}
+
+export const runCli = (argv: readonly string[], stdin: Buffer = Buffer.alloc(0)): CliResult => {
   if (argv.length === 0) {
     return {
       exitCode: 2,
@@ -35,32 +58,24 @@ export const runCli = (argv: readonly string[]): CliResult => {
     }
   }
   const [subcommand, ...rest] = argv
-  switch (subcommand) {
-    case '--version':
-    case 'version': {
-      return versionResult()
-    }
-    case 'md2idx-smoke': {
-      return md2idxSmokeResult()
-    }
-    case 'resolve-model': {
-      return runResolveModel(rest, process.env)
-    }
-    case 'check-delegate-chain': {
-      return runCheckDelegateChain(rest)
-    }
-    default: {
-      return {
-        exitCode: 2,
-        stderr: `delegate-cli: unknown subcommand: ${subcommand}\n`,
-        stdout: '',
-      }
+  const handler = HANDLERS[subcommand]
+  if (typeof handler !== 'function') {
+    return {
+      exitCode: 2,
+      stderr: `delegate-cli: unknown subcommand: ${subcommand}\n`,
+      stdout: '',
     }
   }
+  return handler(rest, stdin)
 }
 
 if (!import.meta.vitest) {
-  const result = runCli(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  let stdin = Buffer.alloc(0)
+  if (typeof argv[0] === 'string' && STDIN_SUBCOMMANDS.has(argv[0])) {
+    stdin = readFileSync(0)
+  }
+  const result = runCli(argv, stdin)
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
   process.exitCode = result.exitCode
