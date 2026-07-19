@@ -154,6 +154,7 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 | `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                         | Request-size gate for embedding the request into the worker prompt |
 | `DELEGATE_METRICS_FILE`                  | unset                                  | Optional JSONL proxy-metric / timing telemetry output path         |
 | `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                           | Worker observe JSON heartbeat interval                             |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` seconds                           | Bounded wait for the observe JSON symlink lock (error on timeout)  |
 | `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection)       | Bash tool timeout caps injected into Claude backend children       |
 | `DELEGATE_CODEX_HOME_PRUNE`              | `1` (enabled, `0` = keep)              | Prune codex-home caches and the auth copy after successful runs    |
 | `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                         | Kill a child after this many seconds without stream byte growth    |

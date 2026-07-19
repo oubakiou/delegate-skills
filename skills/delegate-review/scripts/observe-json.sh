@@ -41,35 +41,152 @@ delegate_observe_lock_file() {
   printf '%s/%s.lock' "$run_dir" "$(basename "${observe_file%.json}")"
 }
 
+# lock は symlink lock のみを使う。flock は Node 標準に存在せず、bash=flock / TS=symlink
+# の混在は相互排他にならないため、TS 移行期を通じて両実装が同じプロトコル
+# (Node 側は fs.symlinkSync) を共有する。`ln -s` の atomic な作成が取得そのもので、
+# symlink target に保持者 "<pid> <token>" を埋め込む。取得と owner 公開が単一操作の
+# ため「lock 作成後・owner 記録前」の無所有の窓が存在せず、mtime lease も不要。
+# pid は BASHPID 優先。$$ だと background subshell (heartbeat ループ等) が親 pid を
+# 記録してしまい、subshell だけが死んだ残存 lock を生存判定で回収できない。
+# BASHPID の無い bash 3.x では $$ に落ちる (回収が bounded wait 頼みになる縮退のみ)。
+# 注意: pid の取得を関数化してはならない。$(...) は subshell の BASHPID を返す。
+
+# 非負整数以外 (空・負・非整数) は既定値 30 へ落とす
+delegate_observe_lock_timeout_seconds() {
+  local value="${DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS:-30}"
+  case "$value" in
+    '' | *[!0-9]*) value=30 ;;
+  esac
+  printf '%s' "$value"
+}
+
+# 停止した保持者の lock 回収は reap mutex (専用 symlink) の中でのみ行う。
+# mutex 下では lock path の除去者が他に存在しない (dead owner は release できず、
+# 他の reaper は mutex で排他され、acquirer は path が埋まっている間 ln できない)
+# ため、再検証 → rm が race-free になる。mv で claim する方式は、stale 判定と
+# rename の間に取得し直された live lock を一時的に path から退避させてしまい、
+# その隙に第三者が取得して多重保持が起きるため使わない。
+# reap mutex の保持者が死んだ場合、mutex 自体の除去は同じ race を持つため行わない
+# (fail-closed: acquire の bounded wait でエラーになり、hint を stderr へ出す)。
+delegate_observe_lock_try_reap_stale() {
+  local lock_path="$1"
+  local reap_lock="${lock_path}.reap"
+  local sampled=""
+  sampled="$(readlink "$lock_path" 2>/dev/null || true)"
+  if [ -n "$sampled" ]; then
+    # kill -0 は同一ユーザーの delegate プロセス群を前提にした生存判定
+    local sampled_pid="${sampled%% *}"
+    if kill -0 "$sampled_pid" 2>/dev/null; then
+      return 1
+    fi
+  elif ! { [ -e "$lock_path" ] || [ -L "$lock_path" ]; }; then
+    return 1
+  fi
+  ln -s "${BASHPID:-$$} reap" "$reap_lock" 2>/dev/null || return 1
+  # mutex 下で再検証する。事前 sample は mutex 取得を試すかどうかの gate にすぎない
+  local current=""
+  current="$(readlink "$lock_path" 2>/dev/null || true)"
+  if [ -n "$current" ]; then
+    local current_pid="${current%% *}"
+    if ! kill -0 "$current_pid" 2>/dev/null; then
+      rm -f -- "$lock_path" 2>/dev/null || true
+    fi
+  elif [ -e "$lock_path" ] || [ -L "$lock_path" ]; then
+    # symlink でない残骸 (旧実装の flock ファイル等) は保持者を持たないので除去する
+    rm -f -- "$lock_path" 2>/dev/null || true
+  fi
+  rm -f -- "$reap_lock" 2>/dev/null || true
+  return 0
+}
+
+delegate_observe_lock_timeout_hint() {
+  local lock_path="$1"
+  local reap_lock="${lock_path}.reap"
+  local reap_owner=""
+  reap_owner="$(readlink "$reap_lock" 2>/dev/null || true)"
+  if [ -n "$reap_owner" ] && ! kill -0 "${reap_owner%% *}" 2>/dev/null; then
+    echo "hint: stale reap mutex left by dead pid ${reap_owner%% *}; verify and remove manually: $reap_lock" >&2
+  fi
+}
+
+delegate_observe_lock_acquire() {
+  local lock_path="$1"
+  local token="$2"
+  local timeout start
+  timeout="$(delegate_observe_lock_timeout_seconds)"
+  start="$SECONDS"
+  while true; do
+    if ln -s "${BASHPID:-$$} $token" "$lock_path" 2>/dev/null; then
+      return 0
+    fi
+    # reap の成否に関わらず必ず timeout 判定へ落とし、bounded wait を保証する
+    delegate_observe_lock_try_reap_stale "$lock_path" || true
+    if [ $((SECONDS - start)) -ge "$timeout" ]; then
+      echo "ERROR: observe lock acquisition timed out after ${timeout}s: $lock_path" >&2
+      delegate_observe_lock_timeout_hint "$lock_path"
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+
+# 自分の token を再検証してから消す。takeover された後の release が
+# 新しい保持者の lock を壊さないための必須条件。生存プロセスの lock は
+# 他者に除去されない (pid 生存判定 + legacy 残骸のみ回収) ため、
+# readlink と rm の間で自分の lock が消えることはない。
+delegate_observe_lock_release() {
+  local lock_path="$1"
+  local token="$2"
+  local owner=""
+  owner="$(readlink "$lock_path" 2>/dev/null || true)"
+  if [ "$owner" = "${BASHPID:-$$} $token" ]; then
+    rm -f -- "$lock_path"
+  fi
+}
+
+# `trap -p EXIT` の出力から <cmd> を取り出す。eval で本関数名を前置すると
+# 引数は (trap, --, <cmd>, EXIT) になるため 3 番目を返す
+delegate_observe_lock_prev_trap_cmd() {
+  printf '%s' "${3-}"
+}
+
 delegate_observe_with_lock() {
   local observe_file="$1"
   local run_dir="$2"
   shift 2
 
-  local lock_file
-  lock_file="$(delegate_observe_lock_file "$observe_file" "$run_dir")"
+  local lock_path token
+  lock_path="$(delegate_observe_lock_file "$observe_file" "$run_dir")"
+  token="${BASHPID:-$$}-${RANDOM}${RANDOM}"
 
-  if command -v flock >/dev/null 2>&1; then
-    exec {delegate_observe_lock_fd}>"$lock_file"
-    flock "$delegate_observe_lock_fd"
-    set +e
-    "$@"
-    local status=$?
-    set -e
-    flock -u "$delegate_observe_lock_fd"
-    exec {delegate_observe_lock_fd}>&-
-    return "$status"
-  fi
+  delegate_observe_lock_acquire "$lock_path" "$token" || return 1
 
-  local lock_dir="${lock_file}.dir"
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    sleep 0.05
-  done
+  # 保持中の異常終了 (exit / errexit) で lock を残さないよう EXIT trap で release する。
+  # 呼び出し元の既存 trap は退避して合成し、release 後に復元する
+  # `$(trap -p EXIT)` は「substitution が trap 単独」の場合のみ親 shell の trap を
+  # 報告する bash 仕様のため、eval と入れ子にせず必ず単独で捕捉する
+  local prev_trap_p="" prev_exit_cmd="" release_cmd=""
+  prev_trap_p="$(trap -p EXIT)"
+  prev_exit_cmd="$(eval "delegate_observe_lock_prev_trap_cmd $prev_trap_p")"
+  printf -v release_cmd 'delegate_observe_lock_release %q %q' "$lock_path" "$token"
+  trap "${release_cmd}${prev_exit_cmd:+; $prev_exit_cmd}" EXIT
+
+  # 呼び出し元の errexit 状態を保存し、set +e の呼び出し元を壊さない
+  local had_errexit=0
+  case "$-" in *e*) had_errexit=1 ;; esac
   set +e
   "$@"
   local status=$?
-  set -e
-  rmdir "$lock_dir"
+  if [ "$had_errexit" -eq 1 ]; then
+    set -e
+  fi
+
+  delegate_observe_lock_release "$lock_path" "$token"
+  if [ -n "$prev_exit_cmd" ]; then
+    trap "$prev_exit_cmd" EXIT
+  else
+    trap - EXIT
+  fi
   return "$status"
 }
 

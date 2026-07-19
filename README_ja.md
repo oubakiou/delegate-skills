@@ -154,6 +154,7 @@ observe JSON には `mcp_config: {source, servers}` を記録する。`servers` 
 | `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                           | request 本文を worker prompt へ埋め込むサイズ gate            |
 | `DELEGATE_METRICS_FILE`                  | 未設定                                   | proxy-metric / timing テレメトリの JSONL 出力先（任意）       |
 | `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                                  | observe JSON の heartbeat 更新間隔                            |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                                  | observe JSON symlink lock の bounded wait（超過時はエラー）   |
 | `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）            | Claude backend の子へ注入する Bash tool timeout 上限          |
 | `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に codex-home のキャッシュと auth コピーを削除      |
 | `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子を指定秒数後に kill           |

@@ -1834,3 +1834,277 @@ MD
     expect(existsSync(path.join(workDir, 'delegate_chore_20260701_120000_runaa'))).toBe(true)
   })
 })
+describe('observe lock', () => {
+  it('serializes concurrent event updates without corrupting observe JSON', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      for writer in 1 2 3 4; do
+        (
+          for i in 1 2 3 4 5; do
+            delegate_observe_event_json "$observe" "$run_dir" "{\\"kind\\":\\"evt_\${writer}_\${i}\\"}"
+          done
+        ) &
+      done
+      wait
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    const written = observe.events.filter((event) => event.kind.startsWith('evt_'))
+    expect(written).toHaveLength(20)
+  })
+
+  it('recovers after the lock holder is killed', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      bash -c "
+        source shared/observe-json.sh
+        delegate_observe_lock_acquire '$lock_path' holder-token
+        sleep 60
+      " >/dev/null 2>&1 &
+      holder=$!
+      while [ ! -L "$lock_path" ]; do sleep 0.05; done
+      kill -9 "$holder"
+      wait "$holder" 2>/dev/null || true
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"recovered"}'
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('recovered')
+  })
+
+  it('takes over a leftover lock symlink whose owner pid is dead', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      true & dead_pid=$!
+      wait "$dead_pid"
+      ln -s "$dead_pid stale-token" "$lock_path"
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"takeover"}'
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('takeover')
+  })
+
+  it('takes over a leftover non-symlink lock file from the legacy flock implementation', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      printf 'legacy' >"$lock_path"
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"legacy_takeover"}'
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('legacy_takeover')
+  })
+
+  it('fails closed when a live holder keeps the lock beyond the bounded wait', () => {
+    const workDir = makeWorkDir()
+    const { output, status } = runBashStatus(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      sleep 30 &
+      holder=$!
+      ln -s "$holder live-token" "$lock_path"
+      set +e
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"blocked"}'
+      lock_status=$?
+      set -e
+      kill "$holder" 2>/dev/null || true
+      exit "$lock_status"
+      `,
+      { DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS: '1' }
+    )
+    expect(status).not.toBe(0)
+    expect(output).toContain('timed out')
+  })
+})
+
+describe('observe lock guardrails', () => {
+  it('preserves and restores a pre-existing EXIT trap around locked updates', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      trap 'printf fired >"$run_dir/trap_marker"' EXIT
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"trapped"}'
+      trap -p EXIT | grep -q trap_marker || { echo "caller EXIT trap was lost" >&2; exit 1; }
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      if [ -e "$lock_path" ] || [ -L "$lock_path" ]; then
+        echo "lock leaked after release" >&2
+        exit 1
+      fi
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('trapped')
+    expect(readFileSync(path.join(workDir, 'run', 'trap_marker'), 'utf8')).toBe('fired')
+  })
+
+  it('lets many contenders reap one dead lock and proceed without corruption', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      true & dead_pid=$!
+      wait "$dead_pid"
+      ln -s "$dead_pid stale-token" "$lock_path"
+      for writer in 1 2 3 4 5; do
+        (
+          delegate_observe_event_json "$observe" "$run_dir" "{\\"kind\\":\\"reap_race_\${writer}\\"}"
+        ) &
+      done
+      wait
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    const written = observe.events.filter((event) => event.kind.startsWith('reap_race_'))
+    expect(written).toHaveLength(5)
+  })
+
+  it('preserves an EXIT trap containing quotes and special characters', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      trap 'printf "%s" "a\\"b c" >"$run_dir/trap_marker"' EXIT
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"quoted_trap"}'
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('quoted_trap')
+    expect(readFileSync(path.join(workDir, 'run', 'trap_marker'), 'utf8')).toBe('a"b c')
+  })
+
+  it('propagates the callback exit code and still releases the lock', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      set +e
+      delegate_observe_with_lock "$observe" "$run_dir" false
+      callback_status=$?
+      set -e
+      [ "$callback_status" -ne 0 ] || { echo "expected non-zero callback status" >&2; exit 1; }
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      if [ -e "$lock_path" ] || [ -L "$lock_path" ]; then
+        echo "lock leaked after failing callback" >&2
+        exit 1
+      fi
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"after_failure"}'
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('after_failure')
+  })
+
+  it('falls back to the default timeout when the env value is not a non-negative integer', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -euo pipefail
+      source shared/observe-json.sh
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      [ "$(delegate_observe_lock_timeout_seconds)" = "30" ] || { echo "fallback broken" >&2; exit 1; }
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      lock_path="$(delegate_observe_lock_file "$observe" "$run_dir")"
+      true & dead_pid=$!
+      wait "$dead_pid"
+      ln -s "$dead_pid stale-token" "$lock_path"
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"bogus_env"}'
+      cat "$observe"
+      `,
+      { DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS: 'bogus' }
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('bogus_env')
+  })
+
+  it('does not re-enable errexit for callers running under set +e', () => {
+    const workDir = makeWorkDir()
+    const output = runBash(
+      `
+      set -uo pipefail
+      source shared/observe-json.sh
+      set +e
+      run_dir="${workDir}/run"
+      observe="$run_dir/run_observe.json"
+      mkdir -p "$run_dir"
+      delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json res.json requester
+      delegate_observe_event_json "$observe" "$run_dir" '{"kind":"no_errexit"}'
+      case "$-" in
+        *e*) echo "errexit was unexpectedly enabled" >&2; exit 1 ;;
+      esac
+      cat "$observe"
+      `
+    )
+    const observe = parseObserveJson(output)
+    expect(observe.events.map((event) => event.kind)).toContain('no_errexit')
+  })
+})
