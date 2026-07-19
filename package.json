@@ -3,6 +3,8 @@
   "author": "oubakiou",
   "type": "module",
   "scripts": {
+    "build": "vp build --config vite.cli.config.ts",
+    "build:check": "bash scripts/check-cli-build.sh",
     "metrics:baseline:check": "bash scripts/check-metrics-baseline.sh",
     "metrics:cost-check": "bash scripts/run-metrics-fixtures.sh --json | node scripts/evaluate-cost-fixtures.ts",
     "metrics:fixtures": "bash scripts/run-metrics-fixtures.sh",

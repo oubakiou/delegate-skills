@@ -5,7 +5,9 @@
 # ルールが見落とされる経路)。set -e で最初の失敗で止める。
 set -e
 
-diff_before=$(git diff --name-only | sort)
+# 名前集合だけの比較だと「元から unstaged だったファイルに hook がさらに変更を加えた」
+# ケースを見逃し、部分 stage 済みの古い内容がコミットされ得るため、diff 内容全体で比較する。
+diff_before=$(git diff)
 
 # 1. 編集者が generated コピー (skills/*/scripts/{sanitize,codex-jsonl}.ts) を
 #    直接編集していないかの早期検出。手順誤りを最初に教える。
@@ -14,26 +16,32 @@ npm run sync-shared:check --silent
 # 2. format / lint の自動修正
 vp check --fix
 
-# 3. vp check --fix が shared/ の正本を書き換えた場合、コピー側へ再同期する。
+# 3. vp check --fix が shared/src を書き換えた場合に備え、CLI バンドルを再生成する。
+#    ビルドは決定的なので src が変わっていなければ dist は byte 単位で不変。
+npm run build --silent
+
+# 4. vp check --fix / build が shared/ の正本を書き換えた場合、コピー側へ再同期する。
 #    drift があれば sync-shared が黙ってコピーを更新する。
 npm run sync-shared --silent
 
 # git commit が index.lock を保持しているため、hook 内では git add しない。
 # hook がワークツリーを変更した場合は利用者に確認と再ステージを促す。
-diff_after=$(git diff --name-only | sort)
+diff_after=$(git diff)
 if [ "$diff_before" != "$diff_after" ]; then
-  hook_changed=$(comm -13 <(echo "$diff_before") <(echo "$diff_after"))
+  hook_changed=$(comm -13 \
+    <(echo "$diff_before" | grep '^diff --git' | sort -u) \
+    <(echo "$diff_after" | grep '^diff --git' | sort -u))
   echo ""
-  echo "error: pre-commit hook が以下のファイルを変更しました:"
-  echo "$hook_changed"
+  echo "error: pre-commit hook がワークツリーを変更しました。変更されたファイル:"
+  echo "${hook_changed:-(既存の unstaged ファイルへの追加変更)}"
   echo ""
   echo "変更を確認し、ステージしてから再度コミットしてください:"
   echo "  git add -u && git commit"
   exit 1
 fi
 
-# 4. 最終ドリフト検証 (fail-closed)。
-#    手順 1 と 3 を経ても何らかの理由でズレが残っている場合に commit を止める保険。
+# 5. 最終ドリフト検証 (fail-closed)。dist の再ビルド byte 比較も sync-shared:check が行う。
+#    手順 1〜4 を経ても何らかの理由でズレが残っている場合に commit を止める保険。
 npm run sync-shared:check --silent
 
 vp test

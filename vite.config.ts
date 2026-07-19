@@ -1,5 +1,8 @@
 export default {
   fmt: {
+    // ビルド成果物 (shared/dist/) とその配布コピー (skills/*/scripts/*.mjs) は
+    // 整形しない。整形すると再ビルド byte 比較・sync-shared のドリフト検知が壊れる。
+    ignorePatterns: ['shared/dist/', 'skills/*/scripts/*.mjs'],
     semi: false,
     singleQuote: true,
     trailingComma: 'es5',
@@ -12,8 +15,8 @@ export default {
       style: 'error',
       suspicious: 'error',
     },
-    // ビルド成果物はチェック対象外。`vp build` で都度上書きされるため。
-    ignorePatterns: ['dist/'],
+    // ビルド成果物とその配布コピーはチェック対象外。`vp build` / sync-shared で都度上書きされるため。
+    ignorePatterns: ['dist/', 'skills/*/scripts/*.mjs'],
     options: { typeAware: true, typeCheck: true },
     rules: {
       'capitalized-comments': 'off',

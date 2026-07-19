@@ -1,0 +1,24 @@
+# PR の必須 gate。pinned Node / Linux の clean checkout で、コミット済み
+# shared/dist/delegate-cli.mjs の再ビルド byte 比較・配布コピーのドリフト検知・
+# lint / 型 / テストを検証する。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:check
+      - run: npm run sync-shared:check
+      - run: npx --no-install vp check
+      - run: npx --no-install vp test
