@@ -79,7 +79,7 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 # 報告方式は起動前に確定する（grok は schema 強制の実測が未了のため report.md が既定。
-# §docs/feature/delegate-latency-reduction.md）
+# §docs/archive/delegate-latency-reduction.archive.md）
 REPORT_MODE="$(delegate_observe_report_mode_for_backend grok)"
 REPORT_FILE="$WORK_DIR/report.md"
 RESPONDER_SESSION_ID="grok:${MODEL}:$(basename "$RESPONSE_FILE" .json)"

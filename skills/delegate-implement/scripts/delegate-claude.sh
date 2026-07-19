@@ -121,7 +121,7 @@ fi
 
 readonly_constraints="$(delegate_prompt_constraints "$TASK_TYPE" "$RESPONSE_FILE")"
 
-# 報告方式は起動前に確定する（claude は構造化最終応答が既定。§docs/feature/delegate-latency-reduction.md）
+# 報告方式は起動前に確定する（claude は構造化最終応答が既定。§docs/archive/delegate-latency-reduction.archive.md）
 REPORT_MODE="$(delegate_observe_report_mode_for_backend "$backend")"
 
 # request は初期 prompt へ埋め込み、read-request の初回往復を消す（gate 超過時は fallback）

@@ -130,7 +130,7 @@ fi
 
 LAST_MSG="$WORK_DIR/codex-last-message.txt"
 
-# 報告方式は起動前に確定する（codex は構造化最終応答が既定。§docs/feature/delegate-latency-reduction.md）
+# 報告方式は起動前に確定する（codex は構造化最終応答が既定。§docs/archive/delegate-latency-reduction.archive.md）
 REPORT_MODE="$(delegate_observe_report_mode_for_backend "$backend")"
 REPORT_SCHEMA_FILE="$WORK_DIR/report-schema.json"
 delegate_observe_report_schema_json >"$REPORT_SCHEMA_FILE"

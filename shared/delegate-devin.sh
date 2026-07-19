@@ -111,7 +111,7 @@ if ! command -v devin >/dev/null 2>&1; then
 fi
 
 # 報告方式は起動前に確定する（devin は schema 強制手段が無いため report.md が既定。
-# §docs/feature/delegate-latency-reduction.md）
+# §docs/archive/delegate-latency-reduction.archive.md）
 REPORT_MODE="$(delegate_observe_report_mode_for_backend "$backend")"
 REPORT_FILE="$RUN_DIR/report.md"
 
