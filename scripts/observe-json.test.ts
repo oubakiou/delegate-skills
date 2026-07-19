@@ -1363,7 +1363,7 @@ describe('model effort suffix', () => {
         set +e
         for spec in \\
           'claude sonnet@low' 'claude haiku@max' 'claude fable@xhigh' \\
-          'codex gpt-5.5@low' 'codex gpt-5.4-mini@xhigh' \\
+          'codex gpt-5.5@low' 'codex gpt-5.4-mini@xhigh' 'codex gpt-5.6-sol@max' 'codex gpt-5.6-sol@ultra' \\
           'cursor cursor-glm-5.2@high' 'cursor cursor-glm-5.2@max' \\
           'cursor cursor-grok-4.5@low' 'cursor cursor-grok-4.5@medium' 'cursor cursor-grok-4.5@high' \\
           'claude sonnet' 'devin swe-1.7' 'cursor composer-2.5' 'grok grok-build'; do
@@ -1383,7 +1383,7 @@ describe('model effort suffix', () => {
         source shared/observe-json.sh
         set +e
         for spec in \\
-          'claude sonnet@bogus' 'codex gpt-5.5@max' \\
+          'claude sonnet@bogus' 'codex gpt-5.5@bogus' \\
           'devin swe-1.7@high' 'devin devin-glm-5.2@low' 'grok grok-build@high' \\
           'cursor cursor-glm-5.2-high@max' 'cursor cursor-glm-5.2-max@high' \\
           'cursor composer-2.5@high' 'cursor cursor-kimi-k2.7-code@high' 'cursor cursor-gemini-3.1-pro@high' \\
@@ -1406,7 +1406,7 @@ describe('model effort suffix', () => {
       "invalid effort 'bogus' for claude backend model 'sonnet@bogus'; allowed: low|medium|high|xhigh|max"
     )
     expect(output).toContain(
-      "invalid effort 'max' for codex backend model 'gpt-5.5@max'; allowed: low|medium|high|xhigh"
+      "invalid effort 'bogus' for codex backend model 'gpt-5.5@bogus'; allowed: low|medium|high|xhigh|max|ultra"
     )
     expect(output).toContain('not supported for the devin backend')
     expect(output).toContain('not supported for the grok backend')

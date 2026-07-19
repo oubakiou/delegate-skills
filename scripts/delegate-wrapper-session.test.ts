@@ -1744,6 +1744,24 @@ describe('wrapper effort suffix', () => {
     })
   })
 
+  it('passes the ultra effort suffix through to Codex', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper(
+      'delegate-codex.sh',
+      wrapperModelArgs(fixture, 'gpt-5.6-sol@ultra'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args.join(' ')).toContain('-m gpt-5.6-sol -c model_reasoning_effort=ultra')
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: 'ultra',
+    })
+  })
+
   it('converts the suffix to a Cursor bracket override', () => {
     const fixture = makeFixture('cursor')
     const result = runWrapper(

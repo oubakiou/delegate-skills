@@ -815,9 +815,9 @@ delegate_observe_validate_model_effort() {
       ;;
     codex)
       case "$effort" in
-        low | medium | high | xhigh) return 0 ;;
+        low | medium | high | xhigh | max | ultra) return 0 ;;
       esac
-      echo "ERROR: invalid effort '$effort' for codex backend model '$model'; allowed: low|medium|high|xhigh" >&2
+      echo "ERROR: invalid effort '$effort' for codex backend model '$model'; allowed: low|medium|high|xhigh|max|ultra" >&2
       return 1
       ;;
     cursor)
