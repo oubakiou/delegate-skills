@@ -39,7 +39,7 @@ delegate 1 回あたり約 3 分かかっている委譲オーバーヘッド（
 | うちプロトコル儀式                 | 6 往復（読取 1 + 確認 1 + 書込 1 + md2idx 変換 1 + jq 検証 1 + 最終応答 1）        |
 | うち実作業                         | 1 往復（`head -n 1 README.md`）                                                    |
 
-7 往復の内訳（①②④⑤⑥⑦ が儀式、③ のみ実作業）:
+計画実施前の worker 7 往復の内訳（①②④⑤⑥⑦ が儀式、③ のみ実作業）:
 
 ```mermaid
 sequenceDiagram
@@ -72,7 +72,65 @@ sequenceDiagram
     W-->>C: ⑦ 最終応答
 ```
 
+計画実施後（Step 4 + 5 の主経路）は実作業 + 最終応答の 2 往復になる（§3.1。report.md 方式選択時は report 書込の +1 往復）:
+
+```mermaid
+sequenceDiagram
+    participant C as wrapper（CLI 子プロセス）
+    participant W as worker LLM
+    participant T as tool 実行
+
+    C->>W: 初期 prompt（検証済み request JSON から本文を埋め込み。Step 5）
+    rect rgb(240, 255, 240)
+        Note over W,T: 実作業
+        W->>T: ① head -n 1 README.md
+        T-->>W: 作業結果
+    end
+    W-->>C: ② 最終応答 = 構造化出力 {status, report_markdown}（Step 4）
+    Note over C: wrapper が build-response.sh で md2idx 変換・envelope 付与・検証（LLM 往復ゼロ）
+```
+
 worker の 1 往復 ≒ 5 秒（gpt-5.5）。親側は「SKILL.md 読込 → リクエスト作文 + prepare → dispatch → read-response → ユーザー向け要約」の 3〜4 ターンで、親が thinking の長い高価モデルの場合 1 ターン 15〜40 秒。両者の合計が約 3 分に一致する。
+
+計画実施前の親側の典型 4 ターンの内訳（①〜③ が Bash 3 往復。隣接ターンが畳まれると 3 ターン）:
+
+```mermaid
+sequenceDiagram
+    participant U as ユーザー
+    participant M as 親 LLM（main agent）
+    participant B as Bash tool
+
+    U->>M: 委譲対象の依頼
+    rect rgb(255, 240, 240)
+        Note over M,B: 委譲の固定費（Step 2 で run.sh 1 往復に畳む対象）
+        M->>B: ① SKILL.md 読込 + リクエスト作文 → prepare.sh（stdin に本文）
+        B-->>M: model / request_file / response_file 等の JSON
+        M->>B: ② dispatch.sh
+        B-->>M: response_file パス
+        M->>B: ③ read-response.sh auto
+        B-->>M: status + index + 本文（大規模時は段階読みで +1 ターン）
+    end
+    M-->>U: ④ ユーザー向け要約
+```
+
+1 ターンごとに親 LLM の推論（高価モデルでは thinking 込みで 15〜40 秒）が挟まるため、Bash 3 往復は親 2 ターン分の削減余地に相当する（§5-f）。
+
+計画実施後（Step 2）は Bash 1 往復・親 2 ターンになる（§3.2）:
+
+```mermaid
+sequenceDiagram
+    participant U as ユーザー
+    participant M as 親 LLM（main agent）
+    participant B as Bash tool
+
+    U->>M: 委譲対象の依頼
+    rect rgb(240, 255, 240)
+        Note over M,B: one-shot（内部で prepare → dispatch → read-response）
+        M->>B: ① SKILL.md 読込 + リクエスト作文 → run.sh（stdin に本文）
+        B-->>M: 単一 JSON（exit_code / status / content / response_file 等）
+    end
+    M-->>U: ② ユーザー向け要約
+```
 
 この計測では worker が `build-response.sh` を使わず `npx md2idx` + `jq` を手組みで実行しており、プロンプト指示によるプロトコル遵守が backend によって揺れることも確認された（儀式を wrapper 側へ移す動機の一つ）。
 
@@ -170,7 +228,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 ### Step 1: (未着手) タイミングテレメトリとベースライン取得
 
 - §3.3 のテレメトリを契約（monotonic ms / null + `measurement_source` / backend 別抽出仕様 / 最低サンプル数）ごと実装し、`fixtures/metrics/` のベースラインへ組み込む
-- 実運用の delegate で backend / model 別のフェーズ分布を取得する（p95 を語る backend は 20 run 以上を集める）
+- 実運用の delegate で backend / model 別のフェーズ分布を取得する（p95 を語る backend は 20 run 以上を集める）。同じ run 群の observe JSON `usage`（既存計測）もトークン before/after 比較のベースラインとして記録する。比較は同一 backend / model / task 条件かつ `measurement: "measured"` の run に限り、input / cached input / output を区分別に扱う（`estimated` は protocol payload のみの下限値のため比較対象外。§5-f）
 - README の環境変数・テレメトリ記述を同 Step で更新する
 
 成果物: 施策効果を分布で比較できる計測基盤と着手前ベースライン
@@ -220,7 +278,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 ### Step 6: (未着手) 実測記録と archive 化
 
-- Step 1 のベースラインと比較した削減実測（p50/p95）を本ドキュメントの最終状態欄へ記録
+- Step 1 のベースラインと比較した削減実測（wall time の p50/p95 と、observe JSON `usage` による worker トークン消費の before/after（Step 1 と同一の比較条件）。§5-f）を本ドキュメントの最終状態欄へ記録
 - 公開ドキュメントは各 Step で更新済みのため、ここでは整合の最終確認のみ行う
 - 本ドキュメントを `docs/archive/delegate-latency-reduction.archive.md` へリネーム（ユーザー確認後）
 
@@ -277,6 +335,8 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 | `decision` selector（Step 2） | 大規模 response 時の親の追加読み取り 1 ターン       | 該当時 15〜40 秒/回                                                                                                                      |
 | background dispatch ガイド    | 体感ブロック時間                                    | 体感ほぼゼロ化（総所要は不変。wall time 削減として集計しない）                                                                           |
 | 合算                          | -                                                   | 小タスクの委譲で 3 分 → 60〜90 秒                                                                                                        |
+
+トークンへの副次効果: 本計画の目標は latency だが、往復削減は消費トークンにも同方向に効く。親側は削減ターン分の出力トークン（thinking 含む）に加え、中間 tool 結果（prepare の JSON、dispatch のパス出力）が context に積もらなくなる分の入力トークンが減る。worker 側は往復ごとの再 prefill が減るため入力トークン（cached 区分中心）が減る（§2 の trivial 実測: 入力 98k / 7 往復。往復数比例は仮説であり Step 1 / 6 の実測で検証する）。read-request 廃止（Step 5）は request 本文の載り方を tool 結果から初期 prompt へ移すもので本文トークン自体は中立だが、read-request の tool call とその結果が後続ターンで再 prefill され続ける分は消える。逆方向に増えるのは parse 失敗時の再実行（worker 消費全額。§5-c）と report.md 方式の +1 往復のみ。実測比較は worker トークンに限る: observe JSON `usage` は worker 側のみの記録で親 LLM の消費を含まないため、親側の効果はターン数削減からの定性評価に留める。
 
 ### g. 実装順序（run.sh 先行）
 
