@@ -32,6 +32,11 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 3
 fi
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/observe-json.sh"
+
+read_response_start_ms="$(delegate_observe_monotonic_ms)"
+
 if [ ! -f "$response_file" ]; then
   echo "ERROR: response_file が見つかりません: $response_file" >&2
   exit 1
@@ -48,8 +53,10 @@ append_metrics() {
     selected_bytes="$(printf '%s\n' "$output" | wc -c | tr -d '[:space:]')"
     selected_chars="$(printf '%s\n' "$output" | wc -m | tr -d '[:space:]')"
     selected_lines="$(printf '%s\n' "$output" | wc -l | tr -d '[:space:]')"
+    duration_ms="$(delegate_observe_elapsed_ms "$read_response_start_ms")"
     jq -cn \
       --arg kind read_response \
+      --arg duration_ms "$duration_ms" \
       --arg selector "$selector" \
       --arg status "$status_value" \
       --arg response_file "$response_file" \
@@ -64,6 +71,7 @@ append_metrics() {
       '{
         kind: $kind,
         ts: $ts,
+        duration_ms: (if $duration_ms == "" then null else ($duration_ms | tonumber) end),
         selector: $selector,
         status: $status,
         response_file: $response_file,

@@ -12,6 +12,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# duration / p50 の実時間値は実行ごとに揺れるため、ベースラインには決定論的な
+# 値（record 数・サンプル数・fake stream 由来の turns / tool_calls・parse 区分）だけを載せる
 bash "$repo_root/scripts/run-metrics-fixtures.sh" --json | jq '
   [
     .[] | {
@@ -21,7 +23,19 @@ bash "$repo_root/scripts/run-metrics-fixtures.sh" --json | jq '
       workerReadRequestEstimatedTokens: .totals.workerReadRequestEstimatedTokens,
       mainReadResponseEstimatedTokens: .totals.mainReadResponseEstimatedTokens,
       inlineTrue: .inline.true,
-      inlineFalse: .inline.false
+      inlineFalse: .inline.false,
+      prepareDurationSamples: (.phaseDurations.prepare.samples // 0),
+      dispatchDurationSamples: (.phaseDurations.dispatch.samples // 0),
+      readResponseDurationSamples: (.phaseDurations.read_response.samples // 0),
+      dispatch: (.dispatchByBackendModel["claude/haiku"] // null
+        | if . == null then null else {
+            count,
+            modelTurnsP50: .modelTurns.p50,
+            toolCallsP50: .toolCalls.p50,
+            timeToFirstUsefulEventSamples: .timeToFirstUsefulEventMs.samples,
+            reportReadySamples: .reportReadyAtMs.samples,
+            structuredOutputParse: .structuredOutputParse
+          } end)
     }
   ]
 ' >"$current"

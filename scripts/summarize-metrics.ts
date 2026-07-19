@@ -2,18 +2,50 @@ import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 interface MetricRecord {
+  backend?: string
   body?: TokenShape
+  duration_ms?: number | null
   inline?: boolean
   kind?: string
+  model?: string
+  model_turns?: number | null
+  report_ready_at_ms?: number | null
   request?: TokenShape
   response?: TokenShape
   selected?: TokenShape
   selector?: string
+  structured_output_parse?: boolean | null
+  time_to_first_useful_event_ms?: number | null
+  tool_calls?: number | null
 }
 
 interface TokenShape {
   bytes?: number
   estimated_tokens?: number
+}
+
+interface DurationStats {
+  excluded: number
+  p50: number | null
+  p95: number | null
+  samples: number
+}
+
+interface ParseCounts {
+  false: number
+  null: number
+  true: number
+}
+
+interface DispatchGroupSummary {
+  count: number
+  durationMs: DurationStats
+  modelTurns: DurationStats
+  parseFailureRate: number | null
+  reportReadyAtMs: DurationStats
+  structuredOutputParse: ParseCounts
+  timeToFirstUsefulEventMs: DurationStats
+  toolCalls: DurationStats
 }
 
 interface KindSummary {
@@ -26,11 +58,13 @@ interface KindSummary {
 
 interface Summary {
   byKind: Record<string, KindSummary>
+  dispatchByBackendModel: Record<string, DispatchGroupSummary>
   inline: {
     false: number
     true: number
   }
   orchestrationEvents: number
+  phaseDurations: Record<string, DurationStats>
   records: number
   selectors: Record<string, number>
   totals: {
@@ -60,11 +94,13 @@ const emptyKindSummary = (): KindSummary => ({
 
 const emptySummary = (records: MetricRecord[]): Summary => ({
   byKind: {},
+  dispatchByBackendModel: {},
   inline: {
     false: 0,
     true: 0,
   },
   orchestrationEvents: records.length,
+  phaseDurations: {},
   records: records.length,
   selectors: {},
   totals: {
@@ -197,34 +233,154 @@ const addInline = (summary: Summary, record: MetricRecord): void => {
   }
 }
 
+// p50/p95 は nearest-rank。null（計測不能）は分母から除外し、除外数を併記する。
+// p95 は少サンプルで tail がノイズになるため最低 20 サンプル未満は null にする
+const P95_MIN_SAMPLES = 20
+
+// 親側フェーズ wall time を duration_ms で持つ record 種別
+const PHASE_KINDS = new Set(['prepare', 'dispatch', 'read_response'])
+
+const percentileNearestRank = (sorted: number[], quantile: number): number | null => {
+  if (sorted.length === 0) {
+    return null
+  }
+  const rank = Math.max(1, Math.ceil(quantile * sorted.length))
+  return sorted[rank - 1] ?? null
+}
+
+const p95For = (sorted: number[]): number | null => {
+  if (sorted.length < P95_MIN_SAMPLES) {
+    return null
+  }
+  return percentileNearestRank(sorted, 0.95)
+}
+
+const durationStats = (values: (number | null | undefined)[]): DurationStats => {
+  const present = values.filter(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value)
+  )
+  const sorted = present.toSorted((left, right) => left - right)
+  return {
+    excluded: values.length - sorted.length,
+    p50: percentileNearestRank(sorted, 0.5),
+    p95: p95For(sorted),
+    samples: sorted.length,
+  }
+}
+
+const addParseCount = (parse: ParseCounts, value: boolean | null | undefined): void => {
+  if (value === true) {
+    parse.true += 1
+    return
+  }
+  if (value === false) {
+    parse.false += 1
+    return
+  }
+  parse.null += 1
+}
+
+const parseCountsFor = (group: MetricRecord[]): ParseCounts => {
+  const parse: ParseCounts = { false: 0, null: 0, true: 0 }
+  for (const record of group) {
+    addParseCount(parse, record.structured_output_parse)
+  }
+  return parse
+}
+
+const parseFailureRateFor = (parse: ParseCounts): number | null => {
+  const attempts = parse.true + parse.false
+  if (attempts === 0) {
+    return null
+  }
+  return parse.false / attempts
+}
+
+const dispatchGroupSummary = (group: MetricRecord[]): DispatchGroupSummary => {
+  const parse = parseCountsFor(group)
+  return {
+    count: group.length,
+    durationMs: durationStats(group.map((record) => record.duration_ms)),
+    modelTurns: durationStats(group.map((record) => record.model_turns)),
+    parseFailureRate: parseFailureRateFor(parse),
+    reportReadyAtMs: durationStats(group.map((record) => record.report_ready_at_ms)),
+    structuredOutputParse: parse,
+    timeToFirstUsefulEventMs: durationStats(
+      group.map((record) => record.time_to_first_useful_event_ms)
+    ),
+    toolCalls: durationStats(group.map((record) => record.tool_calls)),
+  }
+}
+
+interface DurationCollectors {
+  dispatchGroups: Map<string, MetricRecord[]>
+  phaseDurationValues: Map<string, (number | null | undefined)[]>
+}
+
+const addPhaseDuration = (
+  collectors: DurationCollectors,
+  kind: string,
+  record: MetricRecord
+): void => {
+  if (!PHASE_KINDS.has(kind)) {
+    return
+  }
+  const values = collectors.phaseDurationValues.get(kind) ?? []
+  values.push(record.duration_ms)
+  collectors.phaseDurationValues.set(kind, values)
+}
+
+const addDispatchGroup = (
+  collectors: DurationCollectors,
+  kind: string,
+  record: MetricRecord
+): void => {
+  if (kind !== 'dispatch') {
+    return
+  }
+  const key = `${record.backend ?? 'unknown'}/${record.model ?? 'unknown'}`
+  const group = collectors.dispatchGroups.get(key) ?? []
+  group.push(record)
+  collectors.dispatchGroups.set(key, group)
+}
+
+const addRecord = (
+  summary: Summary,
+  collectors: DurationCollectors,
+  record: MetricRecord
+): void => {
+  const kind = kindFor(record)
+  const kindSummary = kindSummaryFor(summary, kind)
+  kindSummary.count += 1
+  addTokenTotals(summary, kindSummary, record)
+  addProxyTotals(summary, kind, record)
+  addSelector(summary, record)
+  addInline(summary, record)
+  addPhaseDuration(collectors, kind, record)
+  addDispatchGroup(collectors, kind, record)
+}
+
 export const summarize = (records: MetricRecord[]): Summary => {
   const summary = emptySummary(records)
+  const collectors: DurationCollectors = {
+    dispatchGroups: new Map(),
+    phaseDurationValues: new Map(),
+  }
   for (const record of records) {
-    const kind = kindFor(record)
-    const kindSummary = kindSummaryFor(summary, kind)
-    kindSummary.count += 1
-    addTokenTotals(summary, kindSummary, record)
-    addProxyTotals(summary, kind, record)
-    addSelector(summary, record)
-    addInline(summary, record)
+    addRecord(summary, collectors, record)
+  }
+  for (const [kind, values] of collectors.phaseDurationValues) {
+    summary.phaseDurations[kind] = durationStats(values)
+  }
+  for (const [key, group] of collectors.dispatchGroups) {
+    summary.dispatchByBackendModel[key] = dispatchGroupSummary(group)
   }
   return summary
 }
 
 const pad = (value: string, width: number): string => value.padEnd(width, ' ')
 
-const renderTable = (summary: Summary): string => {
-  const rows = Object.entries(summary.byKind)
-    .toSorted(([left], [right]) => left.localeCompare(right))
-    .map(([kind, item]) => [
-      kind,
-      String(item.count),
-      String(item.bodyEstimatedTokens),
-      String(item.selectedEstimatedTokens),
-      String(item.requestEstimatedTokens),
-      String(item.responseEstimatedTokens),
-    ])
-  const header = ['kind', 'count', 'body_tok', 'selected_tok', 'request_tok', 'response_tok']
+const formatColumns = (header: string[], rows: string[][]): string => {
   const widths = header.map((label, column) =>
     Math.max(
       label.length,
@@ -254,6 +410,73 @@ const renderTable = (summary: Summary): string => {
   ].join('\n')
 }
 
+const renderTable = (summary: Summary): string => {
+  const rows = Object.entries(summary.byKind)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([kind, item]) => [
+      kind,
+      String(item.count),
+      String(item.bodyEstimatedTokens),
+      String(item.selectedEstimatedTokens),
+      String(item.requestEstimatedTokens),
+      String(item.responseEstimatedTokens),
+    ])
+  const header = ['kind', 'count', 'body_tok', 'selected_tok', 'request_tok', 'response_tok']
+  return formatColumns(header, rows)
+}
+
+const formatStat = (value: number | null): string => {
+  if (value === null) {
+    return '-'
+  }
+  return String(value)
+}
+
+const formatRate = (value: number | null): string => {
+  if (value === null) {
+    return '-'
+  }
+  return value.toFixed(2)
+}
+
+const renderDispatchTable = (summary: Summary): string => {
+  const rows = Object.entries(summary.dispatchByBackendModel)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => [
+      key,
+      String(item.count),
+      formatStat(item.durationMs.p50),
+      formatStat(item.durationMs.p95),
+      formatStat(item.timeToFirstUsefulEventMs.p50),
+      formatStat(item.reportReadyAtMs.p50),
+      formatStat(item.modelTurns.p50),
+      formatStat(item.toolCalls.p50),
+      formatRate(item.parseFailureRate),
+    ])
+  const header = [
+    'dispatch backend/model',
+    'count',
+    'dur_p50_ms',
+    'dur_p95_ms',
+    'ttfue_p50_ms',
+    'report_p50_ms',
+    'turns_p50',
+    'tools_p50',
+    'parse_fail',
+  ]
+  return formatColumns(header, rows)
+}
+
+const renderPhaseDurations = (summary: Summary): string => {
+  const parts = Object.entries(summary.phaseDurations)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([kind, stats]) =>
+        `${kind}=${formatStat(stats.p50)}(n=${stats.samples},excluded=${stats.excluded})`
+    )
+  return `phase_duration_p50_ms: ${parts.join(' ')}`
+}
+
 export const renderHuman = (summary: Summary): string => {
   const lines = [
     `records: ${summary.records}`,
@@ -265,6 +488,12 @@ export const renderHuman = (summary: Summary): string => {
     '',
     renderTable(summary),
   ]
+  if (Object.keys(summary.phaseDurations).length > 0) {
+    lines.push('', renderPhaseDurations(summary))
+  }
+  if (Object.keys(summary.dispatchByBackendModel).length > 0) {
+    lines.push('', renderDispatchTable(summary))
+  }
   if (Object.keys(summary.selectors).length > 0) {
     lines.push('', `selectors: ${JSON.stringify(summary.selectors)}`)
   }
@@ -314,6 +543,12 @@ if (import.meta.vitest) {
       expect(summary.totals.mainReadResponseEstimatedTokens).toBe(4)
       expect(summary.selectors).toEqual({ all: 1, auto: 1 })
       expect(summary.inline.true).toBe(1)
+      expect(summary.phaseDurations.read_response).toEqual({
+        excluded: 1,
+        p50: null,
+        p95: null,
+        samples: 0,
+      })
       expect(summary.byKind.build_request).toEqual({
         bodyEstimatedTokens: 3,
         count: 1,
@@ -321,6 +556,48 @@ if (import.meta.vitest) {
         responseEstimatedTokens: 0,
         selectedEstimatedTokens: 0,
       })
+    })
+
+    const expectCodexDispatchGroup = (codex: DispatchGroupSummary): void => {
+      expect(codex.count).toBe(2)
+      expect(codex.durationMs).toEqual({ excluded: 0, p50: 1200, p95: null, samples: 2 })
+      expect(codex.modelTurns).toEqual({ excluded: 1, p50: 3, p95: null, samples: 1 })
+      expect(codex.timeToFirstUsefulEventMs.excluded).toBe(1)
+      expect(codex.structuredOutputParse).toEqual({ false: 0, null: 2, true: 0 })
+      expect(codex.parseFailureRate).toBeNull()
+    }
+
+    it('aggregates dispatch records per backend/model with null exclusion', () => {
+      const summary = summarize(
+        parseJsonl(`
+{"kind":"dispatch","backend":"codex","model":"gpt-5.5","duration_ms":1200,"model_turns":3,"tool_calls":2,"time_to_first_useful_event_ms":900,"report_ready_at_ms":1100,"structured_output_parse":null,"measurement_source":"codex_json"}
+{"kind":"dispatch","backend":"codex","model":"gpt-5.5","duration_ms":1800,"model_turns":null,"tool_calls":4,"time_to_first_useful_event_ms":null,"report_ready_at_ms":null,"structured_output_parse":null,"measurement_source":"codex_json"}
+{"kind":"dispatch","backend":"claude","model":"haiku","duration_ms":600,"model_turns":2,"tool_calls":1,"time_to_first_useful_event_ms":300,"report_ready_at_ms":500,"structured_output_parse":null,"measurement_source":"claude_stream_json"}
+`)
+      )
+      expectCodexDispatchGroup(summary.dispatchByBackendModel['codex/gpt-5.5'])
+      expect(summary.dispatchByBackendModel['claude/haiku'].count).toBe(1)
+      expect(summary.phaseDurations.dispatch).toEqual({
+        excluded: 0,
+        p50: 1200,
+        p95: null,
+        samples: 3,
+      })
+    })
+
+    it('reports p95 only at 20 or more samples and counts parse failures', () => {
+      const lines = Array.from({ length: 20 }, (_unused, index) => {
+        const duration = (index + 1) * 100
+        return `{"kind":"dispatch","backend":"claude","model":"haiku","duration_ms":${duration},"structured_output_parse":${String(index !== 0)}}`
+      }).join('\n')
+      const group = summarize(parseJsonl(lines)).dispatchByBackendModel['claude/haiku']
+      expect(group.durationMs).toEqual({ excluded: 0, p50: 1000, p95: 1900, samples: 20 })
+      expect(group.structuredOutputParse).toEqual({ false: 1, null: 0, true: 19 })
+      expect(group.parseFailureRate).toBeCloseTo(0.05, 10)
+
+      const below = summarize(parseJsonl(lines.split('\n').slice(0, 19).join('\n')))
+      expect(below.dispatchByBackendModel['claude/haiku'].durationMs.p95).toBeNull()
+      expect(below.dispatchByBackendModel['claude/haiku'].durationMs.p50).toBe(1000)
     })
   })
 }

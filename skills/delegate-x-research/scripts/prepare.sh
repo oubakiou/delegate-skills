@@ -66,6 +66,8 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
 
+prepare_start_ms="$(delegate_observe_monotonic_ms)"
+
 # stdin（本文 Markdown）は build-request へ渡す前に先取りする。
 # 前段スクリプト（check-md2idx 等）が誤って stdin を消費しても本文を失わないため。
 body="$(cat)"
@@ -75,8 +77,10 @@ append_metrics() {
   (
     metrics_dir="$(dirname "$DELEGATE_METRICS_FILE")"
     mkdir -p "$metrics_dir"
+    duration_ms="$(delegate_observe_elapsed_ms "$prepare_start_ms")"
     jq -cn \
       --arg kind prepare \
+      --arg duration_ms "$duration_ms" \
       --arg task_type "$task_type" \
       --arg type_env "$type_env" \
       --arg default_model "$default_model" \
@@ -95,6 +99,7 @@ append_metrics() {
       '{
         kind: $kind,
         ts: $ts,
+        duration_ms: (if $duration_ms == "" then null else ($duration_ms | tonumber) end),
         task_type: $task_type,
         type_env: $type_env,
         default_model: $default_model,

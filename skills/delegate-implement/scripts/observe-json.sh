@@ -1593,6 +1593,280 @@ delegate_observe_epoch_seconds() {
   date -u -d "$timestamp" +%s 2>/dev/null || printf '%s' 0
 }
 
+# timing 計測は wall clock ではなく monotonic clock（/proc/uptime）から取る。
+# NTP 補正・手動時刻変更で負や飛びのある経過値を記録しないため。
+# 取得できない環境では空文字を返し、利用側は該当 timing 値を null として扱う
+delegate_observe_monotonic_ms() {
+  local uptime rest sec frac
+  if [ ! -r /proc/uptime ]; then
+    printf '%s' ''
+    return 0
+  fi
+  read -r uptime rest </proc/uptime || {
+    printf '%s' ''
+    return 0
+  }
+  sec="${uptime%%.*}"
+  case "$uptime" in
+    *.*) frac="${uptime#*.}" ;;
+    *) frac="" ;;
+  esac
+  frac="${frac}00"
+  frac="${frac:0:2}"
+  printf '%s' "$(( sec * 1000 + 10#$frac * 10 ))"
+}
+
+delegate_observe_elapsed_ms() {
+  local start_ms="$1"
+  local now_ms
+  now_ms="$(delegate_observe_monotonic_ms)"
+  if [ -z "$start_ms" ] || [ -z "$now_ms" ]; then
+    printf '%s' ''
+    return 0
+  fi
+  printf '%s' "$(( now_ms - start_ms ))"
+}
+
+# 「最初の有用イベント」= 最初の tool 実行または本文 delta。event type の文字列一致だけだと
+# 空 assistant・reasoning-only の行でも確定して系統的に短い値を記録するため、
+# stream の構造まで見て判定する。検出できたら 0、未検出・非対応 backend（text 出力の
+# devin / grok）は非 0 を返す
+delegate_observe_first_useful_seen() {
+  local backend="$1"
+  local stdout_capture="$2"
+
+  [ -s "$stdout_capture" ] || return 1
+  case "$backend" in
+    claude)
+      jq -R -s -e '
+        [split("\n")[] | select(length > 0) | try fromjson catch empty
+         | select(type == "object" and .type == "assistant")
+         | .message.content? // [] | .[]?
+         | select((.type? == "tool_use")
+                  or ((.type? == "text") and ((.text? // "") | length > 0)))
+        ] | length > 0' <"$stdout_capture" >/dev/null 2>&1
+      ;;
+    codex)
+      jq -R -s -e '
+        [split("\n")[] | select(length > 0) | try fromjson catch empty
+         | select(type == "object" and ((.type? // "") | startswith("item.")))
+         | .item? // {}
+         | (.type? // "") as $item_type
+         | select($item_type == "command_execution" or $item_type == "local_shell_call"
+                  or $item_type == "file_change" or $item_type == "patch_apply"
+                  or $item_type == "mcp_tool_call" or $item_type == "web_search"
+                  or ($item_type == "agent_message" and ((.text? // "") | length > 0)))
+        ] | length > 0' <"$stdout_capture" >/dev/null 2>&1
+      ;;
+    cursor)
+      jq -R -s -e '
+        def has_text_content:
+          (.message.content? // empty) as $content
+          | if ($content | type) == "string" then ($content | length) > 0
+            elif ($content | type) == "array"
+            then ([$content[] | select((.type? == "text") and ((.text? // "") | length > 0))] | length) > 0
+            else false end;
+        [split("\n")[] | select(length > 0) | try fromjson catch empty
+         | select(type == "object")
+         | select(((.type? // "") == "tool_call" and (.subtype? // "") == "started")
+                  or ((.type? // "") == "assistant" and has_text_content))
+        ] | length > 0' <"$stdout_capture" >/dev/null 2>&1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# stream capture から model_turns / tool_calls を抽出する。取得できない項目は null、
+# 認識できるイベントが 1 つも無い capture は source: "unavailable" に倒す（fail-soft）。
+# devin は stdout が text のため ATIF export の steps 数を model_turns として使う
+delegate_observe_timing_stream_counts() {
+  local backend="$1"
+  local stdout_capture="$2"
+  local devin_export="${3:-}"
+
+  local unavailable='{"model_turns":null,"tool_calls":null,"source":"unavailable"}'
+  local counts=""
+  case "$backend" in
+    claude)
+      if [ -s "$stdout_capture" ]; then
+        counts="$(jq -c -R -s '
+          [split("\n")[] | select(length > 0) | try fromjson catch empty
+           | select(type == "object" and (.type | type) == "string")] as $events
+          | if ($events | length) == 0 then empty
+            else
+              ([$events[] | select(.type == "assistant")] | length) as $assistants
+              | ([$events[] | select(.type == "result") | .num_turns? | select(type == "number")] | last) as $num_turns
+              | ([$events[] | select(.type == "assistant")
+                  | .message.content? // [] | .[]? | select((.type? // "") == "tool_use")] | length) as $tool_calls
+              | {
+                  model_turns: ($num_turns // (if $assistants > 0 then $assistants else null end)),
+                  tool_calls: $tool_calls,
+                  source: "claude_stream_json"
+                }
+            end' <"$stdout_capture" 2>/dev/null || true)"
+      fi
+      ;;
+    codex)
+      if [ -s "$stdout_capture" ]; then
+        counts="$(jq -c -R -s '
+          [split("\n")[] | select(length > 0) | try fromjson catch empty
+           | select(type == "object" and (.type | type) == "string"
+                    and ((.type | startswith("thread.")) or (.type | startswith("turn."))
+                         or (.type | startswith("item.")) or .type == "error"))] as $events
+          | if ($events | length) == 0 then empty
+            else
+              ([$events[] | select(.type == "turn.completed")] | length) as $turns
+              | ([$events[] | select(.type == "item.completed")
+                  | .item.type? // ""
+                  | select(. == "command_execution" or . == "local_shell_call" or . == "file_change"
+                           or . == "patch_apply" or . == "mcp_tool_call" or . == "web_search")] | length) as $tool_calls
+              | {
+                  model_turns: (if $turns > 0 then $turns else null end),
+                  tool_calls: $tool_calls,
+                  source: "codex_json"
+                }
+            end' <"$stdout_capture" 2>/dev/null || true)"
+      fi
+      ;;
+    cursor)
+      if [ -s "$stdout_capture" ]; then
+        counts="$(jq -c -R -s '
+          [split("\n")[] | select(length > 0) | try fromjson catch empty
+           | select(type == "object" and (.type | type) == "string"
+                    and (.type == "system" or .type == "user" or .type == "assistant"
+                         or .type == "tool_call" or .type == "result"))] as $events
+          | if ($events | length) == 0 then empty
+            else
+              ([$events[] | select(.type == "tool_call" and (.subtype? // "") == "started")] | length) as $tool_calls
+              | {
+                  model_turns: null,
+                  tool_calls: $tool_calls,
+                  source: "cursor_stream_json"
+                }
+            end' <"$stdout_capture" 2>/dev/null || true)"
+      fi
+      ;;
+    devin)
+      if [ -s "$devin_export" ]; then
+        counts="$(jq -c '
+          select(type == "object")
+          | (.steps? | if type == "array" then length else null end) as $steps
+          | if $steps == null then empty
+            else {model_turns: $steps, tool_calls: null, source: "devin_atif"}
+            end' "$devin_export" 2>/dev/null || true)"
+      fi
+      ;;
+  esac
+  if [ -z "$counts" ]; then
+    printf '%s' "$unavailable"
+    return 0
+  fi
+  printf '%s' "$counts"
+}
+
+# observe JSON の timing 契約: 時間値はすべて monotonic clock 由来の経過 ms（時刻ではない）。
+# 計測できなかった値は null。structured_output_parse は wrapper 側 report 回収の
+# 導入までは常に null（契約フィールドとして先に固定する）
+delegate_observe_record_timing() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local backend="$3"
+  local stdout_capture="$4"
+  local total_ms="$5"
+  local first_useful_ms="$6"
+  local report_ready_ms="$7"
+  local devin_export="${8:-}"
+
+  local counts timing
+  counts="$(delegate_observe_timing_stream_counts "$backend" "$stdout_capture" "$devin_export")"
+  timing="$(jq -cn \
+    --arg total "$total_ms" \
+    --arg first_useful "$first_useful_ms" \
+    --arg report_ready "$report_ready_ms" \
+    --argjson counts "$counts" \
+    '
+    def elapsed($value): if $value == "" then null else ($value | tonumber) end;
+    {
+      total_ms: elapsed($total),
+      time_to_first_useful_event_ms: elapsed($first_useful),
+      report_ready_at_ms: elapsed($report_ready),
+      model_turns: $counts.model_turns,
+      tool_calls: $counts.tool_calls,
+      structured_output_parse: null,
+      measurement_source: $counts.source
+    }')"
+
+  delegate_observe_with_lock \
+    "$observe_file" \
+    "$run_dir" \
+    delegate_observe_record_timing_inner \
+    "$observe_file" \
+    "$run_dir" \
+    "$timing"
+}
+
+delegate_observe_record_timing_inner() {
+  local observe_file="$1"
+  local run_dir="$2"
+  local timing_json="$3"
+  local tmp
+  tmp="$(mktemp --tmpdir="$run_dir" "$(basename "${observe_file%.json}")_timing_XXXXX" --suffix=.json)"
+
+  jq --argjson timing "$timing_json" '.timing = $timing' "$observe_file" >"$tmp"
+  mv "$tmp" "$observe_file"
+}
+
+# dispatch 完了時の JSONL telemetry。observe JSON の timing を転記するため、
+# delegate_observe_record_timing の後に呼ぶこと。telemetry は本体を殺さない（fail-soft）
+delegate_observe_append_dispatch_metrics() {
+  local observe_file="$1"
+  local task_type="$2"
+  local model="$3"
+  local backend="$4"
+  local duration_ms="$5"
+  local exit_code="$6"
+  local response_present="$7"
+  local response_file="${8:-}"
+
+  [ -n "${DELEGATE_METRICS_FILE:-}" ] || return 0
+  (
+    mkdir -p "$(dirname "$DELEGATE_METRICS_FILE")"
+    timing="$(jq -c '.timing // {}' "$observe_file" 2>/dev/null || printf '{}')"
+    [ -n "$timing" ] || timing='{}'
+    jq -cn \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg task_type "$task_type" \
+      --arg model "$model" \
+      --arg backend "$backend" \
+      --arg duration_ms "$duration_ms" \
+      --argjson exit_code "$exit_code" \
+      --argjson response_present "$response_present" \
+      --arg observe_file "$observe_file" \
+      --arg response_file "$response_file" \
+      --argjson timing "$timing" \
+      '{
+        kind: "dispatch",
+        ts: $ts,
+        task_type: $task_type,
+        model: $model,
+        backend: $backend,
+        duration_ms: (if $duration_ms == "" then null else ($duration_ms | tonumber) end),
+        exit_code: $exit_code,
+        response_present: $response_present,
+        model_turns: ($timing.model_turns? // null),
+        tool_calls: ($timing.tool_calls? // null),
+        time_to_first_useful_event_ms: ($timing.time_to_first_useful_event_ms? // null),
+        report_ready_at_ms: ($timing.report_ready_at_ms? // null),
+        structured_output_parse: ($timing.structured_output_parse? // null),
+        measurement_source: ($timing.measurement_source? // "unavailable"),
+        observe_file: $observe_file,
+        response_file: (if $response_file == "" then null else $response_file end)
+      }' >>"$DELEGATE_METRICS_FILE"
+  ) >/dev/null 2>&1 || true
+}
+
 delegate_observe_write_capture_content() {
   local capture_file="$1"
   local max_bytes="$2"
@@ -1674,6 +1948,26 @@ delegate_observe_import_streams_inner() {
   rm -f "$stdout_content_file" "$stderr_content_file"
 }
 
+# timing 用の進捗検出。1 秒 poll の分解能で first useful event と report 確定を検出し、
+# グローバル DELEGATE_OBSERVE_FIRST_USEFUL_MS / DELEGATE_OBSERVE_REPORT_READY_MS へ
+# 経過 ms を一度だけ記録する（検出済みなら何もしない）
+delegate_observe_wait_probe_progress() {
+  local wait_start_ms="$1"
+  local backend="$2"
+  local stdout_capture="$3"
+  local response_file="$4"
+
+  [ -n "$wait_start_ms" ] || return 0
+  if [ -z "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" ] \
+    && delegate_observe_first_useful_seen "$backend" "$stdout_capture"; then
+    DELEGATE_OBSERVE_FIRST_USEFUL_MS="$(delegate_observe_elapsed_ms "$wait_start_ms")"
+  fi
+  if [ -z "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" ] && [ -n "$response_file" ] && [ -s "$response_file" ]; then
+    DELEGATE_OBSERVE_REPORT_READY_MS="$(delegate_observe_elapsed_ms "$wait_start_ms")"
+  fi
+  return 0
+}
+
 delegate_observe_wait_with_heartbeat() {
   local observe_file="$1"
   local run_dir="$2"
@@ -1681,6 +1975,13 @@ delegate_observe_wait_with_heartbeat() {
   local child_pid="$4"
   local stdout_capture="$5"
   local stderr_capture="$6"
+  local response_file="${7:-}"
+
+  DELEGATE_OBSERVE_WAIT_TOTAL_MS=""
+  DELEGATE_OBSERVE_FIRST_USEFUL_MS=""
+  DELEGATE_OBSERVE_REPORT_READY_MS=""
+  local wait_start_ms
+  wait_start_ms="$(delegate_observe_monotonic_ms)"
 
   local heartbeat_interval stall_timeout_seconds stalled child_status
   heartbeat_interval="$(delegate_observe_positive_int_or_zero "${DELEGATE_OBSERVE_HEARTBEAT_INTERVAL:-10}")"
@@ -1693,6 +1994,7 @@ delegate_observe_wait_with_heartbeat() {
   # dispatch 本体を殺さないよう、observe 更新と jq 読みは fail-soft にする
   local seconds_until_heartbeat=0
   while kill -0 "$child_pid" 2>/dev/null; do
+    delegate_observe_wait_probe_progress "$wait_start_ms" "$backend" "$stdout_capture" "$response_file"
     if [ "$seconds_until_heartbeat" -le 0 ]; then
       seconds_until_heartbeat="$heartbeat_interval"
       delegate_observe_heartbeat "$observe_file" "$run_dir" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture" || true
@@ -1728,6 +2030,10 @@ delegate_observe_wait_with_heartbeat() {
   if [ "$stalled" = true ]; then
     child_status=124
   fi
+
+  DELEGATE_OBSERVE_WAIT_TOTAL_MS="$(delegate_observe_elapsed_ms "$wait_start_ms")"
+  # 最終 poll と終了の間（最大 1 秒）に届いた分の取りこぼしを終了後にもう一度拾う
+  delegate_observe_wait_probe_progress "$wait_start_ms" "$backend" "$stdout_capture" "$response_file"
 
   delegate_observe_heartbeat "$observe_file" "$run_dir" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"
   delegate_observe_import_streams "$observe_file" "$run_dir" "$stdout_capture" "$stderr_capture"

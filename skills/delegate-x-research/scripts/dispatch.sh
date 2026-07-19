@@ -29,6 +29,8 @@ session_home="${9:-}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/observe-json.sh"
 
+dispatch_start_ms="$(delegate_observe_monotonic_ms)"
+
 backend_script="delegate-claude.sh"
 backend="$(delegate_observe_backend_for "$task_type" "$model")"
 case "$backend" in
@@ -72,6 +74,8 @@ else
 fi
 
 delegate_observe_dispatch_end "$observe_file" "$run_dir" "$backend" "$pid" "$wrapper_status" "$response_present"
+delegate_observe_append_dispatch_metrics "$observe_file" "$task_type" "$model" "$backend" \
+  "$(delegate_observe_elapsed_ms "$dispatch_start_ms")" "$wrapper_status" "$response_present" "$response_file" || true
 
 if [ -n "$wrapper_stdout" ]; then
   printf '%s\n' "$wrapper_stdout"

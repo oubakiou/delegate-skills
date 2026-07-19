@@ -50,10 +50,13 @@ finish_without_child() {
   delegate_observe_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid" "$stdout_capture" "$stderr_capture"
   delegate_observe_import_streams "$OBSERVE_FILE" "$WORK_DIR" "$stdout_capture" "$stderr_capture"
   delegate_observe_dispatch_end "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid" "$exit_code" "$response_present"
+  delegate_observe_append_dispatch_metrics "$OBSERVE_FILE" imagegen "$MODEL" "$backend" \
+    "$(delegate_observe_elapsed_ms "$dispatch_start_ms")" "$exit_code" "$response_present" "$RESPONSE_FILE" || true
   printf '%s\n' "$RESPONSE_FILE"
   exit "$exit_code"
 }
 
+dispatch_start_ms="$(delegate_observe_monotonic_ms)"
 delegate_observe_dispatch_start "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid"
 
 case "$MODEL" in
@@ -118,11 +121,13 @@ CODEX_HOME="$CODEX_HOME_ISOLATED" TMPDIR="$WORK_DIR/tmp" \
   "$PROMPT" </dev/null >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
-if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then
+if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture" "$RESPONSE_FILE"; then
   child_status=0
 else
   child_status=$?
 fi
+delegate_observe_record_timing "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$stdout_capture" \
+  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" || true
 
 if [ ! -s "$RESPONSE_FILE" ]; then
   response_status="$child_status"
@@ -147,6 +152,8 @@ else
   delegate_observe_response_missing "$OBSERVE_FILE" "$WORK_DIR"
 fi
 delegate_observe_dispatch_end "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$dispatch_pid" "$response_status" "$response_present"
+delegate_observe_append_dispatch_metrics "$OBSERVE_FILE" imagegen "$MODEL" "$backend" \
+  "$(delegate_observe_elapsed_ms "$dispatch_start_ms")" "$response_status" "$response_present" "$RESPONSE_FILE" || true
 
 # protocol status が failed の response は exit 0 でも失敗扱いとし、調査のため prune しない
 response_protocol_status="$(jq -r '.status // empty' "$RESPONSE_FILE" 2>/dev/null || true)"

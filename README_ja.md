@@ -146,7 +146,7 @@ observe JSON には `mcp_config: {source, servers}` を記録する。`servers` 
 | `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                     |
 | `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                    |
 | `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                            | `read-response.sh auto` の inline/段階読みの閾値         |
-| `DELEGATE_METRICS_FILE`                  | 未設定                                   | proxy-metric テレメトリの JSONL 出力先（任意）           |
+| `DELEGATE_METRICS_FILE`                  | 未設定                                   | proxy-metric / timing テレメトリの JSONL 出力先（任意）  |
 | `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                                  | observe JSON の heartbeat 更新間隔                       |
 | `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）            | Claude backend の子へ注入する Bash tool timeout 上限     |
 | `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に codex-home のキャッシュと auth コピーを削除 |
@@ -161,6 +161,10 @@ observe JSON には `mcp_config: {source, servers}` を記録する。`servers` 
 ローカルでの再現調査や外部 watchdog からの監視には `DELEGATE_WORK_DIR=.temp/delegate/work` を設定し、request / response / observe JSON / run ごとの scratch file をリポジトリ内の ignore 済みディレクトリに集約する。
 `DELEGATE_RUN_RETENTION_DAYS` を設定すると、その work directory 内の古い run ごとの scratch directory を削除する。監査・デバッグ用の request / response / observe JSON は削除しない。
 worker の token usage は run 終了時に observe JSON の `usage.measurement: "measured" | "estimated"` として記録する。Claude stream-json、Codex JSON/session JSONL、Devin ATIF export、Cursor stream-json は実測値を返せる場合があり、未対応または parse 不能な backend では chars/4 推定に fallback し、`usage_parse_failed` observe event を残す。推定 usage には `estimation_basis: "protocol_payload_only"` が入る。これは request/response のプロトコルペイロード分だけを数えた確定的な下限値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まないため、実測 backend とのモデル間比較には使わないこと。cursor backend は agent CLI を `--output-format stream-json` で起動して最終 result イベントの usage をパースする（cursor-agent 2026.07.09 以降で実測化）。usage を出さない旧 CLI ではこの推定に fallback する。
+
+`usage` と並んで、完走した run は observe JSON に `timing` を記録する: `total_ms`（子プロセスの wall time）、`time_to_first_useful_event_ms`（起動から最初の tool 実行または本文 delta まで。1 秒 poll の分解能で検出）、`report_ready_at_ms`（起動から response 確定まで）、stream 由来の `model_turns` / `tool_calls`、`measurement_source`（`claude_stream_json` / `codex_json` / `cursor_stream_json` / `devin_atif` / `grok_streaming_json` / `unavailable`）。時間値はすべて monotonic clock 由来の経過 ms で、時刻は記録しない。backend の stream から取得できない項目は `null` とする。Grok wrapper は現在 plain text 出力で起動するため、その run は `measurement_source: "unavailable"` と null の stream 由来フィールドを記録する。`grok_streaming_json` は wrapper が streaming JSON へ切り替わるまでの予約値。`structured_output_parse` は wrapper 側 report 回収の導入までは常に `null`（契約フィールドとして先行定義）。
+
+`DELEGATE_METRICS_FILE` を設定すると、`prepare` / `read_response` record に `duration_ms` が入り、dispatch 完了時に `dispatch` record（wall time・exit code・response 有無と observe `timing` の転記）が追記される。`scripts/summarize-metrics.ts` は backend / model 別の p50/p95 を nearest-rank で集計する: `null` は分母から除外して除外数を併記し、p95 は 20 サンプル以上でのみ報告する（未満は p50 と件数のみ）。
 
 `DELEGATE_<TYPE>_MODEL` で指定できるドキュメント済みモデル名:
 

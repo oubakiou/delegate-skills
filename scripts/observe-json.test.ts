@@ -79,6 +79,15 @@ interface ObserveJson {
     source?: string
     total_tokens?: number | null
   }
+  timing?: {
+    measurement_source?: string
+    model_turns?: number | null
+    report_ready_at_ms?: number | null
+    structured_output_parse?: boolean | null
+    time_to_first_useful_event_ms?: number | null
+    tool_calls?: number | null
+    total_ms?: number | null
+  }
   streams: {
     stdout: { bytes: number; truncated: boolean; content: string }
     stderr: { bytes: number; truncated: boolean; content: string }
@@ -324,6 +333,36 @@ const requireRunContext = (observe: ObserveJson): NonNullable<ObserveJson['run_c
     throw new Error('missing run_context')
   }
   return observe.run_context
+}
+
+interface RecordTimingScriptOptions {
+  backend: string
+  captureLines: string
+  devinExport?: string
+  envelope?: string
+  workDir: string
+}
+
+const recordTimingScript = (options: RecordTimingScriptOptions): string => `
+  set -euo pipefail
+  source shared/observe-json.sh
+  run_dir="${options.workDir}/run"
+  observe="$run_dir/run_observe.json"
+  capture="$run_dir/worker-stdout.capture"
+  mkdir -p "$run_dir"
+  ${options.captureLines}
+  delegate_observe_init "$observe" "$run_dir" chore model-x ${options.backend} req.json res.json requester
+  delegate_observe_record_timing "$observe" "$run_dir" ${options.backend} "$capture" ${
+    options.envelope ?? '37000 4200 30100'
+  } ${options.devinExport ?? ''}
+  cat "$observe"
+`
+
+const requireTiming = (observe: ObserveJson): NonNullable<ObserveJson['timing']> => {
+  if (!observe.timing) {
+    throw new Error('missing timing')
+  }
+  return observe.timing
 }
 
 const makeResumableObserve = (workDir: string, overrides = ''): string => `
@@ -882,6 +921,204 @@ MD
 
       expectEstimatedUsage(observe)
       expect(observe.events.map((event) => event.kind)).toContain('usage_parse_failed')
+    })
+  })
+
+  describe('timing', () => {
+    it('records claude stream counts with monotonic envelope values', () => {
+      const workDir = makeWorkDir()
+      const captureLines = `printf '%s\\n' '{"type":"system","subtype":"init"}' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"},{"type":"text","text":"x"}]}}' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}' '{"type":"result","num_turns":7,"usage":{"input_tokens":1,"output_tokens":1}}' >"$capture"`
+      const observe = parseObserveJson(
+        runBash(recordTimingScript({ backend: 'claude', captureLines, workDir }))
+      )
+      const timing = requireTiming(observe)
+      expect(timing).toEqual({
+        measurement_source: 'claude_stream_json',
+        model_turns: 7,
+        report_ready_at_ms: 30_100,
+        structured_output_parse: null,
+        time_to_first_useful_event_ms: 4200,
+        tool_calls: 2,
+        total_ms: 37_000,
+      })
+    })
+
+    it('records codex turn and tool item counts', () => {
+      const workDir = makeWorkDir()
+      const captureLines = `printf '%s\\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"item.completed","item":{"type":"command_execution"}}' '{"type":"item.completed","item":{"type":"agent_message"}}' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}' >"$capture"`
+      const observe = parseObserveJson(
+        runBash(recordTimingScript({ backend: 'codex', captureLines, workDir }))
+      )
+      const timing = requireTiming(observe)
+      expect(timing.measurement_source).toBe('codex_json')
+      expect(timing.model_turns).toBe(1)
+      expect(timing.tool_calls).toBe(1)
+    })
+
+    it('records cursor tool_call counts without a turn concept', () => {
+      const workDir = makeWorkDir()
+      const captureLines = `printf '%s\\n' '{"type":"system"}' '{"type":"assistant","message":{}}' '{"type":"tool_call","subtype":"started"}' '{"type":"tool_call","subtype":"completed"}' '{"type":"result","duration_ms":6661}' >"$capture"`
+      const observe = parseObserveJson(
+        runBash(recordTimingScript({ backend: 'cursor', captureLines, workDir }))
+      )
+      const timing = requireTiming(observe)
+      expect(timing.measurement_source).toBe('cursor_stream_json')
+      expect(timing.model_turns).toBeNull()
+      expect(timing.tool_calls).toBe(1)
+    })
+
+    it('records devin step counts from the ATIF export', () => {
+      const workDir = makeWorkDir()
+      const captureLines = `printf 'plain text output\\n' >"$capture"
+      printf '{"session_id":"s","steps":[{},{},{}]}' >"$run_dir/devin-export.json"`
+      const observe = parseObserveJson(
+        runBash(
+          recordTimingScript({
+            backend: 'devin',
+            captureLines,
+            devinExport: '"$run_dir/devin-export.json"',
+            workDir,
+          })
+        )
+      )
+      const timing = requireTiming(observe)
+      expect(timing.measurement_source).toBe('devin_atif')
+      expect(timing.model_turns).toBe(3)
+      expect(timing.tool_calls).toBeNull()
+    })
+
+    it('falls back to unavailable with null values for unparsable streams', () => {
+      const workDir = makeWorkDir()
+      const captureLines = `printf 'plain text output\\n' >"$capture"`
+      const observe = parseObserveJson(
+        runBash(
+          recordTimingScript({ backend: 'grok', captureLines, envelope: '"" "" ""', workDir })
+        )
+      )
+      const timing = requireTiming(observe)
+      expect(timing).toEqual({
+        measurement_source: 'unavailable',
+        model_turns: null,
+        report_ready_at_ms: null,
+        structured_output_parse: null,
+        time_to_first_useful_event_ms: null,
+        tool_calls: null,
+        total_ms: null,
+      })
+    })
+
+    it('measures wait envelope values and detects report readiness', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        observe="$run_dir/run_observe.json"
+        capture="$run_dir/worker-stdout.capture"
+        stderr_capture="$run_dir/worker-stderr.capture"
+        response="$run_dir/response.json"
+        mkdir -p "$run_dir"
+        printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}' >"$capture"
+        : >"$stderr_capture"
+        printf '{"status":"completed","sections":[]}' >"$response"
+        delegate_observe_init "$observe" "$run_dir" chore haiku claude req.json "$response" requester
+        sleep 1 &
+        child_pid=$!
+        delegate_observe_wait_with_heartbeat "$observe" "$run_dir" claude "$child_pid" "$capture" "$stderr_capture" "$response"
+        printf 'TOTAL:%s\\n' "\${DELEGATE_OBSERVE_WAIT_TOTAL_MS}"
+        printf 'FIRST:%s\\n' "\${DELEGATE_OBSERVE_FIRST_USEFUL_MS}"
+        printf 'READY:%s\\n' "\${DELEGATE_OBSERVE_REPORT_READY_MS}"
+        `
+      )
+      const values = new Map(
+        output
+          .trimEnd()
+          .split('\n')
+          .map((line) => {
+            const [key, value] = line.split(':')
+            return [key, value] as const
+          })
+      )
+      expect(Number(values.get('TOTAL'))).toBeGreaterThanOrEqual(900)
+      expect(values.get('FIRST')).toMatch(/^\d+$/)
+      expect(values.get('READY')).toMatch(/^\d+$/)
+    })
+
+    it('treats only tool executions and content deltas as the first useful event', () => {
+      const workDir = makeWorkDir()
+      const output = runBash(
+        `
+        set -euo pipefail
+        source shared/observe-json.sh
+        run_dir="${workDir}/run"
+        capture="$run_dir/worker-stdout.capture"
+        mkdir -p "$run_dir"
+        check() {
+          if delegate_observe_first_useful_seen "$1" "$capture"; then
+            printf '%s:seen\\n' "$2"
+          else
+            printf '%s:unseen\\n' "$2"
+          fi
+        }
+        printf '%s\\n' '{"type":"assistant","message":{"content":[]}}' >"$capture"
+        check claude claude_empty
+        printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}' >"$capture"
+        check claude claude_text
+        printf '%s\\n' '{"type":"item.completed","item":{"type":"reasoning"}}' >"$capture"
+        check codex codex_reasoning
+        printf '%s\\n' '{"type":"item.started","item":{"type":"command_execution"}}' >"$capture"
+        check codex codex_command
+        printf '%s\\n' '{"type":"assistant","message":{"content":[]}}' >"$capture"
+        check cursor cursor_empty
+        printf '%s\\n' '{"type":"tool_call","subtype":"started"}' >"$capture"
+        check cursor cursor_tool_call
+        printf 'plain text\\n' >"$capture"
+        check grok grok_plain
+        `
+      )
+      expect(output.trimEnd().split('\n')).toEqual([
+        'claude_empty:unseen',
+        'claude_text:seen',
+        'codex_reasoning:unseen',
+        'codex_command:seen',
+        'cursor_empty:unseen',
+        'cursor_tool_call:seen',
+        'grok_plain:unseen',
+      ])
+    })
+
+    it('appends a dispatch metrics record that mirrors the observe timing', () => {
+      const workDir = makeWorkDir()
+      const captureLines = `printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"tool_use"}]}}' '{"type":"result","num_turns":2}' >"$capture"`
+      const output = runBash(
+        `
+        ${recordTimingScript({ backend: 'claude', captureLines, workDir }).replace('cat "$observe"', ':')}
+        DELEGATE_METRICS_FILE="${workDir}/metrics.jsonl" \\
+          delegate_observe_append_dispatch_metrics "$observe" chore haiku claude 1234 0 true res.json
+        delegate_observe_append_dispatch_metrics "$observe" chore haiku claude 1234 0 true res.json
+        cat "${workDir}/metrics.jsonl"
+        `
+      )
+      const lines = output.trimEnd().split('\n')
+      expect(lines).toHaveLength(1)
+      const record = parseJson(lines[0])
+      expect(record).toMatchObject({
+        backend: 'claude',
+        duration_ms: 1234,
+        exit_code: 0,
+        kind: 'dispatch',
+        measurement_source: 'claude_stream_json',
+        model: 'haiku',
+        model_turns: 2,
+        report_ready_at_ms: 30_100,
+        response_present: true,
+        structured_output_parse: null,
+        task_type: 'chore',
+        time_to_first_useful_event_ms: 4200,
+        tool_calls: 1,
+      })
+      expect(record).not.toHaveProperty('total_ms')
     })
   })
 

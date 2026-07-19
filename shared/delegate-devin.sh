@@ -153,11 +153,13 @@ TMPDIR="$WORK_DIR/tmp" devin "${devin_args[@]}" </dev/null \
   >"$stdout_capture" 2>"$stderr_capture" &
 child_pid=$!
 
-if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture"; then
+if delegate_observe_wait_with_heartbeat "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$child_pid" "$stdout_capture" "$stderr_capture" "$RESPONSE_FILE"; then
   child_status=0
 else
   child_status=$?
 fi
+delegate_observe_record_timing "$OBSERVE_FILE" "$WORK_DIR" "$backend" "$stdout_capture" \
+  "${DELEGATE_OBSERVE_WAIT_TOTAL_MS:-}" "${DELEGATE_OBSERVE_FIRST_USEFUL_MS:-}" "${DELEGATE_OBSERVE_REPORT_READY_MS:-}" "$devin_export" || true
 
 response_generated_by_worker=1
 if [ ! -s "$RESPONSE_FILE" ]; then
