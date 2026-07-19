@@ -780,7 +780,7 @@ delegate_observe_split_model_effort() {
 }
 
 # effort suffix の backend 別検証。不正なら 1 行のエラーを stderr に出して非 0 を返す。
-# 許容値は実 CLI の PoC 実測に基づく（docs/feature/delegate-effort-suffix.md §2）。
+# 許容値は実 CLI の PoC 実測に基づく（docs/archive/delegate-effort-suffix.archive.md §2）。
 # Claude CLI は不正値を warning のみで無視して続行するため、CLI 側の検証には代替できない
 delegate_observe_validate_model_effort() {
   local backend="$1"

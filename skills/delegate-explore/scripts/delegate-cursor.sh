@@ -96,7 +96,7 @@ if ! effort_error="$(delegate_observe_validate_model_effort "$backend" "$ORIGINA
 fi
 
 # 検証済みの effort を bracket parameter override へ変換する。パラメータ名はモデル別
-# （PoC 実測。docs/feature/delegate-effort-suffix.md §2）
+# （PoC 実測。docs/archive/delegate-effort-suffix.archive.md §2）
 CURSOR_CLI_MODEL="$MODEL"
 if [ -n "$EFFORT" ]; then
   case "$MODEL" in
