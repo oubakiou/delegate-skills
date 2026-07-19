@@ -31,21 +31,11 @@ if [ ! -f CLAUDE.local.md ]; then
   echo "CLAUDE.local.md を作成しました"
 fi
 
-# grokはnpmからインストールできない
-curl -fsSL https://x.ai/cli/install.sh | bash
-GROK_ZSHRC="$HOME/.zshrc"
-if [ -f "$GROK_ZSHRC" ] && ! grep -Fq 'export PATH="$HOME/.grok/bin:$PATH"' "$GROK_ZSHRC"; then
-  {
-    echo ''
-    echo '# >>> grok installer >>>'
-    echo 'export PATH="$HOME/.grok/bin:$PATH"'
-    echo '[[ -r "$HOME/.grok/completions/zsh/_grok" ]] && fpath=("$HOME/.grok/completions/zsh" $fpath)'
-    echo '# <<< grok installer <<<'
-  } >> "$GROK_ZSHRC"
-fi
-
 # Devin CLIはnpmからインストールできない
 curl -fsSL https://cli.devin.ai/install.sh | bash
+
+# Cursor CLIはnpmからインストールできない
+curl https://cursor.com/install -fsS | bash
 
 echo "デフォルトskillをインストールします"
 gh auth login

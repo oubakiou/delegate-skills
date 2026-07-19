@@ -1,4 +1,5 @@
-model = "gpt-5.5"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
 
 [features]
 hooks = true
@@ -13,8 +14,7 @@ inherit = "core"
 
 [shell_environment_policy.set]
 DISABLE_AUTOUPDATER = "1"
-DELEGATE_CHORE_MODEL = "gpt-5.4-mini"
-DELEGATE_EXPLORE_MODEL = "gpt-5.4-mini"
-DELEGATE_IMPLEMENT_MODEL = "gpt-5.4-mini"
-DELEGATE_REVIEW_MODEL = "gpt-5.5"
-DELEGATE_WORK_DIR = "/workspaces/delegate-skills/.temp/delegate/"
+DELEGATE_CHORE_MODEL = "gpt-5.5"
+DELEGATE_EXPLORE_MODEL = "gpt-5.5"
+DELEGATE_IMPLEMENT_MODEL = "gpt-5.5"
+DELEGATE_REVIEW_MODEL = "gpt-5.6-sol"
