@@ -19,8 +19,8 @@ delegate 1 回あたり約 3 分かかっている委譲オーバーヘッド（
 
 - **session reuse（resumable / followup）の拡張**: 反復 2 回目以降の再 prefill 回避は既存機能で達成済み。利用ガイドの充実は本計画のドキュメント反映内で触れるに留める
 - **worker モデル自体の高速化・変更**: 既定モデル（haiku / sonnet 等）の見直しは行わない。オーバーヘッドはモデル選択と独立に存在する
-- **task 種別ごとの tool / MCP capability 絞り込み**: `--tools` による tool schema 削減と task 別 MCP 注入の限定は、prefill 削減として有望だが効果が環境の MCP 設定量に依存する。MCP 継承統一（`delegate-worker-mcp-config.md`）の後続計画として切り出し、本計画の Step 1 テレメトリで効果測定の材料だけ先に揃える
-- **latency-first の break-even gate / effort・fast 系モデルへの routing**: 委譲可否の機械的 gate と effort 指定は「delegate-skills は effort を渡さない」という公開仕様の変更を含むため別計画とする。委譲すべきでないタスクの判断は従来どおり各 SKILL.md のコストゲートに委ねる
+- **task 種別ごとの tool / MCP capability 絞り込み**: `--tools` による tool schema 削減と task 別 MCP 注入の限定は、prefill 削減として有望だが効果が環境の MCP 設定量に依存する。MCP 継承統一（完了済み: [delegate-worker-mcp-config.archive.md](../archive/delegate-worker-mcp-config.archive.md)）の後続計画として切り出し、本計画の Step 1 テレメトリで効果測定の材料だけ先に揃える
+- **latency-first の break-even gate / effort・fast 系モデルへの routing**: opt-in の `@effort` suffix 指定は実装済み（[delegate-effort-suffix.archive.md](../archive/delegate-effort-suffix.archive.md)）。本計画で扱わないのは、latency を基準に委譲可否や effort・fast 系モデルを機械的に選ぶ gate / routing の自動化で、これは別計画とする。委譲すべきでないタスクの判断は従来どおり各 SKILL.md のコストゲートに委ねる
 - **stall 判定の高度化（first-useful-event deadline / 総 deadline / backend circuit breaker）**: 現行の byte 増加ベース stall 判定は接続リトライログを進捗と誤認する盲点があるが、これは tail latency（p95）対策であり中央値の固定費削減という本計画と目的が異なる。`time_to_first_useful_event` の計測だけを Step 1 に先取りし、deadline 設計は別計画とする
 - **md2idx / npx の高速化**: warm cache で 0.15 秒と実測済みでボトルネックではない（§2）
 - **protocol v1 のファイル形式変更**: request / response JSON の形式（md2idx envelope）は変えない。変わるのは「誰が組み立てるか」のみ（§5-e）
@@ -31,13 +31,46 @@ delegate 1 回あたり約 3 分かかっている委譲オーバーヘッド（
 
 手法: devcontainer 上で各要素を単体計測し、さらに「README.md の 1 行目を報告する」だけの trivial リクエストを `shared/prepare.sh` → `shared/dispatch.sh` で実 delegate 実行（backend: Codex / gpt-5.5、`DELEGATE_EXPLORE_MODEL` による env 解決）。observe JSON と worker stream capture から往復内訳を抽出した。この trivial リクエストは SKILL.md のコストゲート上は委譲すべきでないタスクであり、固定費測定専用の基準として使う。
 
-| 計測項目                           | 実測値                                                                      |
-| ---------------------------------- | --------------------------------------------------------------------------- |
-| `npx --yes md2idx --help`（warm）  | 0.15 秒                                                                     |
-| `claude -p` 最小往復（haiku）      | 3.7 秒                                                                      |
-| trivial delegate-explore の worker | 37 秒 / 7 tool 往復 / 入力 98k tokens（うち cached 81k）                    |
-| うちプロトコル儀式                 | 6 往復（読取 1 + 確認 1 + 書込 1 + md2idx 変換 1 + jq 検証 1 + 最終応答 1） |
-| うち実作業                         | 1 往復（`head -n 1 README.md`）                                             |
+| 計測項目                           | 実測値                                                                             |
+| ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `npx --yes md2idx --help`（warm）  | 0.15 秒                                                                            |
+| `claude -p` 最小往復（haiku）      | 3.7 秒                                                                             |
+| trivial delegate-explore の worker | 37 秒 / 7 LLM 往復（tool call 6 + 最終応答 1）/ 入力 98k tokens（うち cached 81k） |
+| うちプロトコル儀式                 | 6 往復（読取 1 + 確認 1 + 書込 1 + md2idx 変換 1 + jq 検証 1 + 最終応答 1）        |
+| うち実作業                         | 1 往復（`head -n 1 README.md`）                                                    |
+
+7 往復の内訳（①②④⑤⑥⑦ が儀式、③ のみ実作業）:
+
+```mermaid
+sequenceDiagram
+    participant C as wrapper（CLI 子プロセス）
+    participant W as worker LLM
+    participant T as tool 実行
+
+    C->>W: 初期 prompt（request_file パス + プロトコル手順）
+    rect rgb(255, 240, 240)
+        Note over W,T: 儀式: request の読取・確認
+        W->>T: ① read-request.sh（request 読取）
+        T-->>W: request 本文
+        W->>T: ② 内容・前提の確認
+        T-->>W: 確認結果
+    end
+    rect rgb(240, 255, 240)
+        Note over W,T: 実作業（唯一の本来往復）
+        W->>T: ③ head -n 1 README.md
+        T-->>W: 作業結果
+    end
+    rect rgb(255, 240, 240)
+        Note over W,T: 儀式: 報告の組み立て・検証
+        W->>T: ④ report.md 書込
+        T-->>W: 書込結果
+        W->>T: ⑤ npx md2idx 変換（この計測では build-response.sh 不使用の手組み）
+        T-->>W: 変換結果
+        W->>T: ⑥ jq 検証
+        T-->>W: 検証結果
+    end
+    W-->>C: ⑦ 最終応答
+```
 
 worker の 1 往復 ≒ 5 秒（gpt-5.5）。親側は「SKILL.md 読込 → リクエスト作文 + prepare → dispatch → read-response → ユーザー向け要約」の 3〜4 ターンで、親が thinking の長い高価モデルの場合 1 ターン 15〜40 秒。両者の合計が約 3 分に一致する。
 
@@ -86,7 +119,9 @@ worker の 1 往復 ≒ 5 秒（gpt-5.5）。親側は「SKILL.md 読込 → リ
 
 **報告方式は起動前に選択する**（§5-c）。wrapper は子プロセス起動前に、Step 3 PoC で確定した backend 対応状況と task 種別ヒューリスティック（implement の詳細報告など、最終 message の出力上限に当たり得る長大報告の見込み）に基づいて、構造化最終応答方式か report.md 方式（front-matter `status:` 付き Markdown の 1 回書込 = + 1 往復）かを決め、prompt と tool 許可をその方式に合わせて構成する。
 
-**実行後の parse 失敗・truncate は failed response（fail-closed）とする**。wrapper が失敗を検知する時点で非永続セッションの worker は終了済みであり、そこから report.md へ切り替えることはできない。リトライは丸ごと再実行（コストは worker wall 全額）になるため wrapper は自動で行わず、failed response を受けた親の判断に委ねる。parse 失敗率は `timing` テレメトリで監視し、高止まりする backend は起動前選択を report.md 方式へ倒す。
+**実行後の parse 失敗・truncate は failed response（fail-closed）とする**。wrapper が失敗を検知する時点で非永続セッションの worker は終了済みであり、そこから report.md へ切り替えることはできない。リトライは丸ごと再実行（コストは worker wall 全額）になるため wrapper は自動で行わず、failed response を受けた親の判断に委ねる。parse 失敗率は `timing` テレメトリで監視し、高止まりする backend は起動前選択を report.md 方式へ倒す。構造化出力の `status` は protocol の 4 値（`completed | partial | failed | needs_input`）に schema で制約し、語彙外の値が返った場合も parse 失敗と同じ failed response とする。
+
+報告方式の選択と wrapper 側組み立ては、session_mode（resumable / followup）を含む全 run に適用する。resumable では worker プロセス終了後も backend session を follow-up run で再開して report を再要求する余地が残るが、再要求には新しい follow-up run の起動（worker 往復のコスト）が必要なため wrapper は自動で行わない（§5-c と同判断）。実行後の失敗処理は非永続と同じ fail-closed に統一し、follow-up で再要求するかは failed response を受けた親が判断する。
 
 主経路（構造化最終応答）を選んだ run では worker に報告用の書込許可が不要になるため、read-only 種別（explore / review）の tool 許可をさらに絞れる（Codex read-only sandbox や Cursor plan / ask mode の利用余地も広がる）。report.md 方式を選んだ run のみ run dir 配下への書込を許可する。
 
@@ -113,8 +148,8 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 ```
 
 - `content` の上限は `DELEGATE_RUN_CONTENT_MAX`（既定は Step 1 実測から決定）。超過時は切り詰めて `content_truncated: true` とし、全文は `response_file` 参照に委ねる
-- 失敗時（prepare の exit 3/4、dispatch 失敗、read-response 失敗）も同 schema で返し、`content` には failed response の Summary / Error 相当を上限付きで格納する。exit code は透過する。prepare の exit 5（follow-up 検証失敗）は run.sh の対象外（§5-h。follow-up は個別スクリプトのフロー契約に残る）
-- `selector` 引数は `read-response.sh` へ渡す。省略時の既定は task 種別で切り、review は `decision`、他は `auto`
+- 失敗時（prepare の失敗 exit 1=md2idx 失敗 / 2=引数エラー / 3=前提条件不足 / 4=委譲サイクル / 6=effort 指定不正、dispatch 失敗、read-response 失敗）も同 schema で返し、`content` には failed response の Summary / Error 相当を上限付きで格納する。exit code は透過する。prepare の exit 5（follow-up 検証失敗）は run.sh の対象外（§5-h。follow-up は個別スクリプトのフロー契約に残る）
+- `selector` 引数は `read-response.sh` へ渡す。省略時の既定は task 種別で切り、review は `decision`、他は `auto`。第 6 位置引数は `prepare.sh` では `session_mode` であり意味が異なるため、SKILL.md の書き換え（Step 2）で混同しないよう明記する
 - signal・外部 Bash timeout による強制終了時は構造化 stdout を保証できない（one-shot 保証の対象外）。復旧経路として run.sh は dispatch 前に `observe_file` パスを stderr へ出力する
 - resumable / followup を含む高度なフロー（observe 監視、background 実行）では従来どおり個別スクリプトを使う（§5-h）
 
@@ -146,13 +181,13 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 - `shared/read-response.sh` に `decision` selector を追加し、run.sh の review 既定として接続
 - 専用 2 skill に同一契約の `run-imagegen.sh` / `run-x-research.sh` を追加
 - 全 skill の SKILL.md の実行フローを one-shot 前提に書き換え（`allowed-tools` 更新を含む）。個別スクリプトによる高度なフローは補足として残す。対話親向けに background dispatch + observe 監視の利用ガイドも同 Step で追記
-- README / README_ja の How it works を同 Step で更新
+- README / README_ja の How it works と環境変数表（`DELEGATE_RUN_CONTENT_MAX` の追加）を同 Step で更新
 
 成果物: 親の Bash 往復 3 → 1（親 LLM 2 ターン相当の削減、1 回あたり 30〜80 秒見込み）。wrapper 改修と独立に先行投入できる
 
 ### Step 3: (未着手) PoC — 構造化出力回収の backend 別確定
 
-実モデルを呼ぶ live 実行で以下を確定させる（`delegate-worker-mcp-config.md` Step 1 と同じ流儀）:
+実モデルを呼ぶ live 実行で以下を確定させる（`delegate-worker-mcp-config.archive.md` Step 1 と同じ流儀）:
 
 - Claude: `--json-schema` で `{status, report_markdown}` が安定して返るか。長文 report での遵守度と truncate 挙動
 - Codex: `--output-schema` + 最終 message 回収（既存 `LAST_MSG`）で同上
@@ -212,11 +247,11 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 ### c. 報告方式の選択タイミングと失敗時の扱い
 
-| 候補                                                            | 採用 | 理由                                                                                                                                                            |
-| --------------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **起動前に方式を確定し、実行後の parse 失敗は failed response** | ✓    | 非永続セッションでは wrapper が parse 失敗を検知した時点で worker は終了済みで、実行後の方式切替は原理的に不成立。起動前選択なら read-only sandbox とも両立する |
-| 実行後に parse 失敗を検知したら report.md fallback へ切替       | ✗    | 終了済みの worker にファイルは書かせられない。「+1 往復」ではなく丸ごと再実行になり、fallback の名に値しない                                                    |
-| parse 失敗時に wrapper が自動リトライ                           | ✗    | 再実行は worker wall 全額のコストで、無条件に払う判断を wrapper がすべきでない。failed response を受けた親（またはユーザー）の判断に委ねる                      |
+| 候補                                                            | 採用 | 理由                                                                                                                                                                                                                              |
+| --------------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **起動前に方式を確定し、実行後の parse 失敗は failed response** | ✓    | 非永続セッションでは wrapper が parse 失敗を検知した時点で worker は終了済みで、実行後の方式切替は原理的に不成立。resumable の report 再要求も自動では行わず親判断に委ねる（§3.1）。起動前選択なら read-only sandbox とも両立する |
+| 実行後に parse 失敗を検知したら report.md fallback へ切替       | ✗    | 終了済みの worker にファイルは書かせられない。「+1 往復」ではなく丸ごと再実行になり、fallback の名に値しない                                                                                                                      |
+| parse 失敗時に wrapper が自動リトライ                           | ✗    | 再実行は worker wall 全額のコストで、無条件に払う判断を wrapper がすべきでない。failed response を受けた親（またはユーザー）の判断に委ねる                                                                                        |
 
 ### d. 専用 2 skill（imagegen / x-research）の one-shot 化
 
@@ -264,12 +299,12 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 - `scripts/delegate-wrapper-session.test.ts`（更新、fake CLI）
   - 起動前の報告方式選択（構造化最終応答 / report.md）の分岐が prompt・tool 許可・CLI フラグに反映されること（generic 4 backend + 専用 2 wrapper）
   - 構造化最終応答 `{status, report_markdown}` → response JSON 組み立て（status 転記、md2idx envelope 検証）
-  - parse 失敗・truncate → failed response（fail-closed）と parse 成否のテレメトリ記録
+  - parse 失敗・truncate・`status` 語彙外 → failed response（fail-closed）と parse 成否のテレメトリ記録
   - request の正本 JSON からの prompt 組み立て（companion `.md` 欠落時でも成立すること）と、context 上限 gate 超過時の read-request 指示 fallback
-  - 通常 run / resumable / followup で既存の session 挙動が変わらないこと
+  - 通常 run / resumable / followup のいずれにも報告方式選択・wrapper 組み立てが適用され、既存の session 管理挙動（handle 記録・follow-up 検証）が変わらないこと
 - `run.sh` / `run-imagegen.sh` / `run-x-research.sh` の shell test（新規）
   - 成功・失敗とも §3.2 の単一 JSON schema（`content_truncated` / 上限 / nullable パス含む）で stdout が返ること
-  - prepare の exit 3/4 と dispatch 失敗の exit code 透過、dispatch 前の stderr への observe_file 出力
+  - prepare の各失敗 exit（1/2/3/4/6。6 は `DELEGATE_<TYPE>_MODEL` の不正 `@effort` suffix で再現）と dispatch 失敗の exit code 透過、dispatch 前の stderr への observe_file 出力
   - selector 引数と task 種別既定（review → `decision`、他 → `auto`）が `read-response.sh` へ届くこと
   - response 欠落・不正 JSON でも同 schema の失敗 stdout が返ること
 - `read-response.sh` の `decision` selector（既存テスト形式に追加）
@@ -311,6 +346,6 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 - [docs/design/spec.md](../design/spec.md) / [docs/design/development.md](../design/development.md) / [docs/design/protocol-v1.md](../design/protocol-v1.md)
 - 計画テンプレート: [feature-plan-template.md](feature-plan-template.md)（「公開仕様は遅延させない」原則を §4 の Step 構成に適用）
-- 関連計画: [delegate-worker-mcp-config.md](delegate-worker-mcp-config.md)（MCP 継承統一。capability 絞り込みはその後続計画として切り出す）
+- 関連計画: [delegate-worker-mcp-config.archive.md](../archive/delegate-worker-mcp-config.archive.md)（MCP 継承統一、完了済み。capability 絞り込みはその後続計画として切り出す）
 - 既存実装: `shared/prepare.sh` / `shared/dispatch.sh` / `shared/build-request.sh` / `shared/build-response.sh` / `shared/read-request.sh` / `shared/read-response.sh` / `shared/observe-json.sh` / generic 4 backend wrapper / 専用 2 wrapper
 - 計測記録: §2（2026-07-18、devcontainer 上の実測。CLI フラグの実在確認を含む）
