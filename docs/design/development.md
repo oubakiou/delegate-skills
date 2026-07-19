@@ -8,22 +8,25 @@ delegate-skills の開発ワークフロー。仕様は [spec.md](spec.md)、プ
 
 ```
 main agent
-  ├─ <skill>/scripts/prepare.sh              前提チェック → モデル解決 → チェーン確認 → リクエスト生成
-  │   ├─ check-md2idx.sh                     前提条件チェック（npx md2idx, fail-closed）
-  │   ├─ resolve-model.sh                    モデル解決（種別env → デフォルト）
-  │   ├─ check-delegate-chain.sh             多段委譲の再帰防止（同一種別2度禁止 → exit 4）
-  │   └─ build-request.sh                    request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
-  ├─ <skill>/scripts/dispatch.sh             モデル名プレフィックスによる決定論的な実行系分岐
-  │   ├─ model が gpt* → delegate-codex.sh で Codex 子プロセス
-  │   ├─ model が swe*|devin-* → delegate-devin.sh で Devin CLI 子プロセス
-  │   ├─ model が composer*|cursor-* → delegate-cursor.sh で Cursor agent CLI 子プロセス
-  │   └─ それ以外 → delegate-claude.sh で Claude 子プロセス（claude -p）
-  └─ <skill>/scripts/read-response.sh auto で読み取り（大きい response は段階読み）→ 検証
+  └─ <skill>/scripts/run.sh                  通常 run の one-shot（内部で prepare → dispatch → read-response）
+      ├─ <skill>/scripts/prepare.sh          前提チェック → モデル解決 → チェーン確認 → リクエスト生成
+      │   ├─ check-md2idx.sh                 前提条件チェック（npx md2idx, fail-closed）
+      │   ├─ resolve-model.sh                モデル解決（種別env → デフォルト）
+      │   ├─ check-delegate-chain.sh         多段委譲の再帰防止（同一種別2度禁止 → exit 4）
+      │   └─ build-request.sh                request_file / response_file を mktemp で事前確保（ts + 乱数を共有）
+      ├─ <skill>/scripts/dispatch.sh         モデル名プレフィックスによる決定論的な実行系分岐
+      │   ├─ model が gpt* → delegate-codex.sh で Codex 子プロセス
+      │   ├─ model が swe*|devin-* → delegate-devin.sh で Devin CLI 子プロセス
+      │   ├─ model が composer*|cursor-* → delegate-cursor.sh で Cursor agent CLI 子プロセス
+      │   └─ それ以外 → delegate-claude.sh で Claude 子プロセス（claude -p）
+      └─ <skill>/scripts/read-response.sh    selector で読み取り（review 既定は decision、他は auto）→ 検証
 ```
 
-`delegate-imagegen` は画像出力まわりの既定値を保つため `<skill>/scripts/prepare-imagegen.sh` と `<skill>/scripts/delegate-imagegen-codex.sh` を使う。`prepare-imagegen.sh` も `DELEGATE_IMAGEGEN_MODEL` を解決して `model` を返すが、imagegen は `gpt*`/Codex 分岐のみ受け付ける。
+`run.sh` は成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を stdout へ返し、内部スクリプトの exit code を透過する。resumable / follow-up・observe 監視・background 実行など途中で親の判断を挟むフローは、従来どおり個別スクリプトを直接使う。
 
-`delegate-x-research` は共有の `prepare.sh` と `<skill>/scripts/delegate-x-research-grok.sh` を使う。現在のラッパは `grok -p -m "$model"` を呼び、worker のレポートを同じレスポンスプロトコルで書き出す。
+`delegate-imagegen` は画像出力まわりの既定値を保つため `<skill>/scripts/prepare-imagegen.sh` と `<skill>/scripts/delegate-imagegen-codex.sh` を使う。`prepare-imagegen.sh` も `DELEGATE_IMAGEGEN_MODEL` を解決して `model` を返すが、imagegen は `gpt*`/Codex 分岐のみ受け付ける。one-shot は共通 run.sh と同一契約の `<skill>/scripts/run-imagegen.sh` が担う。
+
+`delegate-x-research` は共有の `prepare.sh` と `<skill>/scripts/delegate-x-research-grok.sh` を使う。現在のラッパは `grok -p -m "$model"` を呼び、worker のレポートを同じレスポンスプロトコルで書き出す。one-shot は共通 run.sh と同一契約の `<skill>/scripts/run-x-research.sh` が担う（共通 dispatch.sh は grok を明示拒否するため dispatch だけ専用 wrapper に差し替える）。
 
 共有スクリプト/アセットの正本は `shared/` にあり、`scripts/sync-shared.ts` が各 skill へコピーする。
 
@@ -60,6 +63,7 @@ delegate-skills/
     delegate-cursor.sh
     dispatch.sh
     prepare.sh
+    run.sh
     observe-json.sh
     build-request.sh
     read-request.sh

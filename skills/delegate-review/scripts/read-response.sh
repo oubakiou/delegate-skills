@@ -11,6 +11,9 @@ set -euo pipefail
 #     (省略) | status : .status を出力（既定・最安ゲート）
 #     auto            : サイズゲート。小さい（既定 10KB 未満）なら status + 全 section を 1 回で丸読み、
 #                       大きいなら status + index + Summary section のみ返し、他は <N> の段階読みへ誘導する
+#     decision        : auto と同じサイズゲート。大きい場合に Summary に加えて Findings / Blockers の
+#                       要点（各 section を閾値バイト相当で切り詰め）も返し、review 系フローの
+#                       追加読み取り往復を削る
 #     index           : 目次（.index）
 #     meta            : protocol_version/type/status/responder_session_id を JSON で出力
 #     all             : 全 section を区切り付きで出力
@@ -20,7 +23,7 @@ set -euo pipefail
 # exit: 2=引数エラー / 3=前提条件(jq)不足 / 1=ファイル不在・selector 不正・範囲外
 
 if [ $# -lt 1 ]; then
-  echo "Usage: $0 <response_file> [status|auto|index|meta|all|<N>]" >&2
+  echo "Usage: $0 <response_file> [status|auto|decision|index|meta|all|<N>]" >&2
   exit 2
 fi
 
@@ -92,6 +95,9 @@ append_metrics() {
   ) >/dev/null 2>&1 || true
 }
 
+# 小さい response の丸読み（auto / decision で共用）
+inline_all_jq='"status: \(.status)\n" + (.sections | to_entries | map("===== section[\(.key)] =====\n\(.value)") | join("\n"))'
+
 case "$selector" in
   status)
     if [ -z "${DELEGATE_METRICS_FILE:-}" ]; then
@@ -118,11 +124,11 @@ case "$selector" in
     size="$(wc -c <"$response_file" | tr -d '[:space:]')"
     if [ "$size" -lt "$threshold" ]; then
       if [ -z "${DELEGATE_METRICS_FILE:-}" ]; then
-        jq -r '"status: \(.status)\n" + (.sections | to_entries | map("===== section[\(.key)] =====\n\(.value)") | join("\n"))' "$response_file"
+        jq -r "$inline_all_jq" "$response_file"
         exit 0
       fi
       inline=true
-      output="$(jq -r '"status: \(.status)\n" + (.sections | to_entries | map("===== section[\(.key)] =====\n\(.value)") | join("\n"))' "$response_file")"
+      output="$(jq -r "$inline_all_jq" "$response_file")"
       append_metrics
       printf '%s\n' "$output"
     else
@@ -132,6 +138,43 @@ case "$selector" in
       fi
       inline=false
       output="$(jq -r "$auto_large_jq" "$response_file")"
+      append_metrics
+      printf '%s\n' "$output"
+    fi
+    ;;
+  decision)
+    # review 系向け: 大規模 response でも Summary だけでなく Findings / Blockers の要点まで
+    # 1 回で返し、親（高価なモデル）の追加読み取りターンを削る。切り詰めは jq の文字数単位
+    # （閾値バイトの近似）で行い、全文は <N> の段階読みに委ねる
+    decision_large_jq='def first_line: split("\n")[0];
+      def entry_for($name): (.sections | to_entries | map(select(.value | first_line | test("^#+\\s*" + $name + "\\s*$"))) | first);
+      def clip($text): if ($text | length) > $cap then ($text[:$cap] + "\n…(truncated。全文は <N> で取得)") else $text end;
+      (entry_for("Summary")) as $summary
+      | (entry_for("Findings")) as $findings
+      | (entry_for("Blockers")) as $blockers
+      | "status: \(.status)\n===== index =====\n\(.index)\n"
+        + (if $summary == null then "" else "===== section[\($summary.key)] (Summary) =====\n\($summary.value)\n" end)
+        + (if $findings == null then "" else "===== section[\($findings.key)] (Findings) =====\n\(clip($findings.value))\n" end)
+        + (if $blockers == null then "" else "===== section[\($blockers.key)] (Blockers) =====\n\(clip($blockers.value))\n" end)
+        + "（他 section は必要分のみ <N> で取得）"'
+    threshold="${DELEGATE_RESPONSE_INLINE_MAX:-10240}"
+    size="$(wc -c <"$response_file" | tr -d '[:space:]')"
+    if [ "$size" -lt "$threshold" ]; then
+      if [ -z "${DELEGATE_METRICS_FILE:-}" ]; then
+        jq -r "$inline_all_jq" "$response_file"
+        exit 0
+      fi
+      inline=true
+      output="$(jq -r "$inline_all_jq" "$response_file")"
+      append_metrics
+      printf '%s\n' "$output"
+    else
+      if [ -z "${DELEGATE_METRICS_FILE:-}" ]; then
+        jq -r --argjson cap "$threshold" "$decision_large_jq" "$response_file"
+        exit 0
+      fi
+      inline=false
+      output="$(jq -r --argjson cap "$threshold" "$decision_large_jq" "$response_file")"
       append_metrics
       printf '%s\n' "$output"
     fi
@@ -170,7 +213,7 @@ case "$selector" in
     printf '%s\n' "$output"
     ;;
   *[!0-9]*)
-    echo "ERROR: 不明な selector: $selector（status|index|meta|all|<整数N> のいずれか）" >&2
+    echo "ERROR: 不明な selector: $selector（status|auto|decision|index|meta|all|<整数N> のいずれか）" >&2
     exit 1
     ;;
   *)

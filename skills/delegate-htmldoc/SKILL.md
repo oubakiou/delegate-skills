@@ -10,7 +10,7 @@ description: >
   対象は静的文書のみ。ダッシュボードなどインタラクティブ・JS を要する成果物、
   デザインの新規設計、Web アプリの UI 実装には使わない（delegate-implement を使う）。
   htmldoc の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
-allowed-tools: Bash(bash .claude/skills/delegate-htmldoc/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/dispatch.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-response.sh:*), Bash(jq:*), Bash(test -f:*), Bash(ls:*), Read, AskUserQuestion
+allowed-tools: Bash(bash .claude/skills/delegate-htmldoc/scripts/run.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/dispatch.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-htmldoc/scripts/read-response.sh:*), Bash(jq:*), Bash(test -f:*), Bash(ls:*), Read, AskUserQuestion
 ---
 
 # delegate-htmldoc
@@ -51,7 +51,22 @@ htmldoc は文書本文の生成（出力 token）が嵩むほど効果が出る
 
 適性ゲート: 受けるのはテンプレートの component 語彙で表現できる**静的文書だけ**。ダッシュボードやインタラクティブな画面（フィルタ・タブ・動的更新・チャートライブラリ等の JS 前提）、レイアウト・デザインの新規設計が本体の成果物は、分量にかかわらず対象外として delegate-implement へ委譲する。
 
-## 実行フロー
+## 実行フロー（one-shot）
+
+1. **リクエスト作成**: Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。request は terse に書く: 文書化する source（ファイル・issue・調査結果）はパスや URL で参照させ、本文を貼らない。Context に `references/template.html` と `references/styleguide.md` のパス、および使用する図・画像素材のパスを記載する。Constraints に出力ファイルパスを明記する（ユーザー指定がなければ `delegate-htmldoc-output/` 配下）。
+   - ユーザーが会話でモデルや effort を指定した場合は、run 呼び出しにインライン env を前置する（例: `DELEGATE_HTMLDOC_MODEL=gpt-5.5@high bash .../run.sh ...`）。exit 6 の場合は、許容値列挙を含む stderr の 1 行をそのままユーザーへの説明に使う。
+2. **実行**: `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-htmldoc/scripts/run.sh htmldoc DELEGATE_HTMLDOC_MODEL haiku "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）。
+   - run は内部で prepare → dispatch → read-response を順に実行し、stdout は成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を返す。
+   - selector 省略時の既定は `auto`。第 6 位置引数は read-response の selector であり、prepare.sh の第 6 位置引数 session_mode とは意味が異なる。
+   - exit code は内部スクリプトを透過する。exit 3=前提不足 / exit 4=委譲サイクルなら中止する。
+   - run は dispatch 前に `observe_file: <path>` を stderr へ先出しする。強制終了時はその path を復旧経路にする。
+   - 非対話モードの親（`claude -p` 等）では run を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。
+3. **レスポンス消費と検証**: `status="$(printf '%s' "$out" | jq -r .status)"` / `content="$(printf '%s' "$out" | jq -r .content)"` を読む。`content_truncated` が `true` なら `response_file="$(printf '%s' "$out" | jq -r .response_file)"` を取り出し、`bash .claude/skills/delegate-htmldoc/scripts/read-response.sh "$response_file" <N>` で必要 section だけ段階読みする。読了後、worker の本文を **要約し直さない（echo しない）**。`Changed files` のパスが存在することを `test -f` で確認し、生成 HTML 全文は main の context に読み込まない。
+4. **Artifact 共有の確認**: main（Skill 実行者）が Claude で Artifact tool が利用可能な場合のみ、生成したドキュメントを artifact にもアップロードするかを AskUserQuestion で確認する。希望された場合のみ、アップロードに必要な範囲で生成 HTML を読み込んでアップロードする。相対参照のラスタ画像を同梱する成果物は単体アップロードで画像が欠落するため、その旨を伝えて提案しない。Artifact が利用できない実行系（Codex / Devin / Cursor 等）ではこの手順を行わない。
+
+## 高度なフロー（個別スクリプト）
+
+dispatch 中の observe 監視、background 実行など、途中で親の判断を挟むフローでは従来の個別スクリプトを使う。
 
 1. **準備（集約）**: 前提チェック→モデル解決→チェーン確認→リクエスト生成を `prepare.sh` 1 本に畳む。Objective / Scope / Context / Acceptance criteria / Verification / Constraints の Markdown を stdin で渡す。request は terse に書く: 文書化する source（ファイル・issue・調査結果）はパスや URL で参照させ、本文を貼らない。Context に `references/template.html` と `references/styleguide.md` のパス、および使用する図・画像素材のパスを記載する。Constraints に出力ファイルパスを明記する（ユーザー指定がなければ `delegate-htmldoc-output/` 配下）。exit 3=前提不足 / exit 4=委譲サイクルなら中止。
    - ユーザーが会話でモデルや effort を指定した場合は、prepare 呼び出しにインライン env を前置する（例: `DELEGATE_HTMLDOC_MODEL=gpt-5.5@high bash .../prepare.sh ...`）。prepare が exit 6 の場合は、許容値列挙を含む stderr の 1 行をそのままユーザーへの説明に使う。
@@ -61,6 +76,10 @@ htmldoc は文書本文の生成（出力 token）が嵩むほど効果が出る
 3. **レスポンス読み取り**: `bash .claude/skills/delegate-htmldoc/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合は status + index + Summary section を返すので、必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
 4. **検証**: `Changed files` のパスが存在することを `test -f` で確認する。生成 HTML 全文は main の context に読み込まない。
 5. **Artifact 共有の確認**: main（Skill 実行者）が Claude で Artifact tool が利用可能な場合のみ、生成したドキュメントを artifact にもアップロードするかを AskUserQuestion で確認する。希望された場合のみ、アップロードに必要な範囲で生成 HTML を読み込んでアップロードする（このときだけ手順 4 の「全文を読み込まない」の例外とする）。対象はインライン SVG までで完結した単一 HTML のみとする。相対参照のラスタ画像を同梱する成果物（出力ディレクトリ一式）は単体アップロードで画像が欠落するため、その旨を伝えて提案しない。Artifact が利用できない実行系（Codex / Devin / Cursor 等）ではこの手順を行わない。
+
+## 待ち時間の隠蔽（対話親向け）
+
+対話親では `dispatch.sh`（または `run.sh`）を background で実行し、`observe_file` の `state.phase` / `heartbeat` を確認して `ended` 後に `read-response.sh` する運用で体感待ち時間を隠蔽できる。総所要時間（wall time）は変わらない体感改善であり、非対話モードの親では従来どおりフォアグラウンド実行必須。
 
 ## Worker report
 

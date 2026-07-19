@@ -101,6 +101,8 @@ What the prefixes mean:
 
 All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
+The parent-side happy path is a single one-shot call: each skill's `run.sh` (`run-imagegen.sh` / `run-x-research.sh` for the two dedicated skills) chains prepare → dispatch → read-response in one Bash invocation and prints a single JSON object (`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`) on success and failure alike, passing internal exit codes through. `content` is capped at `DELEGATE_RUN_CONTENT_MAX` bytes; the full response stays readable via `response_file`. Advanced flows — resumable / follow-up sessions, observe monitoring, background dispatch — keep using the individual scripts. Interactive parents can hide the wait by dispatching in the background and polling the observe JSON before reading the response; this improves perceived latency only, total wall time is unchanged.
+
 In managed-policy environments where Claude's bypass permissions mode is disabled, Claude backend workers run in default permission mode. The wrapper pre-approves the minimal tools needed to read the request and write the protocol response, so the protocol can still complete, but other Bash commands or tools may be rejected. To run full tasks in that environment, add the required allowlist entries to project settings or select a non-Claude backend with `DELEGATE_<TYPE>_MODEL`; tools explicitly denied by managed policy cannot be enabled by the wrapper.
 
 ### Resumable worker sessions
@@ -141,20 +143,21 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 
 ## Environment variables
 
-| Variable                                 | Default                                | Description                                                       |
-| ---------------------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`                  | per skill                              | Per-type model override                                           |
-| `DELEGATE_WORK_DIR`                      | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                               |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto`             |
-| `DELEGATE_METRICS_FILE`                  | unset                                  | Optional JSONL proxy-metric / timing telemetry output path        |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                           | Worker observe JSON heartbeat interval                            |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection)       | Bash tool timeout caps injected into Claude backend children      |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (enabled, `0` = keep)              | Prune codex-home caches and the auth copy after successful runs   |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                         | Kill a child after this many seconds without stream byte growth   |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)        | Max stdout/stderr content stored in observe JSON                  |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                         | Delete old per-run scratch directories during request preparation |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`                  |
-| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                           | Model for `delegate-x-research`                                   |
+| Variable                                 | Default                                | Description                                                        |
+| ---------------------------------------- | -------------------------------------- | ------------------------------------------------------------------ |
+| `DELEGATE_<TYPE>_MODEL`                  | per skill                              | Per-type model override                                            |
+| `DELEGATE_WORK_DIR`                      | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                                |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto` / `decision` |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes (`0` = unlimited)        | `content` cap in the one-shot `run.sh` JSON output                 |
+| `DELEGATE_METRICS_FILE`                  | unset                                  | Optional JSONL proxy-metric / timing telemetry output path         |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                           | Worker observe JSON heartbeat interval                             |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection)       | Bash tool timeout caps injected into Claude backend children       |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (enabled, `0` = keep)              | Prune codex-home caches and the auth copy after successful runs    |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                         | Kill a child after this many seconds without stream byte growth    |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)        | Max stdout/stderr content stored in observe JSON                   |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                         | Delete old per-run scratch directories during request preparation  |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`                   |
+| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                           | Model for `delegate-x-research`                                    |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 

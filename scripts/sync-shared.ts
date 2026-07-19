@@ -19,6 +19,7 @@ const SHARED_SCRIPTS = [
   'observe-json.sh',
   'dispatch.sh',
   'prepare.sh',
+  'run.sh',
   'build-request.sh',
   'read-request.sh',
   'build-response.sh',

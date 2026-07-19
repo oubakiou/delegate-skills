@@ -233,7 +233,7 @@ printf '%s' "$req_md" | bash <skill_dir>/scripts/run.sh <task_type> <TYPE_ENV> <
 
 成果物: 施策効果を分布で比較できる計測基盤と着手前ベースライン
 
-### Step 2: (未着手) 親側 one-shot 化（run.sh + 専用 run スクリプト）
+### Step 2: (実装済み) 親側 one-shot 化（run.sh + 専用 run スクリプト）
 
 - `shared/run.sh` を新設し `sync-shared` 対象へ追加。§3.2 の単一 JSON 契約・selector 引数・stderr への observe_file 先出しを実装
 - `shared/read-response.sh` に `decision` selector を追加し、run.sh の review 既定として接続
