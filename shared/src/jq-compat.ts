@@ -28,6 +28,13 @@ export const getPath = (value: unknown, keys: readonly string[]): unknown => {
   return current
 }
 
+export const stringOf = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value
+  }
+  return ''
+}
+
 export const numberOrNull = (value: unknown): number | null => {
   if (typeof value === 'number') {
     return value
