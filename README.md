@@ -23,8 +23,8 @@ Keep an expensive model as the main agent and offload routine "read, investigate
 
 ### Prerequisites
 
-- Node.js and `md2idx` (`npx md2idx` must be runnable; a global install via `npm install -g md2idx` is recommended since every skill uses it heavily)
-- `jq`
+- Node.js 24+ (the delegate scripts are a single bundled CLI that inlines `md2idx`; no `jq`, no `npx md2idx`, and no network access on first run)
+- A POSIX shell to run the `.sh` shims, plus `git` when using follow-up sessions
 - When using Claude family models: the `claude` CLI (logged in)
 - When using `gpt-*`: the `codex` CLI (logged in)
 - When using `swe-*` / `devin-*`: the `devin` CLI (logged in)
@@ -99,7 +99,7 @@ What the prefixes mean:
 - `swe-*` and `composer-*` are each CLI's native model names and are passed through as-is (e.g. `swe-1.7`, `composer-2.5`)
 - `devin-*` and `cursor-*` are backend-pinning prefixes that fix "use this CLI"; the prefix is stripped and the remainder is passed as the model name (e.g. `devin-glm-5.2` → `glm-5.2` on Devin CLI, `cursor-glm-5.2-high` → `glm-5.2-high` on Cursor agent CLI)
 
-All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
+All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Each `delegate-*.sh` is a thin exec shim over a single self-contained TypeScript bundle (`delegate-cli.mjs`, `md2idx` inlined), so at runtime only Node.js and the target backend CLI are required — no `jq` and no `npx`. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
 
 The parent-side happy path is a single one-shot call: each skill's `run.sh` (`run-imagegen.sh` / `run-x-research.sh` for the two dedicated skills) chains prepare → dispatch → read-response in one Bash invocation and prints a single JSON object (`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`) on success and failure alike, passing internal exit codes through. `content` is capped at `DELEGATE_RUN_CONTENT_MAX` bytes; the full response stays readable via `response_file`. Advanced flows — resumable / follow-up sessions, observe monitoring, background dispatch — keep using the individual scripts. Interactive parents can hide the wait by dispatching in the background and polling the observe JSON before reading the response; this improves perceived latency only, total wall time is unchanged.
 

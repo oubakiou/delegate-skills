@@ -164,6 +164,15 @@ export const withObserveLock = <ResultType>(
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  const { mkdirSync, writeFileSync, existsSync } = await import('node:fs')
+
+  const makeLockTestDir = (): string => {
+    mkdirSync('.temp', { recursive: true })
+    const dir = `.temp/observe-lock-test-${Math.random().toString(36).slice(2)}`
+    mkdirSync(dir)
+    return dir
+  }
+
   describe('observe lock path', () => {
     it('derives the lock path beside the observe file', () => {
       expect(observeLockPath('/w/run_observe.json', '/w')).toBe('/w/run_observe.lock')
@@ -171,6 +180,71 @@ if (import.meta.vitest) {
 
     it('detects non-symlink leftovers via lstat', () => {
       expect(lockEntryExists('/nonexistent-lock-path')).toBe(false)
+    })
+  })
+
+  describe('acquire / release', () => {
+    it('serializes withObserveLock over the same lock path', () => {
+      const dir = makeLockTestDir()
+      const observeFile = path.join(dir, 'run_observe.json')
+      let inCritical = 0
+      let maxConcurrent = 0
+      for (let iteration = 0; iteration < 8; iteration += 1) {
+        withObserveLock(observeFile, dir, () => {
+          inCritical += 1
+          maxConcurrent = Math.max(maxConcurrent, inCritical)
+          inCritical -= 1
+        })
+      }
+      expect(maxConcurrent).toBe(1)
+      expect(existsSync(observeLockPath(observeFile, dir))).toBe(false)
+    })
+
+    it('releases only when the token matches the current owner', () => {
+      const dir = makeLockTestDir()
+      const lockPath = path.join(dir, 'run.lock')
+      const token = acquireObserveLock(lockPath)
+      // 別トークンの release は no-op（別プロセスの lock を奪わない）
+      releaseObserveLock(lockPath, 'someone-else')
+      expect(readlinkOrNull(lockPath)).toBe(`${process.pid} ${token}`)
+      releaseObserveLock(lockPath, token)
+      expect(existsSync(lockPath)).toBe(false)
+    })
+  })
+
+  describe('stale lock reaping', () => {
+    it('takes over a lock whose owner pid is dead', () => {
+      const dir = makeLockTestDir()
+      const lockPath = path.join(dir, 'run.lock')
+      // 存在しない pid（4 億台）+ token を owner に持つ死亡 lock を作る
+      symlinkSync('2147480000 dead-token', lockPath)
+      const token = acquireObserveLock(lockPath, {
+        DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS: '5',
+      })
+      expect(readlinkOrNull(lockPath)).toBe(`${process.pid} ${token}`)
+      releaseObserveLock(lockPath, token)
+    })
+
+    it('reclaims a non-symlink leftover (legacy flock file)', () => {
+      const dir = makeLockTestDir()
+      const lockPath = path.join(dir, 'run.lock')
+      writeFileSync(lockPath, 'legacy flock residue')
+      const token = acquireObserveLock(lockPath, {
+        DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS: '5',
+      })
+      expect(readlinkOrNull(lockPath)).toBe(`${process.pid} ${token}`)
+      releaseObserveLock(lockPath, token)
+    })
+
+    it('times out (throws) when a live owner never releases', () => {
+      const dir = makeLockTestDir()
+      const lockPath = path.join(dir, 'run.lock')
+      // 生存 pid（自分自身）を owner にした lock は takeover 不可 → bounded wait で timeout
+      symlinkSync(`${process.pid} live-token`, lockPath)
+      expect(() =>
+        acquireObserveLock(lockPath, { DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS: '1' })
+      ).toThrow(/timed out/)
+      removeQuietly(lockPath)
     })
   })
 }

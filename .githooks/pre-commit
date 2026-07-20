@@ -44,4 +44,7 @@ fi
 #    手順 1〜4 を経ても何らかの理由でズレが残っている場合に commit を止める保険。
 npm run sync-shared:check --silent
 
+# 6. 配布 tree に jq / md2idx 参照が残っていないことの静的検査 (skills/ は fail-closed)。
+bash scripts/check-no-jq-md2idx.sh
+
 vp test

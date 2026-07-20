@@ -20,5 +20,6 @@ jobs:
       - run: npm ci
       - run: npm run build:check
       - run: npm run sync-shared:check
+      - run: bash scripts/check-no-jq-md2idx.sh
       - run: npx --no-install vp check
       - run: npx --no-install vp test

@@ -672,22 +672,29 @@ const errorOutputPart = (value: unknown): string => {
   return ''
 }
 
+// follow-up 検証は TS 実装 (validateFollowup) を delegate-cli の internal subcommand
+// 経由で叩く。bash 版 delegate_observe_validate_followup と同じ argv / exit 契約。
+const followupBundle = path.join(repoRoot, 'shared', 'dist', 'delegate-cli.mjs')
+
 const runFollowupValidation = (
   fixture: Fixture,
   backend: Backend,
   model: string
 ): { output: string; status: number } => {
-  const script = `
-    set -euo pipefail
-    source shared/observe-json.sh
-    delegate_observe_validate_followup "${fixture.observeFile}" ${backend} ${model} "${repoRoot}" "${repoRoot}"
-  `
   try {
-    const output = execFileSync('bash', ['-c', script], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: 'pipe',
-    })
+    const output = execFileSync(
+      'node',
+      [
+        followupBundle,
+        'validate-followup',
+        fixture.observeFile,
+        backend,
+        model,
+        repoRoot,
+        repoRoot,
+      ],
+      { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe' }
+    )
     return { output, status: 0 }
   } catch (error) {
     if (isRecord(error) && typeof error.status === 'number') {

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import path from 'node:path'
 import { hasFileContent, isRecord, readFileOrEmpty } from './jq-compat.ts'
 
 // bash 版 delegate-mcp.sh と同一契約。親環境の MCP 設定を canonical JSON
@@ -190,13 +191,20 @@ export const mcpTomlServerNames = (configTomlPath: string): string[] => {
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync, writeFileSync } = await import('node:fs')
+  const { chmodSync, mkdirSync, writeFileSync } = await import('node:fs')
 
   const makeTempFile = (content: string): string => {
     mkdirSync('.temp', { recursive: true })
     const file = `.temp/delegate-mcp-test-${Math.random().toString(36).slice(2)}.json`
     writeFileSync(file, content)
     return file
+  }
+
+  const makeTestWorkDir = (): string => {
+    mkdirSync('.temp', { recursive: true })
+    const dir = `.temp/delegate-mcp-test-${Math.random().toString(36).slice(2)}`
+    mkdirSync(dir, { recursive: true })
+    return dir
   }
 
   describe('mcpExtractJsonFile', () => {
@@ -206,6 +214,91 @@ if (import.meta.vitest) {
       expect(mcpExtractJsonFile('/nonexistent.json')).toEqual({})
       expect(mcpExtractJsonFile(makeTempFile('not json'))).toEqual({})
       expect(mcpExtractJsonFile(makeTempFile('{"mcpServers": []}'))).toEqual({})
+      expect(mcpExtractJsonFile(makeTempFile('{"model":"keep-out"}'))).toEqual({})
+    })
+
+    it('preserves server definitions verbatim for the claude/cursor extractors', () => {
+      const servers = {
+        remote: { url: 'https://example.test/mcp' },
+        'server.with-dot': {
+          args: ['server.js', 'TOKEN'],
+          command: 'node',
+          env: { API_TOKEN: 'secret' },
+        },
+      }
+      const file = makeTempFile(JSON.stringify({ mcpServers: servers, other: true }))
+      expect(mcpExtractClaudeUser(file)).toEqual(servers)
+      expect(mcpExtractCursorGlobal(file)).toEqual(servers)
+    })
+  })
+
+  describe('mcpExtractCodexUser', () => {
+    const fakeCodexBin = (workDir: string): string => {
+      const binDir = path.join(workDir, 'bin')
+      mkdirSync(binDir, { recursive: true })
+      const codexPath = path.join(binDir, 'codex')
+      const payload = [
+        {
+          name: 'stdio-server',
+          enabled: true,
+          transport: {
+            type: 'stdio',
+            command: 'node',
+            args: ['/tmp/server.js', 'TOKEN'],
+            env: { API_TOKEN: 'secret' },
+          },
+        },
+        {
+          name: 'disabled-server',
+          enabled: false,
+          transport: { type: 'stdio', command: 'node', args: ['disabled.js'], env: null },
+        },
+        {
+          name: 'remote-server',
+          enabled: true,
+          transport: { type: 'http', url: 'https://example.test/mcp' },
+        },
+      ]
+      writeFileSync(
+        codexPath,
+        `#!/usr/bin/env node
+if (process.argv.slice(2).join(' ') !== 'mcp list --json') process.exit(9)
+console.log(${JSON.stringify(JSON.stringify(payload))})
+`
+      )
+      chmodSync(codexPath, 0o755)
+      return binDir
+    }
+
+    it('extracts enabled stdio/http servers through a fake codex CLI', () => {
+      const workDir = makeTestWorkDir()
+      const binDir = fakeCodexBin(workDir)
+      const originalPath = process.env.PATH
+      process.env.PATH = `${binDir}:${originalPath ?? ''}`
+      try {
+        expect(mcpExtractCodexUser(path.join(workDir, 'codex-home'))).toEqual({
+          'remote-server': { url: 'https://example.test/mcp' },
+          'stdio-server': {
+            args: ['/tmp/server.js', 'TOKEN'],
+            command: 'node',
+            env: { API_TOKEN: 'secret' },
+          },
+        })
+      } finally {
+        process.env.PATH = originalPath
+      }
+    })
+  })
+
+  describe('mcpRenderClaudeMcpConfig / mcpRenderCursorMcpJson', () => {
+    it('wraps canonical servers under mcpServers for both renderers', () => {
+      const canonical = {
+        local: { args: ['server.js'], command: 'node' },
+        remote: { url: 'https://example.test/mcp' },
+      }
+      const expected = { mcpServers: canonical }
+      expect(JSON.parse(mcpRenderClaudeMcpConfig(canonical))).toEqual(expected)
+      expect(JSON.parse(mcpRenderCursorMcpJson(canonical))).toEqual(expected)
     })
   })
 
@@ -221,6 +314,26 @@ if (import.meta.vitest) {
       expect(toml).toContain('[mcp_servers."notion".env]')
       expect(toml).toContain('"TOKEN" = "x"')
       expect(toml).toContain('url = "https://mcp.example"')
+    })
+
+    it('escapes quotes and backslashes and carries no unrelated top-level keys', () => {
+      const toml = mcpRenderCodexToml({
+        'dot.server-name': {
+          args: [String.raw`C:\tools\server.js`, 'say "hi"'],
+          command: 'node',
+          env: { 'TOKEN.NAME': 'abc"def', WINDOWS_PATH: 'C:\\tmp\\mcp' },
+        },
+        remote: { url: 'https://example.test/mcp?name="quoted"' },
+      })
+      expect(toml).toContain('[mcp_servers."dot.server-name"]')
+      expect(toml).toContain(String.raw`args = ["C:\\tools\\server.js", "say \"hi\""]`)
+      expect(toml).toContain(String.raw`"TOKEN.NAME" = "abc\"def"`)
+      expect(toml).toContain(String.raw`"WINDOWS_PATH" = "C:\\tmp\\mcp"`)
+      expect(toml).toContain(String.raw`url = "https://example.test/mcp?name=\"quoted\""`)
+      const nonMcpTables = toml
+        .split('\n')
+        .filter((line) => line.startsWith('[') && !line.startsWith('[mcp_servers.'))
+      expect(nonMcpTables).toEqual([])
     })
   })
 

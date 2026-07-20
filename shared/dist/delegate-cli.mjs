@@ -1838,6 +1838,134 @@ var runDispatch = (argv, env, io) => {
 	return dispatchToWrapper(args, env, io);
 };
 //#endregion
+//#region shared/src/observe-followup.ts
+var RESUMABLE_BACKENDS = new Set([
+	"claude",
+	"codex",
+	"devin",
+	"cursor"
+]);
+var backendSupportsResume = (backend) => RESUMABLE_BACKENDS.has(backend);
+var unavailable = (message) => ({
+	ok: false,
+	message: `follow-up unavailable: ${message}`
+});
+var previousSessionOf = (observeFile) => {
+	let parsed = null;
+	try {
+		parsed = JSON.parse(readFileOrEmpty$1(observeFile));
+	} catch {
+		return null;
+	}
+	if (!isRecord$3(parsed)) return null;
+	const field = (keys) => {
+		const value = getPath(parsed, keys);
+		if (typeof value === "string") return value;
+		return "";
+	};
+	return {
+		backend: field(["backend_session", "backend"]),
+		model: field(["backend_session", "model"]),
+		resumeId: field(["backend_session", "resume_id"]),
+		persistence: field(["backend_session", "persistence"]),
+		repoRoot: field(["run_context", "repo_root"]),
+		worktreeRoot: field(["run_context", "worktree_root"]),
+		gitHead: field(["run_context", "git_head"])
+	};
+};
+var gitHeadOrNull = (worktree) => {
+	try {
+		return execFileSync("git", [
+			"-C",
+			worktree,
+			"rev-parse",
+			"HEAD"
+		], { encoding: "utf8" }).trimEnd();
+	} catch {
+		return null;
+	}
+};
+var isAncestor = (worktree, ancestor, descendant) => {
+	try {
+		execFileSync("git", [
+			"-C",
+			worktree,
+			"merge-base",
+			"--is-ancestor",
+			ancestor,
+			descendant
+		], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+};
+var backendLabelOf = (backend) => {
+	if (backend === "") return "missing";
+	return backend;
+};
+var validateSessionShape = (previous) => {
+	if (!backendSupportsResume(previous.backend)) return unavailable(`unsupported backend: ${backendLabelOf(previous.backend)}`);
+	if (previous.persistence !== "resumable") return unavailable("backend_session.persistence is not resumable");
+	if (previous.resumeId === "") return unavailable("backend_session.resume_id is missing");
+	if (previous.repoRoot === "" || previous.worktreeRoot === "" || previous.gitHead === "") return unavailable("run_context required field is missing");
+	return null;
+};
+var validateSessionMatch = (previous, expectation, reals) => {
+	if (previous.backend !== expectation.expectedBackend) return unavailable(`backend mismatch: expected ${expectation.expectedBackend}, got ${previous.backend}`);
+	if (previous.model !== expectation.expectedModel) return unavailable(`model mismatch: expected ${expectation.expectedModel}, got ${previous.model}`);
+	if (previous.repoRoot !== reals.repoReal) return unavailable(`repo_root mismatch: expected ${reals.repoReal}, got ${previous.repoRoot}`);
+	if (previous.worktreeRoot !== reals.worktreeReal) return unavailable(`worktree_root mismatch: expected ${reals.worktreeReal}, got ${previous.worktreeRoot}`);
+	return null;
+};
+var validateGitHead = (previous, worktreeReal) => {
+	const currentHead = gitHeadOrNull(worktreeReal);
+	if (currentHead === null) return unavailable("current git_head is unavailable");
+	if (previous.gitHead !== currentHead && !isAncestor(worktreeReal, previous.gitHead, currentHead)) return unavailable("git_head is not current HEAD or its ancestor");
+	return null;
+};
+var validateAgainstWorktree = (previous, expectation) => {
+	const repoReal = realpathSync(expectation.expectedRepoRoot);
+	const worktreeReal = realpathSync(expectation.expectedWorktreeRoot);
+	const matchFailure = validateSessionMatch(previous, expectation, {
+		repoReal,
+		worktreeReal
+	});
+	if (matchFailure !== null) return matchFailure;
+	const headFailure = validateGitHead(previous, worktreeReal);
+	if (headFailure !== null) return headFailure;
+	return { ok: true };
+};
+var validateFollowup = (expectation) => {
+	if (!hasFileContent(expectation.previousObserveFile)) return unavailable("previous observe JSON is missing");
+	const previous = previousSessionOf(expectation.previousObserveFile);
+	if (previous === null) return unavailable("previous observe JSON is invalid");
+	const shapeFailure = validateSessionShape(previous);
+	if (shapeFailure !== null) return shapeFailure;
+	return validateAgainstWorktree(previous, expectation);
+};
+var writeFailedResponse = (input, env = process.env) => {
+	const base = path.basename(input.responseFile, ".json");
+	const reportFile = path.join(input.runDir, `${base}_failed_${randomToken(5)}.md`);
+	const report = [
+		"# Summary",
+		"Child CLI failed or did not write a response.",
+		"",
+		"# Error",
+		`See observe JSON: ${input.observeFile}`,
+		`Exit code: ${input.exitCode}`,
+		""
+	].join("\n");
+	writeFileSync(reportFile, report);
+	if (runBuildResponse([
+		"failed",
+		`wrapper:${input.backend}:${base}`,
+		input.responseFile
+	], env, Buffer.from(report)).exitCode !== 0) return false;
+	failedResponseWritten(input.observeFile, input.runDir);
+	return true;
+};
+//#endregion
 //#region shared/src/observe-effort.ts
 var splitModelEffort = (model) => {
 	const atIndex = model.indexOf("@");
@@ -2056,134 +2184,6 @@ var effortFromCursorConfig = (model, cliConfig) => {
 	let effort = firstParamValue(params, ["effort", "reasoning"]);
 	if (slugEffort !== "") effort = slugEffort;
 	return buildCursorEffort(effort, firstParamValue(params, ["fast"]));
-};
-//#endregion
-//#region shared/src/observe-followup.ts
-var RESUMABLE_BACKENDS = new Set([
-	"claude",
-	"codex",
-	"devin",
-	"cursor"
-]);
-var backendSupportsResume = (backend) => RESUMABLE_BACKENDS.has(backend);
-var unavailable = (message) => ({
-	ok: false,
-	message: `follow-up unavailable: ${message}`
-});
-var previousSessionOf = (observeFile) => {
-	let parsed = null;
-	try {
-		parsed = JSON.parse(readFileOrEmpty$1(observeFile));
-	} catch {
-		return null;
-	}
-	if (!isRecord$3(parsed)) return null;
-	const field = (keys) => {
-		const value = getPath(parsed, keys);
-		if (typeof value === "string") return value;
-		return "";
-	};
-	return {
-		backend: field(["backend_session", "backend"]),
-		model: field(["backend_session", "model"]),
-		resumeId: field(["backend_session", "resume_id"]),
-		persistence: field(["backend_session", "persistence"]),
-		repoRoot: field(["run_context", "repo_root"]),
-		worktreeRoot: field(["run_context", "worktree_root"]),
-		gitHead: field(["run_context", "git_head"])
-	};
-};
-var gitHeadOrNull = (worktree) => {
-	try {
-		return execFileSync("git", [
-			"-C",
-			worktree,
-			"rev-parse",
-			"HEAD"
-		], { encoding: "utf8" }).trimEnd();
-	} catch {
-		return null;
-	}
-};
-var isAncestor = (worktree, ancestor, descendant) => {
-	try {
-		execFileSync("git", [
-			"-C",
-			worktree,
-			"merge-base",
-			"--is-ancestor",
-			ancestor,
-			descendant
-		], { stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
-};
-var backendLabelOf = (backend) => {
-	if (backend === "") return "missing";
-	return backend;
-};
-var validateSessionShape = (previous) => {
-	if (!backendSupportsResume(previous.backend)) return unavailable(`unsupported backend: ${backendLabelOf(previous.backend)}`);
-	if (previous.persistence !== "resumable") return unavailable("backend_session.persistence is not resumable");
-	if (previous.resumeId === "") return unavailable("backend_session.resume_id is missing");
-	if (previous.repoRoot === "" || previous.worktreeRoot === "" || previous.gitHead === "") return unavailable("run_context required field is missing");
-	return null;
-};
-var validateSessionMatch = (previous, expectation, reals) => {
-	if (previous.backend !== expectation.expectedBackend) return unavailable(`backend mismatch: expected ${expectation.expectedBackend}, got ${previous.backend}`);
-	if (previous.model !== expectation.expectedModel) return unavailable(`model mismatch: expected ${expectation.expectedModel}, got ${previous.model}`);
-	if (previous.repoRoot !== reals.repoReal) return unavailable(`repo_root mismatch: expected ${reals.repoReal}, got ${previous.repoRoot}`);
-	if (previous.worktreeRoot !== reals.worktreeReal) return unavailable(`worktree_root mismatch: expected ${reals.worktreeReal}, got ${previous.worktreeRoot}`);
-	return null;
-};
-var validateGitHead = (previous, worktreeReal) => {
-	const currentHead = gitHeadOrNull(worktreeReal);
-	if (currentHead === null) return unavailable("current git_head is unavailable");
-	if (previous.gitHead !== currentHead && !isAncestor(worktreeReal, previous.gitHead, currentHead)) return unavailable("git_head is not current HEAD or its ancestor");
-	return null;
-};
-var validateAgainstWorktree = (previous, expectation) => {
-	const repoReal = realpathSync(expectation.expectedRepoRoot);
-	const worktreeReal = realpathSync(expectation.expectedWorktreeRoot);
-	const matchFailure = validateSessionMatch(previous, expectation, {
-		repoReal,
-		worktreeReal
-	});
-	if (matchFailure !== null) return matchFailure;
-	const headFailure = validateGitHead(previous, worktreeReal);
-	if (headFailure !== null) return headFailure;
-	return { ok: true };
-};
-var validateFollowup = (expectation) => {
-	if (!hasFileContent(expectation.previousObserveFile)) return unavailable("previous observe JSON is missing");
-	const previous = previousSessionOf(expectation.previousObserveFile);
-	if (previous === null) return unavailable("previous observe JSON is invalid");
-	const shapeFailure = validateSessionShape(previous);
-	if (shapeFailure !== null) return shapeFailure;
-	return validateAgainstWorktree(previous, expectation);
-};
-var writeFailedResponse = (input, env = process.env) => {
-	const base = path.basename(input.responseFile, ".json");
-	const reportFile = path.join(input.runDir, `${base}_failed_${randomToken(5)}.md`);
-	const report = [
-		"# Summary",
-		"Child CLI failed or did not write a response.",
-		"",
-		"# Error",
-		`See observe JSON: ${input.observeFile}`,
-		`Exit code: ${input.exitCode}`,
-		""
-	].join("\n");
-	writeFileSync(reportFile, report);
-	if (runBuildResponse([
-		"failed",
-		`wrapper:${input.backend}:${base}`,
-		input.responseFile
-	], env, Buffer.from(report)).exitCode !== 0) return false;
-	failedResponseWritten(input.observeFile, input.runDir);
-	return true;
 };
 //#endregion
 //#region shared/src/resolve-model.ts
@@ -2655,6 +2655,63 @@ var runPrepareImagegen = (argv, env, readStdin) => {
 		parentChain: chainOrTopLevel(parentChainArg),
 		requesterSessionId
 	}, env, stripTrailingNewlineBytes(readStdin()));
+};
+//#endregion
+//#region shared/src/read-json.ts
+var DOT_PATH = /^\.(?:[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)?$/;
+var parseDotPath = (raw) => {
+	if (raw === ".") return [];
+	return raw.slice(1).split(".").filter((segment) => segment !== "");
+};
+var formatValue = (value) => {
+	if (typeof value === "string") return value;
+	if (value === null || typeof value === "undefined") return "null";
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	return JSON.stringify(value);
+};
+var navigate = (root, keys) => {
+	if (keys.length === 0) return root;
+	return getPath(root, keys) ?? null;
+};
+var readRawJson = (stdin, jsonFile) => {
+	try {
+		if (typeof jsonFile === "string") return readFileSync(jsonFile, "utf8");
+		return stdin.toString("utf8");
+	} catch {
+		return null;
+	}
+};
+var usageError$1 = () => ({
+	exitCode: 2,
+	stderr: "Usage: read-json <dotpath> [json_file]  (json on stdin if file omitted)\n",
+	stdout: ""
+});
+var extractValue = (raw, keys) => {
+	try {
+		return {
+			exitCode: 0,
+			stderr: "",
+			stdout: `${formatValue(navigate(JSON.parse(raw), keys))}\n`
+		};
+	} catch {
+		return {
+			exitCode: 4,
+			stderr: "ERROR: input is not valid JSON\n",
+			stdout: ""
+		};
+	}
+};
+var runReadJson = (argv, stdin) => {
+	if (argv.length < 1 || !DOT_PATH.test(argv[0])) return usageError$1();
+	const [dotPath, jsonFile] = argv;
+	const keys = parseDotPath(dotPath);
+	const raw = readRawJson(stdin, jsonFile);
+	if (raw === null) return {
+		exitCode: 3,
+		stderr: `ERROR: cannot read json: ${jsonFile ?? "(stdin)"}\n`,
+		stdout: ""
+	};
+	return extractValue(raw, keys);
 };
 //#endregion
 //#region shared/src/read-request.ts
@@ -5438,9 +5495,33 @@ var md2idxSmokeResult = () => {
 		})}\n`
 	};
 };
+var validateFollowupResult = (rest) => {
+	const [previousObserveFile, expectedBackend, expectedModel, expectedRepoRoot, expectedWorktreeRoot] = rest;
+	const validation = validateFollowup({
+		previousObserveFile: previousObserveFile ?? "",
+		expectedBackend: expectedBackend ?? "",
+		expectedModel: expectedModel ?? "",
+		expectedRepoRoot: expectedRepoRoot ?? "",
+		expectedWorktreeRoot: expectedWorktreeRoot ?? ""
+	});
+	if (validation.ok) return {
+		exitCode: 0,
+		stderr: "",
+		stdout: ""
+	};
+	return {
+		exitCode: 1,
+		stderr: `${validation.message}\n`,
+		stdout: ""
+	};
+};
 var EMPTY_STDIN = () => Buffer.alloc(0);
 var stdinForMinArgs = (readStdin, args) => {
 	if (args.rest.length < args.minArgs) return Buffer.alloc(0);
+	return readStdin();
+};
+var stdinForReadJson = (rest, readStdin) => {
+	if (rest.length >= 2) return Buffer.alloc(0);
 	return readStdin();
 };
 var scriptsDirOf = (entry) => {
@@ -5476,6 +5557,7 @@ var HANDLERS = {
 	"--version": () => versionResult(),
 	version: () => versionResult(),
 	"md2idx-smoke": () => md2idxSmokeResult(),
+	"validate-followup": (rest) => validateFollowupResult(rest),
 	"resolve-model": (rest) => runResolveModel(rest, process.env),
 	"check-delegate-chain": (rest) => runCheckDelegateChain(rest),
 	"build-request": (rest, readStdin) => runBuildRequest(rest, process.env, stdinForMinArgs(readStdin, {
@@ -5488,6 +5570,7 @@ var HANDLERS = {
 		minArgs: 3
 	})),
 	"read-response": (rest) => runReadResponse(rest, process.env),
+	"read-json": (rest, readStdin) => runReadJson(rest, stdinForReadJson(rest, readStdin)),
 	prepare: (rest, readStdin) => runPrepare(rest, process.env, readStdin),
 	"prepare-imagegen": (rest, readStdin) => runPrepareImagegen(rest, process.env, readStdin),
 	dispatch: (rest) => runDispatch(rest, process.env, { scriptsDir: scriptsDirOf(process.argv[1] ?? ".") }),

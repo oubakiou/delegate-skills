@@ -740,3 +740,121 @@ export const appendDispatchMetrics = (
   }
   appendMetrics(metricsFile, record)
 }
+
+// parity テスト（Step 8 で削除）が担保していた mutate 系 lifecycle 契約を、bash 非依存の
+// in-source test として保持する（end-to-end は fake CLI golden）。
+const observeDocOf = (observeFile: string): Record<string, unknown> => {
+  const parsed: unknown = JSON.parse(readFileSync(observeFile, 'utf8'))
+  if (!isRecord(parsed)) {
+    throw new Error('observe json is not an object')
+  }
+  return parsed
+}
+
+const observeEventKinds = (doc: Record<string, unknown>): unknown[] => {
+  const { events } = doc
+  if (!Array.isArray(events)) {
+    return []
+  }
+  return events.map((event) => {
+    if (isRecord(event)) {
+      return event.kind
+    }
+    return null
+  })
+}
+
+if (import.meta.vitest) {
+  const { describe, it, expect } = import.meta.vitest
+  const { mkdirSync, utimesSync } = await import('node:fs')
+
+  const initFixture = (): { observeFile: string; runDir: string } => {
+    const dir = `.temp/observe-store-test-${randomToken(8)}`
+    const runDir = path.join(dir, 'delegate_chore_run')
+    mkdirSync(runDir, { recursive: true })
+    const run = { observeFile: path.join(dir, 'delegate_chore_run_observe.json'), runDir }
+    initObserve({
+      observeFile: run.observeFile,
+      runDir: run.runDir,
+      taskType: 'chore',
+      model: 'haiku',
+      backend: 'claude',
+      requestFile: `${run.runDir}_req.json`,
+      responseFile: `${run.runDir}_res.json`,
+      requesterSessionId: 'sid-1',
+      modelSource: 'default',
+    })
+    return run
+  }
+
+  describe('initObserve', () => {
+    it('writes the prepared skeleton with run / state / heartbeat / streams', () => {
+      const run = initFixture()
+      const doc = observeDocOf(run.observeFile)
+      expect(doc).toMatchObject({
+        schema_version: 1,
+        run: { task_type: 'chore', model: 'haiku', backend: 'claude', model_source: 'default' },
+        state: { phase: 'prepared', dispatcher_pid: null, response_present: false },
+      })
+      expect(observeEventKinds(doc)[0]).toBe('run_created')
+    })
+  })
+
+  describe('dispatch lifecycle', () => {
+    it('moves prepared → running → ended and records exit_code + response_present', () => {
+      const run = initFixture()
+      dispatchStart(run.observeFile, run.runDir, { backend: 'claude', dispatcherPid: 4242 })
+      expect(observeDocOf(run.observeFile)).toMatchObject({
+        state: { phase: 'running', dispatcher_pid: 4242 },
+      })
+      dispatchEnd(run.observeFile, run.runDir, {
+        backend: 'claude',
+        dispatcherPid: 4242,
+        exitCode: 0,
+        responsePresent: true,
+      })
+      const doc = observeDocOf(run.observeFile)
+      expect(doc).toMatchObject({ state: { phase: 'ended', exit_code: 0, response_present: true } })
+      expect(observeEventKinds(doc)).toEqual(['run_created', 'dispatch_start', 'dispatch_end'])
+    })
+
+    it('records response_missing and failed_response_written events', () => {
+      const run = initFixture()
+      responseMissing(run.observeFile, run.runDir)
+      failedResponseWritten(run.observeFile, run.runDir)
+      const kinds = observeEventKinds(observeDocOf(run.observeFile))
+      expect(kinds).toContain('response_missing')
+      expect(kinds).toContain('failed_response_written')
+    })
+  })
+
+  const makeAgedStalePrepared = (workDir: string): string => {
+    const staleRunDir = path.join(workDir, 'delegate_chore_stale')
+    mkdirSync(staleRunDir, { recursive: true })
+    const staleObserve = path.join(workDir, 'delegate_chore_stale_observe.json')
+    initObserve({
+      observeFile: staleObserve,
+      runDir: staleRunDir,
+      taskType: 'chore',
+      model: 'haiku',
+      backend: 'claude',
+      requestFile: 'r',
+      responseFile: 'r',
+      requesterSessionId: 'sid-1',
+    })
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(staleObserve, past, past)
+    return staleObserve
+  }
+
+  describe('supersedeStalePrepared', () => {
+    it('marks an older prepared observe of the same task_type as superseded', () => {
+      const current = initFixture()
+      const staleObserve = makeAgedStalePrepared(path.dirname(current.observeFile))
+      supersedeStalePrepared(current.observeFile, 'chore')
+      expect(getPath(observeDocOf(staleObserve), ['state', 'phase'])).toBe('superseded')
+      // 自身は superseded にならない
+      expect(getPath(observeDocOf(current.observeFile), ['state', 'phase'])).toBe('prepared')
+    })
+  })
+}

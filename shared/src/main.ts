@@ -6,8 +6,10 @@ import { runBuildResponse } from './build-response.ts'
 import { runCheckDelegateChain } from './check-delegate-chain.ts'
 import type { CliResult } from './cli-result.ts'
 import { runDispatch } from './dispatch.ts'
+import { validateFollowup } from './observe-followup.ts'
 import { runPrepareImagegen } from './prepare-imagegen.ts'
 import { runPrepare } from './prepare.ts'
+import { runReadJson } from './read-json.ts'
 import { runReadRequest } from './read-request.ts'
 import { runReadResponse } from './read-response.ts'
 import { runResolveModel } from './resolve-model.ts'
@@ -42,6 +44,30 @@ const md2idxSmokeResult = (): CliResult => {
   }
 }
 
+// follow-up 検証の TS 実装を argv 契約で叩く内部サブコマンド。golden test が
+// bash 版 delegate_observe_validate_followup と同じ形（exit 0 / 非 0 + メッセージ）で
+// 呼ぶための薄いラッパで、ユーザー向け契約には含めない。
+const validateFollowupResult = (rest: readonly string[]): CliResult => {
+  const [
+    previousObserveFile,
+    expectedBackend,
+    expectedModel,
+    expectedRepoRoot,
+    expectedWorktreeRoot,
+  ] = rest
+  const validation = validateFollowup({
+    previousObserveFile: previousObserveFile ?? '',
+    expectedBackend: expectedBackend ?? '',
+    expectedModel: expectedModel ?? '',
+    expectedRepoRoot: expectedRepoRoot ?? '',
+    expectedWorktreeRoot: expectedWorktreeRoot ?? '',
+  })
+  if (validation.ok) {
+    return { exitCode: 0, stderr: '', stdout: '' }
+  }
+  return { exitCode: 1, stderr: `${validation.message}\n`, stdout: '' }
+}
+
 // stdin (本文 Markdown) は handler が必要になった時点で読む遅延渡し。
 // bash 版と同じく引数エラーは stdin を消費せず即 exit 2 になり、
 // 対話起動した delegate-cli --version 等も入力待ちで止まらない
@@ -54,6 +80,14 @@ const stdinForMinArgs = (
   args: { rest: readonly string[]; minArgs: number }
 ): Buffer => {
   if (args.rest.length < args.minArgs) {
+    return Buffer.alloc(0)
+  }
+  return readStdin()
+}
+
+// read-json は json_file 引数がある場合は stdin を読まない（ファイル経路）。無ければ stdin
+const stdinForReadJson = (rest: readonly string[], readStdin: () => Buffer): Buffer => {
+  if (rest.length >= 2) {
     return Buffer.alloc(0)
   }
   return readStdin()
@@ -122,6 +156,7 @@ const HANDLERS: Readonly<Partial<Record<string, SubcommandHandler>>> = {
   '--version': () => versionResult(),
   version: () => versionResult(),
   'md2idx-smoke': () => md2idxSmokeResult(),
+  'validate-followup': (rest) => validateFollowupResult(rest),
   'resolve-model': (rest) => runResolveModel(rest, process.env),
   'check-delegate-chain': (rest) => runCheckDelegateChain(rest),
   'build-request': (rest, readStdin) =>
@@ -130,6 +165,7 @@ const HANDLERS: Readonly<Partial<Record<string, SubcommandHandler>>> = {
   'build-response': (rest, readStdin) =>
     runBuildResponse(rest, process.env, stdinForMinArgs(readStdin, { rest, minArgs: 3 })),
   'read-response': (rest) => runReadResponse(rest, process.env),
+  'read-json': (rest, readStdin) => runReadJson(rest, stdinForReadJson(rest, readStdin)),
   prepare: (rest, readStdin) => runPrepare(rest, process.env, readStdin),
   'prepare-imagegen': (rest, readStdin) => runPrepareImagegen(rest, process.env, readStdin),
   dispatch: (rest) =>

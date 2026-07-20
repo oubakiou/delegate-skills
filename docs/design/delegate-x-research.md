@@ -24,7 +24,7 @@ X の状態は削除、編集、非公開化、検索順位変動で変わるた
 1. main は `prepare.sh xresearch DELEGATE_X_RESEARCH_MODEL grok-build ...` で request/response を準備する
 2. 現在は `delegate-x-research-grok.sh "$model" "$request_file" "$response_file"` が Grok CLI を起動する
 3. Grok worker は request_file を段階読みし、X / web search を使って調査する
-4. worker は Summary / Findings / Sources / Method / Limitations / Blockers の report を `npx md2idx | jq` で response_file に書く
+4. worker は Summary / Findings / Sources / Method / Limitations / Blockers の front-matter 付き report を `report.md` に書き、wrapper がそれを回収して response_file を組み立てる（md2idx はバンドル内包で in-process）
 5. main は `read-response.sh auto` で読み、必要に応じて index → section の段階読みに切り替える
 
 ## 環境変数
