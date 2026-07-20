@@ -1,8 +1,8 @@
 import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 
-// 凍結中の bash 版 observe-json.sh の cost 推定関数と同一契約。両実装が並存する間は
-// scripts/observe-parity.test.ts が同一入力での等価性を検証する。
+// bash 版 observe-json.sh の cost 推定関数と同一契約
+// (等価性は scripts/observe-parity.test.ts が bash 実装との突き合わせで検証する)。
 // トークン実測は取れるが費用を報告しない backend 向けに、同梱の単価表から換算した
 // 概算を実測 cost_usd とは別フィールドで併記する。単価表に該当モデルが無い・単価が
 // null の場合はフィールド自体を省略する（null は埋めない）。

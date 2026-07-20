@@ -1,8 +1,8 @@
 import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 
-// 凍結中の bash 版 observe-json.sh の effort 系関数と同一契約。両実装が並存する間は
-// scripts/observe-parity.test.ts が同一入力での等価性を検証する。
+// bash 版 observe-json.sh の effort 系関数と同一契約
+// (等価性は scripts/observe-parity.test.ts が bash 実装との突き合わせで検証する)。
 
 export interface ModelEffort {
   base_model: string

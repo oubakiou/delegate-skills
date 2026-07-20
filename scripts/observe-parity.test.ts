@@ -14,9 +14,16 @@ import {
   splitModelEffort,
   validateModelEffort,
 } from '../shared/src/observe-effort.ts'
+import { firstUsefulSeen, monotonicMs, timingStreamCounts } from '../shared/src/observe-timing.ts'
+import {
+  estimatedUsage,
+  usageFromCapture,
+  usageFromCodexSessions,
+  usageFromDevinExport,
+} from '../shared/src/observe-usage.ts'
 
-// 凍結中の bash 版 observe-json.sh の pure 関数と TS モジュールを同一入力で
-// 突き合わせる等価性検証。bash 版の削除と同時にこのファイルも削除する。
+// bash 版 observe-json.sh の pure 関数と TS モジュールを同一入力で突き合わせる
+// 等価性検証。bash 実装が存在する限り両者の契約一致を保証する。
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -285,5 +292,264 @@ describe('observe cost parity (bash vs TS)', () => {
     expect(bashAugment(estimated, 'codex')).toEqual(augmentCostEstimate(estimated, 'codex', table))
     const withCost = measuredUsage('gpt-5.5', 'codex', { cost_usd: 0.5 })
     expect(bashAugment(withCost, 'codex')).toEqual(augmentCostEstimate(withCost, 'codex', table))
+  })
+})
+
+const CLAUDE_STREAM = [
+  '{"type":"system","subtype":"init"}',
+  '{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"tool_use","name":"Bash"}]}}',
+  'not-json',
+  '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}',
+  '{"type":"result","num_turns":3,"total_cost_usd":0.12,"usage":{"input_tokens":100,"cache_read_input_tokens":40,"output_tokens":25}}',
+].join('\n')
+
+const CODEX_STREAM = [
+  '{"type":"thread.started"}',
+  '{"type":"item.completed","item":{"type":"command_execution"}}',
+  '{"type":"item.completed","item":{"type":"reasoning"}}',
+  '{"type":"turn.completed","usage":{"input_tokens":50,"cached_input_tokens":10,"output_tokens":5}}',
+].join('\n')
+
+const CURSOR_STREAM = [
+  '{"type":"system"}',
+  '{"type":"tool_call","subtype":"started"}',
+  '{"type":"tool_call","subtype":"completed"}',
+  '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}',
+  '{"type":"result","usage":{"inputTokens":30,"outputTokens":7,"cacheReadTokens":3}}',
+].join('\n')
+
+const CODEX_SESSION_USAGE = [
+  '{"type":"event_msg","payload":{"info":{"total_token_usage":{"input_tokens":9,"output_tokens":1,"total_tokens":10}}}}',
+].join('\n')
+
+const writeCapture = (dir: string, name: string, text: string): string => {
+  const file = path.join(dir, name)
+  writeFileSync(file, `${text}\n`)
+  return file
+}
+
+const expectCaptureUsageParity = (captureFile: string, source: string): void => {
+  const bash = runBashFn(
+    `delegate_observe_usage_from_capture '${captureFile}' 'model-x' 'backend-x' '${source}'`
+  )
+  const result = usageFromCapture(captureFile, { model: 'model-x', backend: 'backend-x', source })
+  if (result === null) {
+    expect(bash.status, captureFile).not.toBe(0)
+  } else {
+    expect(bash.status, captureFile).toBe(0)
+    expect(parseJson(bash.stdout), captureFile).toEqual(result)
+  }
+}
+
+describe('observe usage parity (bash vs TS)', () => {
+  it('parses stream captures identically across backends', () => {
+    const workDir = makeWorkDir()
+    expectCaptureUsageParity(
+      writeCapture(workDir, 'claude.jsonl', CLAUDE_STREAM),
+      'claude_stream_json'
+    )
+    expectCaptureUsageParity(writeCapture(workDir, 'codex.jsonl', CODEX_STREAM), 'codex_json')
+    expectCaptureUsageParity(writeCapture(workDir, 'cursor.jsonl', CURSOR_STREAM), 'cursor_json')
+    expectCaptureUsageParity(
+      writeCapture(workDir, 'session.jsonl', CODEX_SESSION_USAGE),
+      'codex_session_jsonl'
+    )
+    expectCaptureUsageParity(
+      writeCapture(workDir, 'garbage.jsonl', 'plain text\n{"type":"noise"}'),
+      'x'
+    )
+    expectCaptureUsageParity(path.join(workDir, 'missing.jsonl'), 'x')
+  })
+
+  it('walks codex session directories identically', () => {
+    const home = path.join(makeWorkDir(), 'codex-home')
+    mkdirSync(path.join(home, 'sessions', '2026', '07'), { recursive: true })
+    writeFileSync(
+      path.join(home, 'sessions', '2026', '07', 'rollout.jsonl'),
+      `${CODEX_SESSION_USAGE}\n`
+    )
+    const bash = runBashFn(`delegate_observe_usage_from_codex_sessions '${home}' 'gpt-5.5' 'codex'`)
+    expect(bash.status).toBe(0)
+    expect(parseJson(bash.stdout)).toEqual(
+      usageFromCodexSessions(home, { model: 'gpt-5.5', backend: 'codex' })
+    )
+  })
+
+  it('extracts devin ATIF usage identically for final metrics and summed steps', () => {
+    const workDir = makeWorkDir()
+    const cases: [string, unknown][] = [
+      [
+        'final.json',
+        {
+          final_metrics: {
+            total_prompt_tokens: 100,
+            total_completion_tokens: 20,
+            total_cost_usd: 0.5,
+          },
+        },
+      ],
+      [
+        'steps.json',
+        {
+          steps: [
+            { metrics: { prompt_tokens: 10, completion_tokens: 2 } },
+            { metrics: { prompt_tokens: 5, completion_tokens: 1, cost_usd: 0.1 } },
+            {},
+          ],
+        },
+      ],
+      ['no-metrics.json', { steps: [{}, {}] }],
+      ['empty-final.json', { final_metrics: {} }],
+    ]
+    for (const [name, doc] of cases) {
+      const file = path.join(workDir, name)
+      writeFileSync(file, JSON.stringify(doc))
+      const bash = runBashFn(`delegate_observe_usage_from_devin_export '${file}' 'swe-1.7' 'devin'`)
+      const result = usageFromDevinExport(file, { model: 'swe-1.7', backend: 'devin' })
+      if (result === null) {
+        expect(bash.stdout.trim(), name).toBe('')
+      } else {
+        expect(parseJson(bash.stdout), name).toEqual(result)
+      }
+    }
+  })
+
+  it('degrades malformed or non-string protocol JSON like the bash jq pipeline', () => {
+    const workDir = makeWorkDir()
+    const responseFile = path.join(workDir, 'missing.json')
+    const cases: [string, string][] = [
+      ['broken.json', 'not-json{'],
+      ['numeric-sections.json', '{"sections":[1,true,null]}'],
+      ['nested-sections.json', '{"sections":[["x"]]}'],
+      ['string-sections.json', '{"sections":"str"}'],
+    ]
+    for (const [name, content] of cases) {
+      const requestFile = path.join(workDir, name)
+      writeFileSync(requestFile, content)
+      // 実運用の呼び出し文脈 (errexit 抑制下) と同じ挙動を比較する
+      const bash = runBashFn(
+        `set +e
+delegate_observe_estimated_usage_json '${requestFile}' '${responseFile}' 'haiku' 'claude' 'chars_4'`
+      )
+      expect(parseJson(bash.stdout), name).toEqual(
+        estimatedUsage({
+          requestFile,
+          responseFile,
+          model: 'haiku',
+          backend: 'claude',
+          source: 'chars_4',
+        })
+      )
+    }
+  })
+
+  it('builds the chars/4 estimated usage identically', () => {
+    const workDir = makeWorkDir()
+    const requestFile = path.join(workDir, 'req.json')
+    writeFileSync(
+      requestFile,
+      JSON.stringify({ sections: ['# Objective\n\n日本語本文', '# Scope\n\nもう一節'] })
+    )
+    const responseFile = path.join(workDir, 'res.json')
+    const bashMissing = runBashFn(
+      `delegate_observe_estimated_usage_json '${requestFile}' '${responseFile}' 'haiku' 'claude' 'chars_4'`
+    )
+    expect(parseJson(bashMissing.stdout)).toEqual(
+      estimatedUsage({
+        requestFile,
+        responseFile,
+        model: 'haiku',
+        backend: 'claude',
+        source: 'chars_4',
+      })
+    )
+    writeFileSync(responseFile, JSON.stringify({ sections: ['# Summary\n\nok'] }))
+    const bash = runBashFn(
+      `delegate_observe_estimated_usage_json '${requestFile}' '${responseFile}' 'haiku' 'claude' 'chars_4'`
+    )
+    expect(parseJson(bash.stdout)).toEqual(
+      estimatedUsage({
+        requestFile,
+        responseFile,
+        model: 'haiku',
+        backend: 'claude',
+        source: 'chars_4',
+      })
+    )
+  })
+})
+
+const expectFirstUsefulParity = (backend: string, captureFile: string): void => {
+  const bash = runBashFn(`delegate_observe_first_useful_seen '${backend}' '${captureFile}'`)
+  const seen = firstUsefulSeen(backend, captureFile)
+  if (seen) {
+    expect(bash.status, `${backend}:${captureFile}`).toBe(0)
+  } else {
+    expect(bash.status, `${backend}:${captureFile}`).not.toBe(0)
+  }
+}
+
+describe('observe timing parity (bash vs TS)', () => {
+  it('detects the first useful event identically', () => {
+    const workDir = makeWorkDir()
+    expectFirstUsefulParity('claude', writeCapture(workDir, 'c1.jsonl', CLAUDE_STREAM))
+    expectFirstUsefulParity(
+      'claude',
+      writeCapture(
+        workDir,
+        'c2.jsonl',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}'
+      )
+    )
+    expectFirstUsefulParity('codex', writeCapture(workDir, 'x1.jsonl', CODEX_STREAM))
+    expectFirstUsefulParity(
+      'codex',
+      writeCapture(workDir, 'x2.jsonl', '{"type":"item.completed","item":{"type":"reasoning"}}')
+    )
+    expectFirstUsefulParity('cursor', writeCapture(workDir, 'u1.jsonl', CURSOR_STREAM))
+    expectFirstUsefulParity('devin', writeCapture(workDir, 'd1.jsonl', CLAUDE_STREAM))
+    expectFirstUsefulParity('claude', path.join(workDir, 'missing.jsonl'))
+  })
+
+  it('derives stream counts identically', () => {
+    const workDir = makeWorkDir()
+    const devinExport = path.join(workDir, 'atif.json')
+    writeFileSync(devinExport, JSON.stringify({ steps: [{}, {}, {}] }))
+    const cases: [string, string, string][] = [
+      ['claude', writeCapture(workDir, 't1.jsonl', CLAUDE_STREAM), ''],
+      [
+        'claude',
+        writeCapture(
+          workDir,
+          't2.jsonl',
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}'
+        ),
+        '',
+      ],
+      ['codex', writeCapture(workDir, 't3.jsonl', CODEX_STREAM), ''],
+      ['cursor', writeCapture(workDir, 't4.jsonl', CURSOR_STREAM), ''],
+      ['devin', writeCapture(workDir, 't5.jsonl', 'text output'), devinExport],
+      ['claude', writeCapture(workDir, 't6.jsonl', 'garbage only'), ''],
+      ['grok', writeCapture(workDir, 't7.jsonl', CLAUDE_STREAM), ''],
+      ['claude', path.join(workDir, 'missing.jsonl'), ''],
+    ]
+    for (const [backend, capture, exportFile] of cases) {
+      const bash = runBashFn(
+        `delegate_observe_timing_stream_counts '${backend}' '${capture}' '${exportFile}'`
+      )
+      expect(bash.status, `${backend}:${capture}`).toBe(0)
+      expect(parseJson(bash.stdout), `${backend}:${capture}`).toEqual(
+        timingStreamCounts({ backend, stdoutCapture: capture, devinExport: exportFile })
+      )
+    }
+  })
+
+  it('reads a monotonic clock compatible with the bash implementation', () => {
+    const bash = runBashFn('delegate_observe_monotonic_ms')
+    const bashMs = Number(bash.stdout)
+    const tsMs = monotonicMs()
+    expect(bash.status).toBe(0)
+    expect(tsMs).not.toBeNull()
+    expect(Math.abs((tsMs ?? 0) - bashMs)).toBeLessThan(2000)
   })
 })
