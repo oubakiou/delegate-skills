@@ -12,6 +12,10 @@ import { runReadRequest } from './read-request.ts'
 import { runReadResponse } from './read-response.ts'
 import { runResolveModel } from './resolve-model.ts'
 import { runRun, runRunImagegen, runRunXResearch, type OneShotIo } from './run-oneshot.ts'
+import { runWrapperClaude } from './wrapper-claude.ts'
+import { runWrapperCodex } from './wrapper-codex.ts'
+import { runWrapperCursor } from './wrapper-cursor.ts'
+import { runWrapperDevin } from './wrapper-devin.ts'
 
 // delegate-cli のバージョン。gh skill publish のリリースタグと同期させる運用は
 // 全スクリプト移行完了後に確定する（それまでは 0.0.0-dev のまま）。
@@ -71,7 +75,44 @@ const oneShotIo = (): OneShotIo => ({
   },
 })
 
-type SubcommandHandler = (rest: readonly string[], readStdin: () => Buffer) => CliResult
+// backend wrapper は `wrapper <backend> <args...>` の 2 語で選択する（shim が固定で渡す）
+const WRAPPER_BACKENDS: Readonly<
+  Partial<
+    Record<
+      string,
+      (
+        argv: readonly string[],
+        env: NodeJS.ProcessEnv,
+        io: { scriptsDir: string }
+      ) => Promise<CliResult>
+    >
+  >
+> = {
+  claude: runWrapperClaude,
+  codex: runWrapperCodex,
+  cursor: runWrapperCursor,
+  devin: runWrapperDevin,
+}
+
+const runWrapperBackend = async (rest: readonly string[]): Promise<CliResult> => {
+  const [backendName, ...wrapperArgv] = rest
+  const backendRunner = WRAPPER_BACKENDS[backendName ?? '']
+  if (typeof backendRunner !== 'function') {
+    return {
+      exitCode: 2,
+      stderr: `delegate-cli: unknown wrapper backend: ${backendName ?? ''}\n`,
+      stdout: '',
+    }
+  }
+  return backendRunner(wrapperArgv, process.env, {
+    scriptsDir: scriptsDirOf(process.argv[1] ?? '.'),
+  })
+}
+
+type SubcommandHandler = (
+  rest: readonly string[],
+  readStdin: () => Buffer
+) => CliResult | Promise<CliResult>
 
 const HANDLERS: Readonly<Partial<Record<string, SubcommandHandler>>> = {
   '--version': () => versionResult(),
@@ -94,12 +135,13 @@ const HANDLERS: Readonly<Partial<Record<string, SubcommandHandler>>> = {
     runRunImagegen(rest, { env: process.env, io: oneShotIo() }, readStdin),
   'run-x-research': (rest, readStdin) =>
     runRunXResearch(rest, { env: process.env, io: oneShotIo() }, readStdin),
+  wrapper: async (rest) => runWrapperBackend(rest),
 }
 
-export const runCli = (
+export const runCli = async (
   argv: readonly string[],
   readStdin: () => Buffer = EMPTY_STDIN
-): CliResult => {
+): Promise<CliResult> => {
   if (argv.length === 0) {
     return {
       exitCode: 2,
@@ -121,7 +163,7 @@ export const runCli = (
 
 if (!import.meta.vitest) {
   const argv = process.argv.slice(2)
-  const result = runCli(argv, () => readFileSync(0))
+  const result = await runCli(argv, () => readFileSync(0))
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
   process.exitCode = result.exitCode
@@ -135,30 +177,31 @@ const explodingStdin = (): Buffer => {
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   describe('runCli', () => {
-    it('prints the version for --version and the version subcommand', () => {
+    it('prints the version for --version and the version subcommand', async () => {
       for (const argv of [['--version'], ['version']]) {
-        const result = runCli(argv)
+        // eslint-disable-next-line no-await-in-loop -- 2 ケースの逐次検証
+        const result = await runCli(argv)
         expect(result.exitCode).toBe(0)
         expect(result.stdout).toBe(`delegate-cli ${CLI_VERSION}\n`)
         expect(result.stderr).toBe('')
       }
     })
 
-    it('fails closed with exit 2 when no subcommand is given', () => {
-      const result = runCli([])
+    it('fails closed with exit 2 when no subcommand is given', async () => {
+      const result = await runCli([])
       expect(result.exitCode).toBe(2)
       expect(result.stdout).toBe('')
       expect(result.stderr).toContain('missing subcommand')
     })
 
-    it('fails closed with exit 2 on an unknown subcommand', () => {
-      const result = runCli(['no-such-subcommand'])
+    it('fails closed with exit 2 on an unknown subcommand', async () => {
+      const result = await runCli(['no-such-subcommand'])
       expect(result.exitCode).toBe(2)
       expect(result.stdout).toBe('')
       expect(result.stderr).toContain('no-such-subcommand')
     })
 
-    it('does not read stdin before argv validation like the bash originals', () => {
+    it('does not read stdin before argv validation like the bash originals', async () => {
       const argvCases: string[][] = [
         ['prepare'],
         ['prepare', 'chore', 'E', 'haiku', '[]', 'sid', 'bogus-mode'],
@@ -171,12 +214,14 @@ if (import.meta.vitest) {
         ['--version'],
       ]
       for (const argv of argvCases) {
-        expect(runCli(argv, explodingStdin).exitCode).toBeLessThanOrEqual(2)
+        // eslint-disable-next-line no-await-in-loop -- ケースごとの逐次検証
+        const result = await runCli(argv, explodingStdin)
+        expect(result.exitCode).toBeLessThanOrEqual(2)
       }
     })
 
-    it('runs the md2idx library entry in-process', () => {
-      const result = runCli(['md2idx-smoke'])
+    it('runs the md2idx library entry in-process', async () => {
+      const result = await runCli(['md2idx-smoke'])
       expect(result.exitCode).toBe(0)
       const parsed: unknown = JSON.parse(result.stdout)
       expect(parsed).toMatchObject({ index: expect.any(String) })
