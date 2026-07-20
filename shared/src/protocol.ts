@@ -124,6 +124,16 @@ export const sectionBanner = (sections: readonly string[]): string =>
 // 1 本だけ付け直す。互換のため同じ正規化を通す
 export const stripTrailingNewlines = (value: string): string => value.replace(/\n+$/, '')
 
+// bash の body="$(cat)" (command substitution) と同じ末尾改行の除去。
+// toString を経由すると不正 UTF-8 バイトが U+FFFD に化けるため Buffer のまま切る
+export const stripTrailingNewlineBytes = (body: Buffer): Buffer => {
+  let end = body.length
+  while (end > 0 && body[end - 1] === 0x0a) {
+    end -= 1
+  }
+  return body.subarray(0, end)
+}
+
 export interface EmittedOutput {
   stdout: string
   measured: string

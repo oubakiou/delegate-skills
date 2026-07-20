@@ -1,12 +1,17 @@
 import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { md2idx } from 'md2idx'
 import { runBuildRequest } from './build-request.ts'
 import { runBuildResponse } from './build-response.ts'
 import { runCheckDelegateChain } from './check-delegate-chain.ts'
 import type { CliResult } from './cli-result.ts'
+import { runDispatch } from './dispatch.ts'
+import { runPrepareImagegen } from './prepare-imagegen.ts'
+import { runPrepare } from './prepare.ts'
 import { runReadRequest } from './read-request.ts'
 import { runReadResponse } from './read-response.ts'
 import { runResolveModel } from './resolve-model.ts'
+import { runRun, runRunImagegen, runRunXResearch, type OneShotIo } from './run-oneshot.ts'
 
 // delegate-cli のバージョン。gh skill publish のリリースタグと同期させる運用は
 // 全スクリプト移行完了後に確定する（それまでは 0.0.0-dev のまま）。
@@ -31,11 +36,42 @@ const md2idxSmokeResult = (): CliResult => {
   }
 }
 
-// stdin から本文を受けるサブコマンド。それ以外では stdin を読まない
-// (対話起動した delegate-cli --version が入力待ちで止まらないように)
-const STDIN_SUBCOMMANDS = new Set(['build-request', 'build-response'])
+// stdin (本文 Markdown) は handler が必要になった時点で読む遅延渡し。
+// bash 版と同じく引数エラーは stdin を消費せず即 exit 2 になり、
+// 対話起動した delegate-cli --version 等も入力待ちで止まらない
+const EMPTY_STDIN = (): Buffer => Buffer.alloc(0)
 
-type SubcommandHandler = (rest: readonly string[], stdin: Buffer) => CliResult
+// build-request / build-response は Buffer 契約 (prepare が in-process で本文を渡す) の
+// ため、bash 版が usage 検証後に cat していたのと同じ順序を main 側で再現する
+const stdinForMinArgs = (
+  readStdin: () => Buffer,
+  args: { rest: readonly string[]; minArgs: number }
+): Buffer => {
+  if (args.rest.length < args.minArgs) {
+    return Buffer.alloc(0)
+  }
+  return readStdin()
+}
+
+// dispatch / run は同ディレクトリの backend wrapper .sh を bash で起動する。
+// 配布形態ではバンドルと wrapper が同 dir に並び、リポジトリ正本ではバンドルが
+// shared/dist/ 配下にあるため dist の親 (shared/) を scripts dir とみなす
+const scriptsDirOf = (entry: string): string => {
+  const dir = path.dirname(path.resolve(entry))
+  if (path.basename(dir) === 'dist') {
+    return path.dirname(dir)
+  }
+  return dir
+}
+
+const oneShotIo = (): OneShotIo => ({
+  scriptsDir: scriptsDirOf(process.argv[1] ?? '.'),
+  writeStderr: (text: string): void => {
+    process.stderr.write(text)
+  },
+})
+
+type SubcommandHandler = (rest: readonly string[], readStdin: () => Buffer) => CliResult
 
 const HANDLERS: Readonly<Partial<Record<string, SubcommandHandler>>> = {
   '--version': () => versionResult(),
@@ -43,13 +79,27 @@ const HANDLERS: Readonly<Partial<Record<string, SubcommandHandler>>> = {
   'md2idx-smoke': () => md2idxSmokeResult(),
   'resolve-model': (rest) => runResolveModel(rest, process.env),
   'check-delegate-chain': (rest) => runCheckDelegateChain(rest),
-  'build-request': (rest, stdin) => runBuildRequest(rest, process.env, stdin),
+  'build-request': (rest, readStdin) =>
+    runBuildRequest(rest, process.env, stdinForMinArgs(readStdin, { rest, minArgs: 4 })),
   'read-request': (rest) => runReadRequest(rest, process.env),
-  'build-response': (rest, stdin) => runBuildResponse(rest, process.env, stdin),
+  'build-response': (rest, readStdin) =>
+    runBuildResponse(rest, process.env, stdinForMinArgs(readStdin, { rest, minArgs: 3 })),
   'read-response': (rest) => runReadResponse(rest, process.env),
+  prepare: (rest, readStdin) => runPrepare(rest, process.env, readStdin),
+  'prepare-imagegen': (rest, readStdin) => runPrepareImagegen(rest, process.env, readStdin),
+  dispatch: (rest) =>
+    runDispatch(rest, process.env, { scriptsDir: scriptsDirOf(process.argv[1] ?? '.') }),
+  run: (rest, readStdin) => runRun(rest, { env: process.env, io: oneShotIo() }, readStdin),
+  'run-imagegen': (rest, readStdin) =>
+    runRunImagegen(rest, { env: process.env, io: oneShotIo() }, readStdin),
+  'run-x-research': (rest, readStdin) =>
+    runRunXResearch(rest, { env: process.env, io: oneShotIo() }, readStdin),
 }
 
-export const runCli = (argv: readonly string[], stdin: Buffer = Buffer.alloc(0)): CliResult => {
+export const runCli = (
+  argv: readonly string[],
+  readStdin: () => Buffer = EMPTY_STDIN
+): CliResult => {
   if (argv.length === 0) {
     return {
       exitCode: 2,
@@ -66,19 +116,20 @@ export const runCli = (argv: readonly string[], stdin: Buffer = Buffer.alloc(0))
       stdout: '',
     }
   }
-  return handler(rest, stdin)
+  return handler(rest, readStdin)
 }
 
 if (!import.meta.vitest) {
   const argv = process.argv.slice(2)
-  let stdin = Buffer.alloc(0)
-  if (typeof argv[0] === 'string' && STDIN_SUBCOMMANDS.has(argv[0])) {
-    stdin = readFileSync(0)
-  }
-  const result = runCli(argv, stdin)
+  const result = runCli(argv, () => readFileSync(0))
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
   process.exitCode = result.exitCode
+}
+
+// in-source test 専用 helper (bundle からは treeshake で除去される)
+const explodingStdin = (): Buffer => {
+  throw new Error('stdin must not be read before argv validation')
 }
 
 if (import.meta.vitest) {
@@ -105,6 +156,23 @@ if (import.meta.vitest) {
       expect(result.exitCode).toBe(2)
       expect(result.stdout).toBe('')
       expect(result.stderr).toContain('no-such-subcommand')
+    })
+
+    it('does not read stdin before argv validation like the bash originals', () => {
+      const argvCases: string[][] = [
+        ['prepare'],
+        ['prepare', 'chore', 'E', 'haiku', '[]', 'sid', 'bogus-mode'],
+        ['prepare-imagegen'],
+        ['run'],
+        ['run-imagegen'],
+        ['run-x-research'],
+        ['build-request'],
+        ['build-response'],
+        ['--version'],
+      ]
+      for (const argv of argvCases) {
+        expect(runCli(argv, explodingStdin).exitCode).toBeLessThanOrEqual(2)
+      }
     })
 
     it('runs the md2idx library entry in-process', () => {
