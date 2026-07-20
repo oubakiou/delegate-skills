@@ -226,6 +226,8 @@ gh skill publish --dry-run
 
 `skills/*/SKILL.md` の `name` がディレクトリ名と一致するか、frontmatter の検証等をリリース前に行う。
 
+> `gh skill publish` は SKILL.md を探してリポジトリを再帰スキャンする。`.temp/` にテスト由来のスクラッチディレクトリが大量に溜まっていると、その走査で `--dry-run` / publish が無応答（実質ハング）になる現象がある。ハングしたら `.temp/` を掃除してから再実行する。
+
 #### 3. gh skill publish でタグ + Release + skill 公開
 
 ```bash
