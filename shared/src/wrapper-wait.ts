@@ -5,6 +5,7 @@ import type { Env } from './build-request.ts'
 import { getPath, readFileOrEmpty, stringOf } from './jq-compat.ts'
 import { heartbeat, importStreams, stallTimeout } from './observe-store.ts'
 import { elapsedMs, firstUsefulSeen, monotonicMs } from './observe-timing.ts'
+import { exitStatusFromChild } from './protocol.ts'
 import { positiveIntOrZero, processTreeJson } from './wrapper-report.ts'
 
 // bash 版 observe-json.sh の delegate_observe_wait_with_heartbeat と同一契約。
@@ -242,15 +243,18 @@ const recordStallQuietly = (
   }
 }
 
-const killStalledChild = async (child: ChildProcess): Promise<void> => {
+const killStalledChild = async (worker: SpawnedWorker): Promise<void> => {
   try {
-    child.kill('SIGTERM')
+    worker.child.kill('SIGTERM')
   } catch {
     // 既に終了済み
   }
-  await sleepMs(1000)
+  // grace は worker 終了と race する。子が SIGTERM で即死した場合、unref した grace
+  // タイマーだけが残って event loop が空になり Node が exit 13 で先に落ちるのを防ぐ
+  // （子が SIGTERM を無視して生存し続ける場合は child ハンドルが loop を保持する）
+  await Promise.race([sleepMs(1000), worker.exited])
   try {
-    child.kill('SIGKILL')
+    worker.child.kill('SIGKILL')
   } catch {
     // 既に終了済み
   }
@@ -282,7 +286,7 @@ const heartbeatAndStallCheck = async (context: WaitLoopContext): Promise<boolean
     childPid: context.childPid,
     timeoutSeconds: context.stallTimeoutSeconds,
   })
-  await killStalledChild(context.input.worker.child)
+  await killStalledChild(context.input.worker)
   return true
 }
 
@@ -317,22 +321,6 @@ const waitLoop = async (context: WaitLoopContext): Promise<boolean> => {
   return false
 }
 
-const exitStatusOfWait = (result: {
-  code: number | null
-  signal: NodeJS.Signals | null
-}): number => {
-  if (typeof result.code === 'number') {
-    return result.code
-  }
-  // bash の wait はシグナル死を 128+signum で返す。名前解決できない場合は 1
-  const signals: Partial<Record<string, number>> = { SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }
-  const signum = signals[result.signal ?? '']
-  if (typeof signum === 'number') {
-    return 128 + signum
-  }
-  return 1
-}
-
 const finalStatus = (
   stalled: boolean,
   exitResult: { code: number | null; signal: NodeJS.Signals | null }
@@ -340,7 +328,8 @@ const finalStatus = (
   if (stalled) {
     return 124
   }
-  return exitStatusOfWait(exitResult)
+  // bash の wait はシグナル死を 128+signum で返す（SIGHUP=129 等も含む）。共通変換を使う
+  return exitStatusFromChild(exitResult)
 }
 
 const finalizeWaitObserve = (input: WaitInput, childPid: number): void => {

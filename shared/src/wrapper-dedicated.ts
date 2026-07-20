@@ -108,16 +108,23 @@ const responsePresence = (context: WrapperContext): boolean => {
   return false
 }
 
+export interface EndDedicatedInput {
+  lifecycle: DedicatedLifecycle
+  exitCode: number
+  // grok fallback 等で実効 model が要求 model と異なる場合に metrics へ渡す実効値。
+  // 省略時は originalModel（bash 版 delegate-x-research-grok は fallback 後の $MODEL を記録）
+  effectiveModel?: string
+}
+
 export const endDedicatedDispatch = (
   context: WrapperContext,
-  lifecycle: DedicatedLifecycle,
-  exitCode: number
+  input: EndDedicatedInput
 ): boolean => {
   const responsePresent = responsePresence(context)
   dispatchEnd(context.args.observeFile, context.workDir, {
     backend: context.backend,
     dispatcherPid: process.pid,
-    exitCode,
+    exitCode: input.exitCode,
     responsePresent,
   })
   quietly(() => {
@@ -125,10 +132,10 @@ export const endDedicatedDispatch = (
       {
         observeFile: context.args.observeFile,
         taskType: context.args.taskType,
-        model: context.args.originalModel,
+        model: input.effectiveModel ?? context.args.originalModel,
         backend: context.backend,
-        durationMs: elapsedMs(lifecycle.startMs),
-        exitCode,
+        durationMs: elapsedMs(input.lifecycle.startMs),
+        exitCode: input.exitCode,
         responsePresent,
         responseFile: context.args.responseFile,
       },
@@ -172,7 +179,7 @@ export const finishDedicated = (
     stderrCapture: context.stderrCapture,
     env: context.env,
   })
-  endDedicatedDispatch(context, lifecycle, failure.exitCode)
+  endDedicatedDispatch(context, { lifecycle, exitCode: failure.exitCode })
   return { exitCode: failure.exitCode, stdout: `${context.args.responseFile}\n`, stderr: '' }
 }
 

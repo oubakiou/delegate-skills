@@ -113,7 +113,8 @@ const tryAllocateRunPaths = (
   const token = randomToken(5)
   const requestFile = path.join(workDir, `delegate_${taskType}_${timestamp}_${token}_req.json`)
   try {
-    closeSync(openSync(requestFile, 'wx'))
+    // bash 版 mktemp と同じく 0600 で予約する（prompt 本文・session metadata を含むため）
+    closeSync(openSync(requestFile, 'wx', 0o600))
   } catch (error) {
     if (isCollision(error)) {
       // 既存 token と衝突したら引き直す (呼び出し側でリトライ)
@@ -159,7 +160,7 @@ const parseChainArg = (raw: string): unknown[] | null => {
 
 const writeSourceMarkdown = (workDir: string, runDir: string, stdin: Buffer): string => {
   const srcMd = path.join(workDir, `${path.basename(runDir)}_reqsrc_${randomToken(5)}.md`)
-  const fd = openSync(srcMd, 'wx')
+  const fd = openSync(srcMd, 'wx', 0o600)
   writeSync(fd, stdin)
   closeSync(fd)
   return srcMd
@@ -214,7 +215,8 @@ const emitRequest = (context: BuildRequestContext): CliResult => {
       requester_session_id: context.requesterSessionId,
       index,
       sections,
-    })
+    }),
+    { mode: 0o600 }
   )
   if (index.length === 0 || sections.length === 0) {
     // 失敗時は入力 Markdown をデバッグ用に残す
@@ -362,6 +364,24 @@ if (import.meta.vitest) {
       expect(readFileSync(requestFile.replace(/\.json$/, '.md'), 'utf8')).toBe(
         '# Objective\n\n本文\n'
       )
+    })
+
+    it('creates the request JSON with 0600 like the bash mktemp (umask 022)', () => {
+      const workDir = makeWorkDir()
+      const previousUmask = process.umask(0o022)
+      try {
+        runBuildRequest(
+          ['chore', 'haiku', '[]', 'sid-1'],
+          { DELEGATE_WORK_DIR: workDir },
+          Buffer.from('# Objective\n\n機微な prompt 本文\n')
+        )
+      } finally {
+        process.umask(previousUmask)
+      }
+      const requestName = readdirSync(workDir).find((name) => name.endsWith('_req.json')) ?? ''
+      const permMask = 0o777
+      const mode = statSync(path.join(workDir, requestName)).mode % (permMask + 1)
+      expect(mode).toBe(0o600)
     })
 
     it('fails closed with exit 1 on an empty body, keeping the source markdown', () => {

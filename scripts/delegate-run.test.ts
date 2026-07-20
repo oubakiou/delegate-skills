@@ -1,6 +1,6 @@
 // run.sh / run-imagegen.sh / run-x-research.sh の one-shot 契約（単一 JSON stdout・
 // exit code 透過・observe_file の stderr 先出し・selector 既定）を fake CLI で検証する。
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -145,6 +145,31 @@ const runOneShot = (
   })
   return { status: result.status ?? -1, stderr: result.stderr, stdout: result.stdout }
 }
+
+// 並列に run.sh を起動して同一 DELEGATE_WORK_DIR 下の observe/response が
+// symlink lock + atomic replace で壊れないことを検証する（削除した parity concurrency
+// の代替。bash 版に依存せず実プロセスを複数起動する）
+const runOneShotAsync = async (harness: Harness, requester: string): Promise<RunOutcome> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      'bash',
+      ['shared/run.sh', 'chore', 'DELEGATE_RUN_TEST_MODEL', 'haiku', '[]', requester],
+      { cwd: repoRoot, env: harness.env }
+    )
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8')
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8')
+    })
+    child.stdin.end('# Task\nconcurrent body\n')
+    child.on('error', reject)
+    child.on('close', (code) => {
+      resolve({ status: code ?? -1, stderr, stdout })
+    })
+  })
 
 const chorArgs = (selector = ''): string[] => {
   const args = ['shared/run.sh', 'chore', 'DELEGATE_RUN_TEST_MODEL', 'haiku', '[]', 'run-test']
@@ -328,5 +353,30 @@ describe('dedicated one-shot scripts', () => {
     expect(json.content).toContain('imagegen ok')
     expectRunPaths(json)
     expect(outcome.stderr).toContain('observe_file: ')
+  })
+})
+
+const expectValidRunArtifacts = (outcome: RunOutcome): string | null => {
+  expect(outcome.status).toBe(0)
+  const json = parseRunJson(outcome.stdout)
+  expect(json.status).toBe('completed')
+  expect(json.response_file).toMatch(/_res\.json$/)
+  // observe / response が atomic replace されて常に valid JSON であること
+  const observe: unknown = JSON.parse(readFileSync(json.observe_file ?? '', 'utf8'))
+  expect(observe).toMatchObject({ state: { phase: 'ended', response_present: true } })
+  const response: unknown = JSON.parse(readFileSync(json.response_file ?? '', 'utf8'))
+  expect(response).toMatchObject({ status: 'completed' })
+  return json.observe_file
+}
+
+describe('concurrent runs share a WORK_DIR without corrupting observe/response', () => {
+  it('runs 6 run.sh in parallel and every observe/response JSON stays valid', async () => {
+    const harness = makeHarness()
+    const requesters = Array.from({ length: 6 }, (_unused, index) => `parallel-${index}`)
+    const pending = requesters.map(async (requester) => runOneShotAsync(harness, requester))
+    const outcomes = await Promise.all(pending)
+    const observeFiles = new Set(outcomes.map(expectValidRunArtifacts))
+    // 6 run が別々の run_dir を持つ（衝突していない）
+    expect(observeFiles.size).toBe(6)
   })
 })

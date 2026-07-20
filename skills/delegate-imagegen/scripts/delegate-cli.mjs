@@ -1,7 +1,8 @@
 import { accessSync, appendFileSync, closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import path from "node:path";
+import os, { constants as constants$1 } from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 //#region node_modules/md2idx/dist/md2idx.mjs
 var INACTIVE_FENCE = {
@@ -206,6 +207,18 @@ var runTimestamp = () => {
 };
 var sectionBanner = (sections) => sections.map((value, key) => `===== section[${key}] =====\n${value}`).join("\n");
 var stripTrailingNewlines = (value) => value.replace(/\n+$/, "");
+var errorMessage = (error) => {
+	if (error instanceof Error) return error.message;
+	return String(error);
+};
+var exitStatusFromChild = (result) => {
+	if (typeof result.code === "number") return result.code;
+	if (result.signal !== null) {
+		const signum = constants$1.signals[result.signal];
+		if (typeof signum === "number") return 128 + signum;
+	}
+	return 1;
+};
 var stripTrailingNewlineBytes = (body) => {
 	let end = body.length;
 	while (end > 0 && body[end - 1] === 10) end -= 1;
@@ -273,7 +286,7 @@ var tryAllocateRunPaths = (workDir, taskType, timestamp) => {
 	const token = randomToken(5);
 	const requestFile = path.join(workDir, `delegate_${taskType}_${timestamp}_${token}_req.json`);
 	try {
-		closeSync(openSync(requestFile, "wx"));
+		closeSync(openSync(requestFile, "wx", 384));
 	} catch (error) {
 		if (isCollision(error)) return failure$6(0, "");
 		return failure$6(1, `ERROR: request_file を作成できません: ${requestFile}\n`);
@@ -304,7 +317,7 @@ var parseChainArg = (raw) => {
 };
 var writeSourceMarkdown$1 = (workDir, runDir, stdin) => {
 	const srcMd = path.join(workDir, `${path.basename(runDir)}_reqsrc_${randomToken(5)}.md`);
-	const fd = openSync(srcMd, "wx");
+	const fd = openSync(srcMd, "wx", 384);
 	writeSync(fd, stdin);
 	closeSync(fd);
 	return srcMd;
@@ -344,7 +357,7 @@ var emitRequest = (context) => {
 		requester_session_id: context.requesterSessionId,
 		index,
 		sections
-	}));
+	}), { mode: 384 });
 	if (index.length === 0 || sections.length === 0) return failure$6(1, `ERROR: md2idx が空の index/sections を返しました（入力 Markdown を確認してください）: ${srcMd}\n`);
 	writeCompanionMarkdown(paths.requestFile, sections);
 	unlinkSync(srcMd);
@@ -416,7 +429,7 @@ var writeSourceMarkdown = (context) => {
 	mkdirSync(workDir, { recursive: true });
 	const base = path.basename(context.responseFile, ".json");
 	const srcMd = path.join(workDir, `${base}_repsrc_${randomToken(5)}.md`);
-	const fd = openSync(srcMd, "wx");
+	const fd = openSync(srcMd, "wx", 384);
 	writeSync(fd, context.stdin);
 	closeSync(fd);
 	return srcMd;
@@ -451,7 +464,7 @@ var emitResponse = (context) => {
 		responder_session_id: context.responderSessionId,
 		index,
 		sections
-	}));
+	}), { mode: 384 });
 	if (index.length === 0 || sections.length === 0) return failure$5(1, `ERROR: md2idx が空の index/sections を返しました（report Markdown を確認してください）: ${srcMd}\n`);
 	writeCompanionMarkdown(context.responseFile, sections);
 	unlinkSync(srcMd);
@@ -1144,7 +1157,7 @@ var readObserveDoc = (observeFile) => {
 var writeObserveDoc = (observeFile, runDir, doc) => {
 	const base = path.basename(observeFile).replace(/\.json$/, "");
 	const tmp = path.join(runDir, `${base}_upd_${randomToken(5)}.json`);
-	writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`);
+	writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 384 });
 	renameSync(tmp, observeFile);
 };
 var updateObserve = (observeFile, runDir, mutate) => {
@@ -1152,6 +1165,12 @@ var updateObserve = (observeFile, runDir, mutate) => {
 		const doc = readObserveDoc(observeFile);
 		mutate(doc);
 		writeObserveDoc(observeFile, runDir, doc);
+	});
+};
+var updateObserveConditional = (observeFile, runDir, mutate) => {
+	withObserveLock(observeFile, runDir, () => {
+		const doc = readObserveDoc(observeFile);
+		if (mutate(doc)) writeObserveDoc(observeFile, runDir, doc);
 	});
 };
 var sectionOf = (doc, key) => {
@@ -1230,7 +1249,7 @@ var initObserve = (input) => {
 	withObserveLock(input.observeFile, input.runDir, () => {
 		const base = path.basename(input.observeFile).replace(/\.json$/, "");
 		const tmp = path.join(input.runDir, `${base}_init_${randomToken(5)}.json`);
-		writeFileSync(tmp, `${JSON.stringify(doc)}\n`);
+		writeFileSync(tmp, `${JSON.stringify(doc)}\n`, { mode: 384 });
 		renameSync(tmp, input.observeFile);
 	});
 };
@@ -1371,7 +1390,7 @@ var recordEffort = (observeFile, runDir, effort) => {
 	});
 };
 var defaultPriceTable = () => {
-	const pricesFile = resolvePricesFile(path.dirname(new URL(import.meta.url).pathname));
+	const pricesFile = resolvePricesFile(path.dirname(fileURLToPath(import.meta.url)));
 	if (pricesFile === null) return null;
 	return loadPriceTable(pricesFile);
 };
@@ -1398,15 +1417,16 @@ var recordUsage = (input) => {
 var markSuperseded = (observeFile, requester, supersededBy) => {
 	const runDir = observeFile.replace(/_observe\.json$/, "");
 	if (!existsSync(runDir)) return;
-	updateObserve(observeFile, runDir, (doc) => {
-		if (getPath(doc, ["state", "phase"]) !== "prepared") return;
-		if ((getPath(doc, ["run", "requester_session_id"]) ?? "") !== requester) return;
+	updateObserveConditional(observeFile, runDir, (doc) => {
+		if (getPath(doc, ["state", "phase"]) !== "prepared") return false;
+		if ((getPath(doc, ["run", "requester_session_id"]) ?? "") !== requester) return false;
 		sectionOf(doc, "state").phase = "superseded";
 		eventsOf(doc).push({
 			kind: "superseded",
 			ts: utcTimestamp(),
 			superseded_by: supersededBy
 		});
+		return true;
 	});
 };
 var mtimeOrNull = (file) => {
@@ -1656,14 +1676,10 @@ var BACKEND_SCRIPTS = {
 	devin: "delegate-devin.sh",
 	cursor: "delegate-cursor.sh"
 };
-var exitStatusOf = (result) => {
-	if (typeof result.status === "number") return result.status;
-	if (result.signal !== null) {
-		const signum = os.constants.signals[result.signal];
-		if (typeof signum === "number") return 128 + signum;
-	}
-	return 1;
-};
+var exitStatusOf = (result) => exitStatusFromChild({
+	code: result.status,
+	signal: result.signal
+});
 var stripTrailingNewlinesText = (value) => value.replace(/\n+$/, "");
 var openWrapperCapture = (captureStderr) => {
 	const scratch = mkdtempSync(path.join(os.tmpdir(), "delegate-wrapper."));
@@ -2670,8 +2686,19 @@ var formatValue = (value) => {
 	return JSON.stringify(value);
 };
 var navigate = (root, keys) => {
-	if (keys.length === 0) return root;
-	return getPath(root, keys) ?? null;
+	let current = root;
+	for (const key of keys) {
+		if (current === null || typeof current === "undefined") return {
+			ok: true,
+			value: null
+		};
+		if (!isRecord$3(current)) return { ok: false };
+		current = current[key];
+	}
+	return {
+		ok: true,
+		value: current ?? null
+	};
 };
 var readRawJson = (stdin, jsonFile) => {
 	try {
@@ -2686,20 +2713,34 @@ var usageError$1 = () => ({
 	stderr: "Usage: read-json <dotpath> [json_file]  (json on stdin if file omitted)\n",
 	stdout: ""
 });
-var extractValue = (raw, keys) => {
+var parsedOrError = (raw) => {
 	try {
 		return {
-			exitCode: 0,
-			stderr: "",
-			stdout: `${formatValue(navigate(JSON.parse(raw), keys))}\n`
+			ok: true,
+			value: JSON.parse(raw)
 		};
 	} catch {
-		return {
-			exitCode: 4,
-			stderr: "ERROR: input is not valid JSON\n",
-			stdout: ""
-		};
+		return { ok: false };
 	}
+};
+var extractValue = (raw, dotPath, keys) => {
+	const parsed = parsedOrError(raw);
+	if (!parsed.ok) return {
+		exitCode: 4,
+		stderr: "ERROR: input is not valid JSON\n",
+		stdout: ""
+	};
+	const result = navigate(parsed.value, keys);
+	if (!result.ok) return {
+		exitCode: 5,
+		stderr: `ERROR: cannot traverse ${dotPath} (non-object on the path)\n`,
+		stdout: ""
+	};
+	return {
+		exitCode: 0,
+		stderr: "",
+		stdout: `${formatValue(result.value)}\n`
+	};
 };
 var runReadJson = (argv, stdin) => {
 	if (argv.length < 1 || !DOT_PATH.test(argv[0])) return usageError$1();
@@ -2711,7 +2752,7 @@ var runReadJson = (argv, stdin) => {
 		stderr: `ERROR: cannot read json: ${jsonFile ?? "(stdin)"}\n`,
 		stdout: ""
 	};
-	return extractValue(raw, keys);
+	return extractValue(raw, dotPath, keys);
 };
 //#endregion
 //#region shared/src/read-request.ts
@@ -3136,7 +3177,7 @@ var exitCodeOf = (dispatched, outcome) => {
 	if (dispatched.exitCode !== 0) return dispatched.exitCode;
 	return outcome.readStatus;
 };
-var oneShot = (config) => {
+var oneShotInner = (config) => {
 	const prepared = config.prepare();
 	if (prepared.exitCode !== 0) return failureJson(config.env, {
 		exitCode: prepared.exitCode,
@@ -3159,6 +3200,16 @@ var oneShot = (config) => {
 			runDir: paths.runDir
 		})
 	};
+};
+var oneShot = (config) => {
+	try {
+		return oneShotInner(config);
+	} catch (error) {
+		return failureJson(config.env, {
+			exitCode: 1,
+			content: `${errorMessage(error)}\n`
+		});
+	}
 };
 var RUN_USAGE = "Usage: run <task_type> <type_env_name> <default_model> <parent_task_type_chain_json> <requester_session_id> [selector]  (request body markdown on stdin)";
 var runRun = (argv, context, readStdin) => {
@@ -4101,13 +4152,13 @@ var recordStallQuietly = (input, detail) => {
 		});
 	} catch {}
 };
-var killStalledChild = async (child) => {
+var killStalledChild = async (worker) => {
 	try {
-		child.kill("SIGTERM");
+		worker.child.kill("SIGTERM");
 	} catch {}
-	await sleepMs(1e3);
+	await Promise.race([sleepMs(1e3), worker.exited]);
 	try {
-		child.kill("SIGKILL");
+		worker.child.kill("SIGKILL");
 	} catch {}
 };
 var stallDetected = (input, stallTimeoutSeconds) => {
@@ -4121,7 +4172,7 @@ var heartbeatAndStallCheck = async (context) => {
 		childPid: context.childPid,
 		timeoutSeconds: context.stallTimeoutSeconds
 	});
-	await killStalledChild(context.input.worker.child);
+	await killStalledChild(context.input.worker);
 	return true;
 };
 var pollOnce = async (context, counter) => {
@@ -4139,19 +4190,9 @@ var waitLoop = async (context) => {
 	while (context.input.worker.isRunning()) if (await pollOnce(context, counter) === "stalled") return true;
 	return false;
 };
-var exitStatusOfWait = (result) => {
-	if (typeof result.code === "number") return result.code;
-	const signum = {
-		SIGINT: 2,
-		SIGKILL: 9,
-		SIGTERM: 15
-	}[result.signal ?? ""];
-	if (typeof signum === "number") return 128 + signum;
-	return 1;
-};
 var finalStatus = (stalled, exitResult) => {
 	if (stalled) return 124;
-	return exitStatusOfWait(exitResult);
+	return exitStatusFromChild(exitResult);
 };
 var finalizeWaitObserve = (input, childPid) => {
 	heartbeat(input.observeFile, input.runDir, {
@@ -5140,22 +5181,22 @@ var responsePresence = (context) => {
 	responseMissing(context.args.observeFile, context.workDir);
 	return false;
 };
-var endDedicatedDispatch = (context, lifecycle, exitCode) => {
+var endDedicatedDispatch = (context, input) => {
 	const responsePresent = responsePresence(context);
 	dispatchEnd(context.args.observeFile, context.workDir, {
 		backend: context.backend,
 		dispatcherPid: process.pid,
-		exitCode,
+		exitCode: input.exitCode,
 		responsePresent
 	});
 	quietly(() => {
 		appendDispatchMetrics({
 			observeFile: context.args.observeFile,
 			taskType: context.args.taskType,
-			model: context.args.originalModel,
+			model: input.effectiveModel ?? context.args.originalModel,
 			backend: context.backend,
-			durationMs: elapsedMs(lifecycle.startMs),
-			exitCode,
+			durationMs: elapsedMs(input.lifecycle.startMs),
+			exitCode: input.exitCode,
 			responsePresent,
 			responseFile: context.args.responseFile
 		}, context.env);
@@ -5185,7 +5226,10 @@ var finishDedicated = (context, lifecycle, failure) => {
 		stderrCapture: context.stderrCapture,
 		env: context.env
 	});
-	endDedicatedDispatch(context, lifecycle, failure.exitCode);
+	endDedicatedDispatch(context, {
+		lifecycle,
+		exitCode: failure.exitCode
+	});
 	return {
 		exitCode: failure.exitCode,
 		stdout: `${context.args.responseFile}\n`,
@@ -5254,7 +5298,10 @@ var finalizeImagegenRun = (context, run, wait) => {
 			effective: effectiveCodexEffort(run.codexHome)
 		});
 	});
-	endDedicatedDispatch(context, run.lifecycle, outcome.responseStatus);
+	endDedicatedDispatch(context, {
+		lifecycle: run.lifecycle,
+		exitCode: outcome.responseStatus
+	});
 	if (outcome.responseStatus === 0 && outcome.responseAllowsResume) codexHomePrune(run.codexHome, context.env);
 	return {
 		exitCode: outcome.responseStatus,
@@ -5411,7 +5458,11 @@ var finalizeXresearchRun = (context, run, wait) => {
 	quietly(() => {
 		recordEffort(context.args.observeFile, context.workDir, { requested: "" });
 	});
-	endDedicatedDispatch(context, run.lifecycle, outcome.responseStatus);
+	endDedicatedDispatch(context, {
+		lifecycle: run.lifecycle,
+		exitCode: outcome.responseStatus,
+		effectiveModel: run.model
+	});
 	return {
 		exitCode: outcome.responseStatus,
 		stdout: `${context.args.responseFile}\n`,
@@ -5604,10 +5655,16 @@ var runCli = async (argv, readStdin = EMPTY_STDIN) => {
 	return handler(rest, readStdin);
 };
 {
-	const result = await runCli(process.argv.slice(2), () => readFileSync(0));
-	process.stdout.write(result.stdout);
-	process.stderr.write(result.stderr);
-	process.exitCode = result.exitCode;
+	const argv = process.argv.slice(2);
+	try {
+		const result = await runCli(argv, () => readFileSync(0));
+		process.stdout.write(result.stdout);
+		process.stderr.write(result.stderr);
+		process.exitCode = result.exitCode;
+	} catch (error) {
+		process.stderr.write(`delegate-cli: ${errorMessage(error)}\n`);
+		process.exitCode = 1;
+	}
 }
 //#endregion
 export { CLI_VERSION, runCli };

@@ -177,26 +177,17 @@ main が request_file / response_file を事前確保する。詳細は [protoco
 
 ### 命名
 
-```bash
-ts="$(date +%Y%m%d_%H%M%S)"
-tmp_name="delegate_<type>_${ts}_req_XXXXX"
-# 既定の置き場は mktemp に委ねる（TMPDIR、無ければ /tmp）。DELEGATE_WORK_DIR で上書き可
-if [ -n "${DELEGATE_WORK_DIR:-}" ]; then
-  mkdir -p "$DELEGATE_WORK_DIR"
-  request_tmp="$(mktemp --tmpdir="$DELEGATE_WORK_DIR" "$tmp_name" --suffix=.json)"
-else
-  request_tmp="$(mktemp --tmpdir "$tmp_name" --suffix=.json)"
-fi
-request_token="$(basename "$request_tmp")"
-request_token="${request_token#delegate_<type>_${ts}_req_}"
-request_token="${request_token%.json}"
-request_file="${request_tmp%/*}/delegate_<type>_${ts}_${request_token}_req.json"
-mv "$request_tmp" "$request_file"
-response_file="${request_file%_req.json}_res.json"
+`build-request`（`shared/src/build-request.ts`）が命名する。置き場は `DELEGATE_WORK_DIR`、無ければ `TMPDIR`、無ければ `/tmp`。ファイル名は `delegate_<type>_<ts>_<token>_req.json` で、`<ts>` は `runTimestamp()`（`YYYYMMDD_HHMMSS`）、`<token>` は `randomToken(5)`。名前衝突時は `openSync(..., 'wx')`（排他作成）が EEXIST を返すので token を引き直す（bash 版の mktemp 相当。予約は 0600 で作る）。
+
+```
+delegate_<type>_<ts>_<token>_req.json     # request（0600）
+delegate_<type>_<ts>_<token>_res.json     # response（0600）
+delegate_<type>_<ts>_<token>_observe.json # observe（0600）
+delegate_<type>_<ts>_<token>/             # run_dir（run ごとの scratch）
 ```
 
-- request_file と response_file は `ts`（タイムスタンプ）とランダムトークンを共有し、末尾の `_req`/`_res` だけが異なる → 同一秒に並列実行してもファイル名から両者の対応関係を一意特定できる
-- 乱数の出所は request の mktemp 1 箇所。一意性も保たれる
+- request_file と response_file は `<ts>` とランダムトークンを共有し、末尾の `_req`/`_res` だけが異なる → 同一秒に並列実行してもファイル名から両者の対応関係を一意特定できる
+- 乱数の出所は request 予約時の `randomToken(5)` 1 箇所。一意性も保たれる
 - クリーンアップ: request / response / observe JSON は残す（監査・デバッグ用）。run ごとの scratch directory は `DELEGATE_RUN_RETENTION_DAYS` に正の整数を指定した場合だけ、request 準備時に同じ `DELEGATE_WORK_DIR` 配下の古い directory を削除する。`state.phase == "running"` の observe JSON を持つ directory は active とみなして削除しない。既定では自動削除しない
 - **main 事前確保の利点**: main は sub の最終メッセージをパースせずに response_file パスを決定的に知れる。sub の返答が崩れてもパスを見失わない
 

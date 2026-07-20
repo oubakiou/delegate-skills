@@ -123,7 +123,7 @@ const finalizeImagegenRun = (
       effective: effectiveCodexEffort(run.codexHome),
     })
   })
-  endDedicatedDispatch(context, run.lifecycle, outcome.responseStatus)
+  endDedicatedDispatch(context, { lifecycle: run.lifecycle, exitCode: outcome.responseStatus })
   // protocol status が failed の response は exit 0 でも失敗扱いとし、調査のため prune しない
   if (outcome.responseStatus === 0 && outcome.responseAllowsResume) {
     codexHomePrune(run.codexHome, context.env)

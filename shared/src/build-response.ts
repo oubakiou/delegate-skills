@@ -49,7 +49,7 @@ const writeSourceMarkdown = (context: BuildResponseContext): string => {
   mkdirSync(workDir, { recursive: true })
   const base = path.basename(context.responseFile, '.json')
   const srcMd = path.join(workDir, `${base}_repsrc_${randomToken(5)}.md`)
-  const fd = openSync(srcMd, 'wx')
+  const fd = openSync(srcMd, 'wx', 0o600)
   writeSync(fd, context.stdin)
   closeSync(fd)
   return srcMd
@@ -88,7 +88,8 @@ const emitResponse = (context: BuildResponseContext): CliResult => {
       responder_session_id: context.responderSessionId,
       index,
       sections,
-    })
+    }),
+    { mode: 0o600 }
   )
   if (index.length === 0 || sections.length === 0) {
     // 失敗時は report Markdown をデバッグ用に残す

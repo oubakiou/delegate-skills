@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { getPath, isRecord, jqCoalesce } from './jq-compat.ts'
 import { withObserveLock } from './observe-lock.ts'
 import {
@@ -43,7 +44,7 @@ const readObserveDoc = (observeFile: string): ObserveDoc => {
 const writeObserveDoc = (observeFile: string, runDir: string, doc: ObserveDoc): void => {
   const base = path.basename(observeFile).replace(/\.json$/, '')
   const tmp = path.join(runDir, `${base}_upd_${randomToken(5)}.json`)
-  writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`)
+  writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 })
   renameSync(tmp, observeFile)
 }
 
@@ -56,6 +57,21 @@ const updateObserve = (
     const doc = readObserveDoc(observeFile)
     mutate(doc)
     writeObserveDoc(observeFile, runDir, doc)
+  })
+}
+
+// mutate が false を返した場合は書き込まない条件付き更新。no-op でも rename して
+// mtime を進めてしまうと supersede の mtime 比較が壊れる箇所（markSuperseded）で使う
+const updateObserveConditional = (
+  observeFile: string,
+  runDir: string,
+  mutate: (doc: ObserveDoc) => boolean
+): void => {
+  withObserveLock(observeFile, runDir, () => {
+    const doc = readObserveDoc(observeFile)
+    if (mutate(doc)) {
+      writeObserveDoc(observeFile, runDir, doc)
+    }
   })
 }
 
@@ -156,7 +172,7 @@ export const initObserve = (input: ObserveInitInput): void => {
     // bash 版 init は jq -cn の compact 出力
     const base = path.basename(input.observeFile).replace(/\.json$/, '')
     const tmp = path.join(input.runDir, `${base}_init_${randomToken(5)}.json`)
-    writeFileSync(tmp, `${JSON.stringify(doc)}\n`)
+    writeFileSync(tmp, `${JSON.stringify(doc)}\n`, { mode: 0o600 })
     renameSync(tmp, input.observeFile)
   })
 }
@@ -355,7 +371,9 @@ export interface RecordUsageInput {
 }
 
 const defaultPriceTable = (): PriceTable | null => {
-  const libDir = path.dirname(new URL(import.meta.url).pathname)
+  // new URL(...).pathname は空白・非 ASCII を percent-encode するため、そのままだと
+  // そういう install path で価格表を見失う。fileURLToPath で正しい OS パスに戻す
+  const libDir = path.dirname(fileURLToPath(import.meta.url))
   const pricesFile = resolvePricesFile(libDir)
   if (pricesFile === null) {
     return null
@@ -394,15 +412,19 @@ export const markSuperseded = (
   if (!existsSync(runDir)) {
     return
   }
-  updateObserve(observeFile, runDir, (doc) => {
+  updateObserveConditional(observeFile, runDir, (doc) => {
+    // phase 不一致 / requester 不一致は no-op。書き込まず mtime を進めない
+    // （進めると別 requester の no-op が候補を新 run より新しく見せ、正しい
+    //   requester の後続 dispatch が stale 判定できず prepared のまま残る）
     if (getPath(doc, ['state', 'phase']) !== 'prepared') {
-      return
+      return false
     }
     if ((getPath(doc, ['run', 'requester_session_id']) ?? '') !== requester) {
-      return
+      return false
     }
     sectionOf(doc, 'state').phase = 'superseded'
     eventsOf(doc).push({ kind: 'superseded', ts: utcTimestamp(), superseded_by: supersededBy })
+    return true
   })
 }
 
@@ -855,6 +877,17 @@ if (import.meta.vitest) {
       expect(getPath(observeDocOf(staleObserve), ['state', 'phase'])).toBe('superseded')
       // 自身は superseded にならない
       expect(getPath(observeDocOf(current.observeFile), ['state', 'phase'])).toBe('prepared')
+    })
+
+    it('does not rewrite an mtime on a requester-mismatch no-op', () => {
+      // 別 requester の supersede が候補に触れても書き込まず mtime を進めない（進めると
+      // 正しい requester の後続 dispatch が候補を stale 判定できなくなる）
+      const current = initFixture()
+      const candidate = makeAgedStalePrepared(path.dirname(current.observeFile))
+      const before = statSync(candidate).mtimeMs
+      markSuperseded(candidate, 'different-requester', path.basename(current.observeFile))
+      expect(getPath(observeDocOf(candidate), ['state', 'phase'])).toBe('prepared')
+      expect(statSync(candidate).mtimeMs).toBe(before)
     })
   })
 }

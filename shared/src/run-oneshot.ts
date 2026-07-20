@@ -7,7 +7,7 @@ import { hasFileContent, isRecord, readFileOrEmpty, stringOf } from './jq-compat
 import { runPrepareImagegen } from './prepare-imagegen.ts'
 import { parseRunPaths, runPrepare } from './prepare.ts'
 import { runReadResponse } from './read-response.ts'
-import { prettyJson } from './protocol.ts'
+import { errorMessage, prettyJson } from './protocol.ts'
 
 // bash 版 run.sh / run-imagegen.sh / run-x-research.sh と同一の one-shot 契約:
 // stdout: 成功・失敗とも単一 JSON（exit_code / status / content / content_truncated /
@@ -219,7 +219,7 @@ const exitCodeOf = (dispatched: DispatchOutcome, outcome: ReadOutcome): number =
   return outcome.readStatus
 }
 
-export const oneShot = (config: OneShotConfig): CliResult => {
+const oneShotInner = (config: OneShotConfig): CliResult => {
   const prepared = config.prepare()
   if (prepared.exitCode !== 0) {
     return failureJson(config.env, { exitCode: prepared.exitCode, content: prepared.stderr })
@@ -240,6 +240,17 @@ export const oneShot = (config: OneShotConfig): CliResult => {
       observeFile: paths.observeFile,
       runDir: paths.runDir,
     }),
+  }
+}
+
+// bash 版 run.sh は prepare / dispatch / read の非 0 を常に delegate_run_emit へ変換した。
+// TS でも FS / spawn / parse 例外がそのまま抜けて stdout 0 byte + stack trace になるのを防ぎ、
+// 成否を問わず単一 JSON を返す公開契約を維持する（fail-closed）
+export const oneShot = (config: OneShotConfig): CliResult => {
+  try {
+    return oneShotInner(config)
+  } catch (error) {
+    return failureJson(config.env, { exitCode: 1, content: `${errorMessage(error)}\n` })
   }
 }
 
@@ -401,6 +412,28 @@ if (import.meta.vitest) {
       )
       expect(result.exitCode).toBe(4)
       expect(JSON.parse(result.stdout)).toMatchObject({ exit_code: 4, status: 'failed' })
+    })
+
+    it('converts a thrown FS/spawn exception into the failure JSON envelope', () => {
+      // prepare が同期例外を投げても stdout 0 byte + stack trace ではなく単一 JSON を返す
+      const result = oneShot({
+        taskType: 'chore',
+        selector: 'auto',
+        env: {},
+        io: silentIo('.'),
+        prepare: () => {
+          throw new Error('EACCES: mkdir failed')
+        },
+        dispatch: () => ({ exitCode: 0, stderr: '' }),
+      })
+      expect(result.exitCode).toBe(1)
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        exit_code: 1,
+        status: 'failed',
+        content_truncated: false,
+        response_file: null,
+      })
+      expect(JSON.parse(result.stdout).content).toContain('EACCES')
     })
   })
 

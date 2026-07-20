@@ -12,6 +12,7 @@ import { runPrepare } from './prepare.ts'
 import { runReadJson } from './read-json.ts'
 import { runReadRequest } from './read-request.ts'
 import { runReadResponse } from './read-response.ts'
+import { errorMessage } from './protocol.ts'
 import { runResolveModel } from './resolve-model.ts'
 import { runRun, runRunImagegen, runRunXResearch, type OneShotIo } from './run-oneshot.ts'
 import { runWrapperClaude } from './wrapper-claude.ts'
@@ -203,10 +204,17 @@ export const runCli = async (
 
 if (!import.meta.vitest) {
   const argv = process.argv.slice(2)
-  const result = await runCli(argv, () => readFileSync(0))
-  process.stdout.write(result.stdout)
-  process.stderr.write(result.stderr)
-  process.exitCode = result.exitCode
+  // 保険の最終例外境界。run 系は oneShot が JSON 契約を維持するが、その外側でも
+  // raw stack trace ではなく stderr メッセージ + exit 1 に倒す（fail-closed）
+  try {
+    const result = await runCli(argv, () => readFileSync(0))
+    process.stdout.write(result.stdout)
+    process.stderr.write(result.stderr)
+    process.exitCode = result.exitCode
+  } catch (error) {
+    process.stderr.write(`delegate-cli: ${errorMessage(error)}\n`)
+    process.exitCode = 1
+  }
 }
 
 // in-source test 専用 helper (bundle からは treeshake で除去される)

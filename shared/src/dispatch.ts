@@ -15,6 +15,7 @@ import {
   type Env,
 } from './observe-store.ts'
 import { elapsedMs, monotonicMs } from './observe-timing.ts'
+import { exitStatusFromChild } from './protocol.ts'
 
 // bash 版 dispatch.sh と同一契約:
 // Usage: dispatch <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]
@@ -41,18 +42,7 @@ export interface DispatchIo {
 export const exitStatusOf = (result: {
   status: number | null
   signal: NodeJS.Signals | null
-}): number => {
-  if (typeof result.status === 'number') {
-    return result.status
-  }
-  if (result.signal !== null) {
-    const signum = os.constants.signals[result.signal]
-    if (typeof signum === 'number') {
-      return 128 + signum
-    }
-  }
-  return 1
-}
+}): number => exitStatusFromChild({ code: result.status, signal: result.signal })
 
 const stripTrailingNewlinesText = (value: string): string => value.replace(/\n+$/, '')
 

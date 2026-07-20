@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { constants } from 'node:os'
 import path from 'node:path'
 
 // protocol v1 の request / response で共有する変換・計測ヘルパー。
@@ -124,6 +125,33 @@ export const sectionBanner = (sections: readonly string[]): string =>
 // 1 本だけ付け直す。互換のため同じ正規化を通す
 export const stripTrailingNewlines = (value: string): string => value.replace(/\n+$/, '')
 
+// catch した unknown を fail-closed なメッセージ文字列へ落とす共通ヘルパ
+export const errorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message
+  }
+  return String(error)
+}
+
+// bash の wait / spawn はシグナル死の子を 128+signum で報告する。code があればそれを、
+// 無ければ全シグナルを os.constants.signals で 128+signum へ、解決不能なら 1 に倒す。
+// wrapper-wait / dispatch の両方が同じ変換を共有する（SIGHUP=129 等を取りこぼさない）
+export const exitStatusFromChild = (result: {
+  code: number | null
+  signal: NodeJS.Signals | null
+}): number => {
+  if (typeof result.code === 'number') {
+    return result.code
+  }
+  if (result.signal !== null) {
+    const signum = constants.signals[result.signal]
+    if (typeof signum === 'number') {
+      return 128 + signum
+    }
+  }
+  return 1
+}
+
 // bash の body="$(cat)" (command substitution) と同じ末尾改行の除去。
 // toString を経由すると不正 UTF-8 バイトが U+FFFD に化けるため Buffer のまま切る
 export const stripTrailingNewlineBytes = (body: Buffer): Buffer => {
@@ -187,6 +215,16 @@ if (import.meta.vitest) {
     it('generates tokens of the requested length from the mktemp alphabet', () => {
       const token = randomToken(5)
       expect(token).toMatch(/^[A-Za-z0-9]{5}$/)
+    })
+
+    it('maps child exit codes and any signal to bash 128+signum semantics', () => {
+      expect(exitStatusFromChild({ code: 0, signal: null })).toBe(0)
+      expect(exitStatusFromChild({ code: 7, signal: null })).toBe(7)
+      // SIGHUP=1 → 129, SIGTERM=15 → 143, SIGKILL=9 → 137（3 種以外も取りこぼさない）
+      expect(exitStatusFromChild({ code: null, signal: 'SIGHUP' })).toBe(129)
+      expect(exitStatusFromChild({ code: null, signal: 'SIGTERM' })).toBe(143)
+      expect(exitStatusFromChild({ code: null, signal: 'SIGABRT' })).toBe(134)
+      expect(exitStatusFromChild({ code: null, signal: null })).toBe(1)
     })
   })
 }

@@ -50,6 +50,18 @@ if [ -n "$canonical_hits" ]; then
   exit 1
 fi
 
+# 正本 TS 実装が jq / md2idx CLI を子プロセスで呼び出していないことも検査する
+# （shim / SKILL.md だけでなく、TS へ spawn('jq') 等を足しても runtime 依存が復活するため）。
+# 許容: md2idx は npm library として import して in-process で使う（`from 'md2idx'` /
+# md2idx() 呼び出し）。禁止: jq / md2idx を argv 先頭に取る spawn/exec。
+ts_spawn_hits="$(grep -rnE "(spawn(Sync)?|execFile(Sync)?)\(['\"](jq|md2idx)['\"]" \
+  "$repo_root/shared/src" --include='*.ts' 2>/dev/null || true)"
+if [ -n "$ts_spawn_hits" ]; then
+  printf '%s\n' "$ts_spawn_hits" >&2
+  echo "ERROR: shared/src の TS が jq / md2idx を子プロセスで呼び出しています（in-process の md2idx library だけ許容）。" >&2
+  exit 1
+fi
+
 for root in .claude/skills .agents/skills; do
   [ -d "$repo_root/$root" ] || continue
   install_hits="$(scan_tree "$root")"

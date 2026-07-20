@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import type { CliResult } from './cli-result.ts'
-import { getPath } from './jq-compat.ts'
+import { isRecord } from './jq-compat.ts'
 
 // jq への依存を配布物から外すための最小 JSON リーダ。
 // SKILL.md の run 出力 / observe JSON 読み取り専用で、`jq -r <object dotpath>` の
@@ -36,13 +36,26 @@ const formatValue = (value: unknown): string => {
   return JSON.stringify(value)
 }
 
-const navigate = (root: unknown, keys: readonly string[]): unknown => {
-  if (keys.length === 0) {
-    return root
+type NavResult = { ok: true; value: unknown } | { ok: false }
+
+// jq -r のトラバーサル意味論に寄せる:
+// - object を key で降下。key 欠落 / 途中が null は "null"（jq: null|.x=null）で exit 0
+// - 途中が非 object 非 null（number/string/boolean/array）を key で index しようとしたら
+//   jq は "Cannot index ... with ..." でエラーになるので、ここも fail-closed（ok:false）
+// これにより壊れた observe/run JSON を「field 欠落」と誤認する fail-open を防ぐ
+const navigate = (root: unknown, keys: readonly string[]): NavResult => {
+  let current: unknown = root
+  for (const key of keys) {
+    if (current === null || typeof current === 'undefined') {
+      return { ok: true, value: null }
+    }
+    if (!isRecord(current)) {
+      return { ok: false }
+    }
+    const record: Record<string, unknown> = current
+    current = record[key]
   }
-  // DOT_PATH で英数 key のみに保証済み。getPath は record のみ辿るため、
-  // jq の欠落= null 挙動へ寄せて undefined を null 化する
-  return getPath(root, keys) ?? null
+  return { ok: true, value: current ?? null }
 }
 
 const readRawJson = (stdin: Buffer, jsonFile: string | undefined): string | null => {
@@ -62,12 +75,29 @@ const usageError = (): CliResult => ({
   stdout: '',
 })
 
-const extractValue = (raw: string, keys: readonly string[]): CliResult => {
+const parsedOrError = (raw: string): { ok: true; value: unknown } | { ok: false } => {
   try {
-    return { exitCode: 0, stderr: '', stdout: `${formatValue(navigate(JSON.parse(raw), keys))}\n` }
+    return { ok: true, value: JSON.parse(raw) }
   } catch {
+    return { ok: false }
+  }
+}
+
+const extractValue = (raw: string, dotPath: string, keys: readonly string[]): CliResult => {
+  const parsed = parsedOrError(raw)
+  if (!parsed.ok) {
     return { exitCode: 4, stderr: 'ERROR: input is not valid JSON\n', stdout: '' }
   }
+  const result = navigate(parsed.value, keys)
+  if (!result.ok) {
+    // jq: "Cannot index <type> with ..." 相当。fail-open を避けるため非 0 で落とす
+    return {
+      exitCode: 5,
+      stderr: `ERROR: cannot traverse ${dotPath} (non-object on the path)\n`,
+      stdout: '',
+    }
+  }
+  return { exitCode: 0, stderr: '', stdout: `${formatValue(result.value)}\n` }
 }
 
 export const runReadJson = (argv: readonly string[], stdin: Buffer): CliResult => {
@@ -84,7 +114,7 @@ export const runReadJson = (argv: readonly string[], stdin: Buffer): CliResult =
       stdout: '',
     }
   }
-  return extractValue(raw, keys)
+  return extractValue(raw, dotPath, keys)
 }
 
 if (import.meta.vitest) {
@@ -133,6 +163,19 @@ if (import.meta.vitest) {
       expect(runReadJson(['.sections[1]'], json).exitCode).toBe(2)
       expect(runReadJson(['."x.y"'], json).exitCode).toBe(2)
       expect(runReadJson(['.a[0].b'], json).exitCode).toBe(2)
+    })
+
+    it('treats null / missing intermediates as null but non-object intermediates as an error', () => {
+      // jq: null|.x=null（exit0）だが number|.x はエラー（exit≠0）。fail-open を防ぐ
+      const scalar = Buffer.from(JSON.stringify({ state: 1, ready: 'yes' }))
+      const nested = runReadJson(['.state.phase'], scalar)
+      expect(nested.exitCode).toBe(5)
+      expect(nested.stdout).toBe('')
+      // null 途中経路は jq と同じく null / exit 0
+      const withNull = Buffer.from(JSON.stringify({ state: null }))
+      const viaNull = runReadJson(['.state.phase'], withNull)
+      expect(viaNull.exitCode).toBe(0)
+      expect(viaNull.stdout).toBe('null\n')
     })
   })
 }

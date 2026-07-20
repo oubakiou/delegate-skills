@@ -157,11 +157,15 @@ backend の CLI 出力を observe JSON へ正規化する処理は `shared/src/o
 `.githooks/pre-commit` が以下を順に実行する:
 
 1. `sync-shared:check` で生成コピーの直接編集を早期検出
-2. `vp check --fix` で format / lint を自動修正し、変更を再ステージ
-3. `vp check --fix` が正本を書き換えた場合に `npm run build`（CLI 再バンドル）→ `sync-shared` でコピーへ再同期し再ステージ
-4. 最終ドリフト検証（dist 再ビルド byte 比較含む、fail-closed）
-5. `check-no-jq-md2idx.sh` で配布 tree に jq / md2idx 参照が残っていないことを静的検査
-6. `vp test`
+2. `vp check --fix` で format / lint を自動修正
+3. `vp check --fix` が正本を書き換えた場合に `npm run build`（CLI 再バンドル）→ `sync-shared` でコピーへ再同期
+4. hook がワークツリーを変更した場合、hook 自身は `git add` せず（commit が index.lock を保持しているため）、変更ファイルを表示して **exit 1** で止める。利用者が内容を確認し `git add -u && git commit` で再ステージする
+5. 最終ドリフト検証（dist 再ビルド byte 比較含む、fail-closed）
+6. `check-no-jq-md2idx.sh` で配布 tree（+ 正本 TS の spawn）に jq / md2idx 参照が残っていないことを静的検査
+7. `metrics:baseline:check` で metrics レコード形状のドリフト検知
+8. `vp test`
+
+CI（`.github/workflows/ci.yml`）も pinned Node / Linux の clean checkout で同じゲート（`build:check` / `sync-shared:check` / `check-no-jq-md2idx` / `metrics:baseline:check` / `vp check` / `vp test`）を PR 必須にする。
 
 ## issue triage（ラベル）
 

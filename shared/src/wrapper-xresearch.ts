@@ -117,7 +117,11 @@ const finalizeXresearchRun = (
   quietly(() => {
     recordEffort(context.args.observeFile, context.workDir, { requested: '' })
   })
-  endDedicatedDispatch(context, run.lifecycle, outcome.responseStatus)
+  endDedicatedDispatch(context, {
+    lifecycle: run.lifecycle,
+    exitCode: outcome.responseStatus,
+    effectiveModel: run.model,
+  })
   return {
     exitCode: outcome.responseStatus,
     stdout: `${context.args.responseFile}\n`,

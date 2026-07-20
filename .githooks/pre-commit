@@ -47,4 +47,7 @@ npm run sync-shared:check --silent
 # 6. 配布 tree に jq / md2idx 参照が残っていないことの静的検査 (skills/ は fail-closed)。
 bash scripts/check-no-jq-md2idx.sh
 
+# 7. metrics レコード形状の決定論的ドリフト検知 (fixtures/metrics/baseline.json)。
+npm run metrics:baseline:check --silent
+
 vp test
