@@ -11,6 +11,7 @@ import { promptConstraints } from './prompt-constraints.ts'
 import {
   completeResponse,
   effortFailure,
+  envOrDefault,
   finalizeResponse,
   finishWithoutChild,
   makeWrapperContext,
@@ -89,7 +90,11 @@ interface ClaudeSession {
 const setupResumableSession = (context: WrapperContext): ClaudeSession => {
   const sessionHome = path.join(context.workDir, 'claude-config')
   mkdirSync(sessionHome, { recursive: true })
-  const realConfig = context.env.CLAUDE_CONFIG_DIR ?? path.join(context.env.HOME ?? '', '.claude')
+  const realConfig = envOrDefault(
+    context.env,
+    'CLAUDE_CONFIG_DIR',
+    path.join(context.env.HOME ?? '', '.claude')
+  )
   writeFileQuietly(() => {
     if (hasFileContent(path.join(realConfig, '.credentials.json'))) {
       copyFileSync(
@@ -246,7 +251,9 @@ const childEnvOf = (
     ...context.env,
     TMPDIR: path.join(context.workDir, 'tmp'),
   }
-  const timeoutMs = positiveIntOrZero(context.env.DELEGATE_CHILD_BASH_TIMEOUT_MS ?? '300000')
+  const timeoutMs = positiveIntOrZero(
+    envOrDefault(context.env, 'DELEGATE_CHILD_BASH_TIMEOUT_MS', '300000')
+  )
   if (timeoutMs > 0) {
     childEnv.BASH_DEFAULT_TIMEOUT_MS = String(timeoutMs)
     childEnv.BASH_MAX_TIMEOUT_MS = String(timeoutMs)

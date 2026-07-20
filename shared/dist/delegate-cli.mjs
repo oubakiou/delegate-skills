@@ -1717,7 +1717,7 @@ var spawnWrapper = (input) => {
 		});
 	}
 };
-var argOrDefault$1 = (value, fallback) => {
+var argOrDefault$2 = (value, fallback) => {
 	if (typeof value === "string" && value !== "") return value;
 	return fallback;
 };
@@ -1734,8 +1734,8 @@ var parseDispatchArgs = (argv) => {
 		taskType,
 		requestFile,
 		responseFile,
-		runDir: argOrDefault$1(argv[4], runBase),
-		observeFile: argOrDefault$1(argv[5], `${runBase}_observe.json`),
+		runDir: argOrDefault$2(argv[4], runBase),
+		observeFile: argOrDefault$2(argv[5], `${runBase}_observe.json`),
 		sessionMode: argv[6] ?? "",
 		resumeArg: argv[7] ?? "",
 		sessionHome: argv[8] ?? ""
@@ -3554,12 +3554,17 @@ var codexHomePrune = (codexHome, env) => {
 };
 //#endregion
 //#region shared/src/wrapper-common.ts
+var envOrDefault = (env, name, fallback) => {
+	const value = env[name] ?? "";
+	if (value !== "") return value;
+	return fallback;
+};
 var quietly = (operation) => {
 	try {
 		operation();
 	} catch {}
 };
-var argOrDefault = (value, fallback) => {
+var argOrDefault$1 = (value, fallback) => {
 	if (typeof value === "string" && value !== "") return value;
 	return fallback;
 };
@@ -3576,8 +3581,8 @@ var parseWrapperArgs = (argv, usageName) => {
 		taskType,
 		requestFile,
 		responseFile,
-		runDir: argOrDefault(argv[4], runBase),
-		observeFile: argOrDefault(argv[5], `${runBase}_observe.json`),
+		runDir: argOrDefault$1(argv[4], runBase),
+		observeFile: argOrDefault$1(argv[5], `${runBase}_observe.json`),
 		sessionMode: argv[6] ?? "",
 		resumeArg: argv[7] ?? "",
 		sessionHome: argv[8] ?? ""
@@ -3603,7 +3608,7 @@ var makeWrapperContext = (args, io) => {
 	const split = splitModelEffort(args.originalModel);
 	const context = {
 		args,
-		backend: backendFromModel(args.originalModel),
+		backend: io.backend ?? backendFromModel(args.originalModel),
 		env: io.env,
 		scriptsDir: io.scriptsDir,
 		workDir,
@@ -4164,7 +4169,7 @@ var claudeSessionFileExists = (claudeHome, sessionId) => {
 var setupResumableSession = (context) => {
 	const sessionHome = path.join(context.workDir, "claude-config");
 	mkdirSync(sessionHome, { recursive: true });
-	const realConfig = context.env.CLAUDE_CONFIG_DIR ?? path.join(context.env.HOME ?? "", ".claude");
+	const realConfig = envOrDefault(context.env, "CLAUDE_CONFIG_DIR", path.join(context.env.HOME ?? "", ".claude"));
 	writeFileQuietly(() => {
 		if (hasFileContent(path.join(realConfig, ".credentials.json"))) copyFileSync(path.join(realConfig, ".credentials.json"), path.join(sessionHome, ".credentials.json"));
 	});
@@ -4279,7 +4284,7 @@ var childEnvOf = (context, session) => {
 		...context.env,
 		TMPDIR: path.join(context.workDir, "tmp")
 	};
-	const timeoutMs = positiveIntOrZero(context.env.DELEGATE_CHILD_BASH_TIMEOUT_MS ?? "300000");
+	const timeoutMs = positiveIntOrZero(envOrDefault(context.env, "DELEGATE_CHILD_BASH_TIMEOUT_MS", "300000"));
 	if (timeoutMs > 0) {
 		childEnv.BASH_DEFAULT_TIMEOUT_MS = String(timeoutMs);
 		childEnv.BASH_MAX_TIMEOUT_MS = String(timeoutMs);
@@ -4468,7 +4473,7 @@ var setupCodexMcp = (context, codexHome) => {
 	injectCodexMcp(context, codexHome);
 };
 var codexPromptTailLines = [...STRUCTURED_REPORT_HEAD_LINES, "   report をファイルに書いたり md2idx / jq でレスポンスを生成したりしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。"];
-var sandboxOf = (env) => env.CODEX_DELEGATE_SANDBOX ?? "danger-full-access";
+var sandboxOf = (env) => envOrDefault(env, "CODEX_DELEGATE_SANDBOX", "danger-full-access");
 var effortConfigArgs = (context) => {
 	if (context.effort === "") return [];
 	return ["-c", `model_reasoning_effort=${context.effort}`];
@@ -5027,6 +5032,394 @@ var runWrapperDevin = async (argv, env, io) => {
 	}));
 };
 //#endregion
+//#region shared/src/wrapper-dedicated.ts
+var argOrDefault = (value, fallback) => {
+	if (typeof value === "string" && value !== "") return value;
+	return fallback;
+};
+var parseDedicatedArgs = (argv, usageName) => {
+	if (argv.length < 3) return {
+		exitCode: 2,
+		stderr: `Usage: ${usageName} <model> <request_file> <response_file> [run_dir] [observe_file]\n`,
+		stdout: ""
+	};
+	const [model, requestFile, responseFile] = argv;
+	const runBase = responseFile.replace(/_res\.json$/, "");
+	return {
+		model,
+		requestFile,
+		responseFile,
+		runDir: argOrDefault(argv[3], runBase),
+		observeFile: argOrDefault(argv[4], `${runBase}_observe.json`)
+	};
+};
+var makeDedicatedContext = (parsed, fixed, io) => {
+	return makeWrapperContext({
+		originalModel: parsed.model,
+		taskType: fixed.taskType,
+		requestFile: parsed.requestFile,
+		responseFile: parsed.responseFile,
+		runDir: parsed.runDir,
+		observeFile: parsed.observeFile,
+		sessionMode: "",
+		resumeArg: "",
+		sessionHome: ""
+	}, {
+		env: io.env,
+		scriptsDir: io.scriptsDir,
+		backend: fixed.backend
+	});
+};
+var startDedicatedDispatch = (context) => {
+	const startMs = monotonicMs();
+	dispatchStart(context.args.observeFile, context.workDir, {
+		backend: context.backend,
+		dispatcherPid: process.pid
+	});
+	return { startMs };
+};
+var responsePresence = (context) => {
+	if (hasFileContent(context.args.responseFile)) return true;
+	responseMissing(context.args.observeFile, context.workDir);
+	return false;
+};
+var endDedicatedDispatch = (context, lifecycle, exitCode) => {
+	const responsePresent = responsePresence(context);
+	dispatchEnd(context.args.observeFile, context.workDir, {
+		backend: context.backend,
+		dispatcherPid: process.pid,
+		exitCode,
+		responsePresent
+	});
+	quietly(() => {
+		appendDispatchMetrics({
+			observeFile: context.args.observeFile,
+			taskType: context.args.taskType,
+			model: context.args.originalModel,
+			backend: context.backend,
+			durationMs: elapsedMs(lifecycle.startMs),
+			exitCode,
+			responsePresent,
+			responseFile: context.args.responseFile
+		}, context.env);
+	});
+	return responsePresent;
+};
+var finishDedicated = (context, lifecycle, failure) => {
+	writeFileSync(context.stderrCapture, `${failure.message}\n`);
+	quietly(() => {
+		writeFailedResponse({
+			observeFile: context.args.observeFile,
+			runDir: context.workDir,
+			backend: context.backend,
+			responseFile: context.args.responseFile,
+			exitCode: failure.exitCode
+		}, context.env);
+	});
+	if (hasFileContent(context.args.responseFile)) writeCompanionFromResponse(context.args.responseFile);
+	heartbeat(context.args.observeFile, context.workDir, {
+		backend: context.backend,
+		childPid: process.pid,
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture
+	});
+	importStreams(context.args.observeFile, context.workDir, {
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture,
+		env: context.env
+	});
+	endDedicatedDispatch(context, lifecycle, failure.exitCode);
+	return {
+		exitCode: failure.exitCode,
+		stdout: `${context.args.responseFile}\n`,
+		stderr: ""
+	};
+};
+//#endregion
+//#region shared/src/wrapper-imagegen.ts
+var argNonEmpty = (value) => {
+	if (typeof value === "string" && value !== "") return value;
+	return null;
+};
+var outputDirOf = (env) => argNonEmpty(env.DELEGATE_IMAGEGEN_OUTPUT_DIR) ?? "delegate-imagegen-output";
+var outputPathOf = (context, outputDir) => {
+	if (outputDir.startsWith("/")) return outputDir;
+	return path.join(context.repoRoot, outputDir);
+};
+var imagegenPrompt = (parts) => [
+	"あなたは delegate-skills の画像生成ワーカー（task_type=imagegen）です。protocol v1 に従ってください。",
+	"",
+	parts.requestStep,
+	"2. リクエストの指示に従い、利用可能な画像生成・画像編集 capability を使って成果物を生成する。AGENTS.md / CLAUDE.md の規約に従うこと。",
+	`3. 出力先がリクエストで明示されていない場合は、リポジトリ root からの相対パス \`${parts.outputDir}/\` 配下に保存する。`,
+	"4. 生成できない場合も、原因、試したパラメータ、必要な追加入力を report_markdown に残して failed または needs_input を返す。",
+	"5. 作業完了後、最終応答として構造化出力 {status, report_markdown} だけを返す。status は completed | partial | failed | needs_input のいずれか。report_markdown は見出し",
+	"   Summary / Generated files / Parameters / Verification / Blockers の Markdown。",
+	"   report は簡潔に書く: Summary は 5 行以内。試行錯誤ログや生ログは貼らず、Parameters は最終採用値と重要な生成条件のみ。該当が無い見出しは省く。",
+	"   report をファイルに書いたり md2idx / jq でレスポンスを生成したりしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。"
+].join("\n");
+var imagegenCodexArgs = (context, files) => [
+	"exec",
+	"-m",
+	context.args.originalModel,
+	"--skip-git-repo-check",
+	"--ephemeral",
+	"--ignore-user-config",
+	"--sandbox",
+	envOrDefault(context.env, "CODEX_DELEGATE_SANDBOX", "danger-full-access"),
+	"--output-last-message",
+	files.lastMsg,
+	"--output-schema",
+	files.schemaFile,
+	"-C",
+	context.repoRoot,
+	"-"
+];
+var effectiveCodexEffort = (codexHome) => {
+	try {
+		const effective = effortFromCodexSessions(codexHome);
+		if (effective === null) return null;
+		return { ...effective };
+	} catch {
+		return null;
+	}
+};
+var finalizeImagegenRun = (context, run, wait) => {
+	completeResponse(context, {
+		responderSessionId: responderSessionIdOf(context, context.args.originalModel),
+		reportMode: "structured",
+		collectStructured: () => structuredFromLastMessage(run.lastMsg)
+	}, wait);
+	const outcome = finalizeResponse(context, wait.childStatus);
+	quietly(() => {
+		recordEffort(context.args.observeFile, context.workDir, {
+			requested: "",
+			effective: effectiveCodexEffort(run.codexHome)
+		});
+	});
+	endDedicatedDispatch(context, run.lifecycle, outcome.responseStatus);
+	if (outcome.responseStatus === 0 && outcome.responseAllowsResume) codexHomePrune(run.codexHome, context.env);
+	return {
+		exitCode: outcome.responseStatus,
+		stdout: `${context.args.responseFile}\n`,
+		stderr: outcome.stderrTail
+	};
+};
+var prepareImagegenLaunch = (context) => {
+	const outputDir = outputDirOf(context.env);
+	mkdirSync(outputPathOf(context, outputDir), { recursive: true });
+	const codexHome = path.join(context.workDir, "codex-home");
+	copyCodexAuth(context, codexHome);
+	const schemaFile = path.join(context.workDir, "report-schema.json");
+	writeFileSync(schemaFile, REPORT_SCHEMA_JSON);
+	const promptFile = writePromptFile(context, imagegenPrompt({
+		requestStep: requestPromptStep(context.args.requestFile, {
+			scriptsDir: context.scriptsDir,
+			env: context.env
+		}).step,
+		outputDir
+	}));
+	return {
+		codexHome,
+		lastMsg: path.join(context.workDir, "codex-last-message.txt"),
+		schemaFile,
+		promptFile
+	};
+};
+var runImagegenChild = async (context, lifecycle) => {
+	const launch = prepareImagegenLaunch(context);
+	const worker = spawnWorker({
+		command: "codex",
+		args: imagegenCodexArgs(context, {
+			lastMsg: launch.lastMsg,
+			schemaFile: launch.schemaFile
+		}),
+		cwd: process.cwd(),
+		env: {
+			...context.env,
+			CODEX_HOME: launch.codexHome,
+			TMPDIR: path.join(context.workDir, "tmp")
+		},
+		stdinFile: launch.promptFile,
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture
+	});
+	const wait = await waitWithHeartbeat({
+		observeFile: context.args.observeFile,
+		runDir: context.workDir,
+		backend: context.backend,
+		worker,
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture,
+		responseFile: context.args.responseFile,
+		env: context.env
+	});
+	return finalizeImagegenRun(context, {
+		codexHome: launch.codexHome,
+		lastMsg: launch.lastMsg,
+		lifecycle
+	}, wait);
+};
+var runWrapperImagegen = async (argv, env, io) => {
+	const parsed = parseDedicatedArgs(argv, "delegate-imagegen-codex.sh");
+	if ("exitCode" in parsed) return parsed;
+	const context = makeDedicatedContext(parsed, {
+		taskType: "imagegen",
+		backend: "codex"
+	}, {
+		env,
+		scriptsDir: io.scriptsDir
+	});
+	const lifecycle = startDedicatedDispatch(context);
+	if (!context.args.originalModel.startsWith("gpt")) return finishDedicated(context, lifecycle, {
+		exitCode: 2,
+		message: `ERROR: delegate-imagegen requires a gpt-* model for Codex execution: ${context.args.originalModel}`
+	});
+	if (!commandAvailable("codex", env)) return finishDedicated(context, lifecycle, {
+		exitCode: 3,
+		message: "ERROR: codex CLI が見つかりません。"
+	});
+	return runImagegenChild(context, lifecycle);
+};
+//#endregion
+//#region shared/src/wrapper-xresearch.ts
+var availableGrokModels = (env) => {
+	const listed = spawnSync("grok", ["models"], {
+		encoding: "utf8",
+		env: { ...env },
+		stdio: [
+			"ignore",
+			"pipe",
+			"ignore"
+		]
+	});
+	const models = [];
+	for (const line of (listed.stdout ?? "").split("\n")) {
+		const match = /^\s*[-*]\s+(?<model>\S+)/.exec(line);
+		if (match !== null && typeof match.groups !== "undefined") models.push(match.groups.model);
+	}
+	return models;
+};
+var resolveGrokModel = (context) => {
+	const requested = context.args.originalModel;
+	const models = availableGrokModels(context.env);
+	if (!models.includes(requested) && models.includes("grok-build")) {
+		process.stderr.write(`WARN: Grok CLI model '${requested}' is unavailable; falling back to 'grok-build'.\n`);
+		return "grok-build";
+	}
+	return requested;
+};
+var xresearchPrompt = (parts) => [
+	"あなたは delegate-skills の x.com 調査ワーカー（task_type=xresearch）です。protocol v1 に従ってください。",
+	"",
+	parts.requestStep,
+	"2. リクエストの Scope に従い、利用可能な X / x.com 調査能力と web search を使って調査する。AGENTS.md / CLAUDE.md の規約に従うこと。",
+	"3. 投稿URL、投稿者、投稿日時、確認時刻、検索語を Sources / Method に残す。事実、推測、未確認情報を混ぜない。",
+	"4. 非公開・削除済み・ログイン不足・検索結果の偏り・時点依存がある場合は、Limitations または Blockers に書く。",
+	`5. 作業報告を front-matter 付き Markdown で "${parts.reportFile}" に 1 回の書込で作る。ファイルの 1 行目から`,
+	"   ---",
+	"   status: <completed | partial | failed | needs_input のいずれか>",
+	"   ---",
+	"   の front-matter を置き、その下に見出し Summary / Findings / Sources / Method / Limitations / Blockers の本文を書く。",
+	"   report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞り、探索ログや検索結果の生貼りはしない。該当が無い見出しは省く。",
+	"   md2idx / jq によるレスポンス生成はしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。",
+	"6. 最終応答は status の一語のみ。"
+].join("\n");
+var grokCliArgs = (context, run) => {
+	const args = [
+		"--no-auto-update",
+		"-p",
+		run.prompt,
+		"-m",
+		run.model,
+		"--cwd",
+		context.repoRoot,
+		"--no-memory",
+		"--permission-mode",
+		envOrDefault(context.env, "GROK_DELEGATE_PERMISSION_MODE", "bypassPermissions"),
+		"--output-format",
+		"plain"
+	];
+	const sandbox = context.env.GROK_DELEGATE_SANDBOX ?? "";
+	if (sandbox !== "") args.push("--sandbox", sandbox);
+	return args;
+};
+var finalizeXresearchRun = (context, run, wait) => {
+	completeResponse(context, {
+		responderSessionId: responderSessionIdOf(context, run.model),
+		reportMode: "report_md",
+		reportFile: run.reportFile
+	}, wait);
+	const outcome = finalizeResponse(context, wait.childStatus);
+	quietly(() => {
+		recordEffort(context.args.observeFile, context.workDir, { requested: "" });
+	});
+	endDedicatedDispatch(context, run.lifecycle, outcome.responseStatus);
+	return {
+		exitCode: outcome.responseStatus,
+		stdout: `${context.args.responseFile}\n`,
+		stderr: outcome.stderrTail
+	};
+};
+var runXresearchChild = async (context, lifecycle) => {
+	const model = resolveGrokModel(context);
+	const reportFile = path.join(context.workDir, "report.md");
+	const worker = spawnWorker({
+		command: "grok",
+		args: grokCliArgs(context, {
+			model,
+			prompt: xresearchPrompt({
+				requestStep: requestPromptStep(context.args.requestFile, {
+					scriptsDir: context.scriptsDir,
+					env: context.env,
+					maxOverride: String(REQUEST_ARGV_INLINE_MAX)
+				}).step,
+				reportFile
+			})
+		}),
+		cwd: process.cwd(),
+		env: {
+			...context.env,
+			TMPDIR: path.join(context.workDir, "tmp")
+		},
+		stdinFile: null,
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture
+	});
+	const wait = await waitWithHeartbeat({
+		observeFile: context.args.observeFile,
+		runDir: context.workDir,
+		backend: context.backend,
+		worker,
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture,
+		responseFile: context.args.responseFile,
+		env: context.env
+	});
+	return finalizeXresearchRun(context, {
+		model,
+		reportFile,
+		lifecycle
+	}, wait);
+};
+var runWrapperXresearch = async (argv, env, io) => {
+	const parsed = parseDedicatedArgs(argv, "delegate-x-research-grok.sh");
+	if ("exitCode" in parsed) return parsed;
+	const context = makeDedicatedContext(parsed, {
+		taskType: "xresearch",
+		backend: "grok"
+	}, {
+		env,
+		scriptsDir: io.scriptsDir
+	});
+	const lifecycle = startDedicatedDispatch(context);
+	if (!commandAvailable("grok", env)) return finishDedicated(context, lifecycle, {
+		exitCode: 3,
+		message: "ERROR: grok CLI が見つかりません。"
+	});
+	return runXresearchChild(context, lifecycle);
+};
+//#endregion
 //#region shared/src/main.ts
 var CLI_VERSION = "0.0.0-dev";
 var versionResult = () => ({
@@ -5065,7 +5458,9 @@ var WRAPPER_BACKENDS = {
 	claude: runWrapperClaude,
 	codex: runWrapperCodex,
 	cursor: runWrapperCursor,
-	devin: runWrapperDevin
+	devin: runWrapperDevin,
+	imagegen: runWrapperImagegen,
+	xresearch: runWrapperXresearch
 };
 var runWrapperBackend = async (rest) => {
 	const [backendName, ...wrapperArgv] = rest;

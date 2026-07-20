@@ -29,6 +29,15 @@ import type { WaitResult } from './wrapper-wait.ts'
 // 引数解析 / finish_without_child / 応答補完 / usage・effort 記録 / session 記録を
 // 型付き設定オブジェクト経由で共有し、backend 固有部のみ各 wrapper 実装に残す。
 
+// bash の ${VAR:-default} と同じく、未設定だけでなく空文字も既定値へ倒す
+export const envOrDefault = (env: Env, name: string, fallback: string): string => {
+  const value = env[name] ?? ''
+  if (value !== '') {
+    return value
+  }
+  return fallback
+}
+
 export const quietly = (operation: () => void): void => {
   try {
     operation()
@@ -108,14 +117,15 @@ const gitRepoRoot = (): string => {
 
 export const makeWrapperContext = (
   args: WrapperArgs,
-  io: { env: Env; scriptsDir: string }
+  io: { env: Env; scriptsDir: string; backend?: string }
 ): WrapperContext => {
   const workDir = args.runDir
   mkdirSync(path.join(workDir, 'tmp'), { recursive: true })
   const split = splitModelEffort(args.originalModel)
   const context: WrapperContext = {
     args,
-    backend: backendFromModel(args.originalModel),
+    // 専用 wrapper（imagegen / xresearch）は backend をモデル名からではなく固定値で持つ
+    backend: io.backend ?? backendFromModel(args.originalModel),
     env: io.env,
     scriptsDir: io.scriptsDir,
     workDir,
@@ -567,6 +577,16 @@ if (import.meta.vitest) {
     }
     return makeWrapperContext(args, { env: {}, scriptsDir: dir })
   }
+
+  describe('envOrDefault', () => {
+    it('falls back on unset and empty values like the bash :- expansion', () => {
+      expect(envOrDefault({}, 'CODEX_DELEGATE_SANDBOX', 'danger-full-access')).toBe(
+        'danger-full-access'
+      )
+      expect(envOrDefault({ CODEX_DELEGATE_SANDBOX: '' }, 'CODEX_DELEGATE_SANDBOX', 'd')).toBe('d')
+      expect(envOrDefault({ CODEX_DELEGATE_SANDBOX: 'x' }, 'CODEX_DELEGATE_SANDBOX', 'd')).toBe('x')
+    })
+  })
 
   describe('parseWrapperArgs', () => {
     it('fails closed with exit 2 and derives run_dir / observe_file defaults', () => {

@@ -16,6 +16,7 @@ import { promptConstraints } from './prompt-constraints.ts'
 import {
   completeResponse,
   effortFailure,
+  envOrDefault,
   finalizeResponse,
   finishWithoutChild,
   makeWrapperContext,
@@ -85,7 +86,7 @@ const setupCodexHome = (context: WrapperContext): string | CliResult => {
   return path.join(context.workDir, 'codex-home')
 }
 
-const copyCodexAuth = (context: WrapperContext, codexHome: string): void => {
+export const copyCodexAuth = (context: WrapperContext, codexHome: string): void => {
   mkdirSync(codexHome, { recursive: true })
   const authFile = path.join(realCodexHomeOf(context.env), 'auth.json')
   quietly(() => {
@@ -141,7 +142,8 @@ const codexPromptTailLines = [
   '   report をファイルに書いたり md2idx / jq でレスポンスを生成したりしない（レスポンス生成は wrapper が行う）。リポジトリ root に report.md を作らない。',
 ] as const
 
-const sandboxOf = (env: Env): string => env.CODEX_DELEGATE_SANDBOX ?? 'danger-full-access'
+const sandboxOf = (env: Env): string =>
+  envOrDefault(env, 'CODEX_DELEGATE_SANDBOX', 'danger-full-access')
 
 const effortConfigArgs = (context: WrapperContext): string[] => {
   if (context.effort === '') {

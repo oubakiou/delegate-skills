@@ -16,6 +16,8 @@ import { runWrapperClaude } from './wrapper-claude.ts'
 import { runWrapperCodex } from './wrapper-codex.ts'
 import { runWrapperCursor } from './wrapper-cursor.ts'
 import { runWrapperDevin } from './wrapper-devin.ts'
+import { runWrapperImagegen } from './wrapper-imagegen.ts'
+import { runWrapperXresearch } from './wrapper-xresearch.ts'
 
 // delegate-cli のバージョン。gh skill publish のリリースタグと同期させる運用は
 // 全スクリプト移行完了後に確定する（それまでは 0.0.0-dev のまま）。
@@ -92,6 +94,8 @@ const WRAPPER_BACKENDS: Readonly<
   codex: runWrapperCodex,
   cursor: runWrapperCursor,
   devin: runWrapperDevin,
+  imagegen: runWrapperImagegen,
+  xresearch: runWrapperXresearch,
 }
 
 const runWrapperBackend = async (rest: readonly string[]): Promise<CliResult> => {
