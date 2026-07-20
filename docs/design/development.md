@@ -204,6 +204,20 @@ flowchart TD
 
 リリース対象の変更がすべて main にマージされた状態にする。
 
+#### 1.5. 次バージョンタグを決める（毎回ここを間違えやすい）
+
+**目分量で決めない。必ず remote の既存タグを取得してから最大タグの次を採る。**
+
+```bash
+git fetch --tags origin
+git tag -l 'v*' --sort=-v:refname | head -1   # 現在の最大タグ
+```
+
+- 次タグ = 最大タグの次（互換保持のマイナー変更なら patch/minor、破壊的変更や前提条件の変更なら minor を上げる。0.x なので minor bump に意味のある変更を載せる）。
+- **既存タグを再利用・移動しない**。`v0.16.0` のような公開済みタグは古いコミットを指しており、そこへ新しい HEAD を載せ替えるのは公開済みリリースの破壊になる。「次の番号」は必ず最大タグより大きくする。
+- ローカルのタグは古いことがある（remote に自分の知らない release がある）。**判断前に必ず `git fetch --tags`**。
+- タグが HEAD より前を指していないか確認する: `git merge-base --is-ancestor <最大タグ> HEAD && echo ok`（ok なら HEAD が新しく、その最大タグ+1 が正しい次番号）。
+
 #### 2. dry-run で検証
 
 ```bash
@@ -231,6 +245,7 @@ publish が付ける auto notes を What's New 形式に置き換える。
 ### リリースチェックリスト
 
 - [ ] リリース対象の変更がすべて main にマージ済み
+- [ ] `git fetch --tags origin` 済みで、次タグ = 既存最大タグ（`git tag -l 'v*' --sort=-v:refname | head -1`）の次番号。既存タグの再利用・移動はしない
 - [ ] `vp check` がエラーなし
 - [ ] `vp test` が全パス
 - [ ] `gh skill publish --dry-run` がエラーなし
