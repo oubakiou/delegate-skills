@@ -1,4 +1,14 @@
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import {
+  constants,
+  copyFileSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import type { Env } from './build-request.ts'
 import type { CliResult } from './cli-result.ts'
@@ -9,10 +19,19 @@ import {
   mcpTomlServerNames,
 } from './delegate-mcp.ts'
 import { effortFromCodexSessions } from './observe-effort.ts'
-import { hasFileContent, isDirectory, parseJsonObjects, readFileOrEmpty } from './jq-compat.ts'
+import {
+  getPath,
+  hasFileContent,
+  isDirectory,
+  isRecord,
+  parseJsonObjects,
+  readFileOrEmpty,
+  stringOf,
+} from './jq-compat.ts'
 import { updateMcpConfig } from './observe-store.ts'
 import { usageFromCapture, usageFromCodexSessions } from './observe-usage.ts'
 import { promptConstraints } from './prompt-constraints.ts'
+import { randomToken } from './protocol.ts'
 import {
   completeResponse,
   effortFailure,
@@ -61,20 +80,74 @@ const realCodexHomeOf = (env: Env): string => {
   return path.join(env.HOME ?? '', '.codex')
 }
 
+class CodexAuthLifecycleError extends Error {
+  public override name = 'CodexAuthLifecycleError'
+}
+
+const followupObserveFileOf = (sessionHome: string): string =>
+  `${path.dirname(sessionHome)}_observe.json`
+
+const DELEGATE_SESSION_RUN = /^delegate_(?:implement|chore)_\d{8}_\d{6}_[A-Za-z0-9]{5}$/
+
+const followupSessionRecordMatches = (context: WrapperContext, sessionHome: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(readFileOrEmpty(followupObserveFileOf(sessionHome)))
+    if (!isRecord(parsed)) {
+      return false
+    }
+    const field = (keys: string[]): string => stringOf(getPath(parsed, keys))
+    return (
+      field(['backend_session', 'backend']) === 'codex' &&
+      field(['backend_session', 'model']) === context.args.originalModel &&
+      field(['backend_session', 'resume_id']) === context.args.resumeArg &&
+      field(['backend_session', 'persistence']) === 'resumable' &&
+      path.resolve(field(['backend_session', 'home_dir'])) === path.resolve(sessionHome)
+    )
+  } catch {
+    return false
+  }
+}
+
+const ownedRealDirectory = (directory: string): boolean => {
+  if (typeof process.getuid !== 'function') {
+    return false
+  }
+  const stat = lstatSync(directory)
+  return stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid()
+}
+
+const safeFollowupSessionHome = (context: WrapperContext, sessionHome: string): boolean => {
+  const resolvedHome = path.resolve(sessionHome)
+  const realRoot = path.resolve(realCodexHomeOf(context.env))
+  try {
+    return (
+      path.basename(resolvedHome) === 'codex-home' &&
+      DELEGATE_SESSION_RUN.test(path.basename(path.dirname(resolvedHome))) &&
+      ownedRealDirectory(path.dirname(resolvedHome)) &&
+      ownedRealDirectory(resolvedHome) &&
+      realpathSync(resolvedHome) !== realpathSync(realRoot) &&
+      followupSessionRecordMatches(context, resolvedHome)
+    )
+  } catch {
+    return false
+  }
+}
+
+const setupFollowupCodexHome = (context: WrapperContext): string | CliResult => {
+  const { resumeArg, sessionHome } = context.args
+  if (sessionHome === '' || resumeArg === '') {
+    return finishWithoutChild(context, 5, 'ERROR: follow-up requires session_home and resume_id.')
+  }
+  if (!isDirectory(sessionHome) || !safeFollowupSessionHome(context, sessionHome)) {
+    return finishWithoutChild(context, 5, 'ERROR: Codex session_home ownership is invalid.')
+  }
+  return sessionHome
+}
+
 const setupCodexHome = (context: WrapperContext): string | CliResult => {
-  const { sessionMode, resumeArg, sessionHome } = context.args
+  const { sessionMode } = context.args
   if (sessionMode === 'followup') {
-    if (sessionHome === '' || resumeArg === '') {
-      return finishWithoutChild(context, 5, 'ERROR: follow-up requires session_home and resume_id.')
-    }
-    if (!isDirectory(sessionHome)) {
-      return finishWithoutChild(
-        context,
-        5,
-        `ERROR: Codex session_home does not exist: ${sessionHome}`
-      )
-    }
-    return sessionHome
+    return setupFollowupCodexHome(context)
   }
   if (sessionMode !== '' && sessionMode !== 'resumable') {
     return finishWithoutChild(
@@ -86,14 +159,244 @@ const setupCodexHome = (context: WrapperContext): string | CliResult => {
   return path.join(context.workDir, 'codex-home')
 }
 
-export const copyCodexAuth = (context: WrapperContext, codexHome: string): void => {
+const matchesRealCodexHome = (resolvedHome: string, rootAuth: string): boolean => {
+  try {
+    return realpathSync(resolvedHome) === realpathSync(path.dirname(rootAuth))
+  } catch {
+    return true
+  }
+}
+
+const authCopyIsSymlink = (authCopy: string): boolean => {
+  try {
+    return lstatSync(authCopy).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+const authCopyExists = (authCopy: string): boolean => {
+  try {
+    lstatSync(authCopy)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const safeCodexAuthCopyPath = (context: WrapperContext, codexHome: string): string | null => {
+  const resolvedHome = path.resolve(codexHome)
+  const authCopy = path.join(resolvedHome, 'auth.json')
+  const rootAuth = path.resolve(realCodexHomeOf(context.env), 'auth.json')
+  if (resolvedHome === path.parse(resolvedHome).root || authCopy === rootAuth) {
+    return null
+  }
+  if (matchesRealCodexHome(resolvedHome, rootAuth) || authCopyIsSymlink(authCopy)) {
+    return null
+  }
+  return authCopy
+}
+
+type CodexAuthArtifactKind = 'published' | 'staging'
+type CodexAuthSignal = 'SIGINT' | 'SIGTERM'
+
+interface CodexAuthLease {
+  cleanup: () => boolean
+  own: (artifact: string, kind: CodexAuthArtifactKind) => void
+  release: (artifact: string) => void
+}
+
+const publishStagedAuth = (staged: string, destination: string, lease: CodexAuthLease): void => {
+  try {
+    linkSync(staged, destination)
+    lease.own(destination, 'published')
+    unlinkSync(staged)
+    lease.release(staged)
+  } catch {
+    throw new CodexAuthLifecycleError('stage')
+  }
+}
+
+const copyAuthAtomic = (source: string, destination: string, lease: CodexAuthLease): void => {
+  const staged = path.join(
+    path.dirname(destination),
+    `.auth.json.stage-${process.pid}-${randomToken(8)}`
+  )
+  lease.own(staged, 'staging')
+  try {
+    copyFileSync(source, staged, constants.COPYFILE_EXCL)
+  } catch {
+    throw new CodexAuthLifecycleError('stage')
+  }
+  publishStagedAuth(staged, destination, lease)
+}
+
+const copyCodexAuth = (context: WrapperContext, codexHome: string, lease: CodexAuthLease): void => {
   mkdirSync(codexHome, { recursive: true })
   const authFile = path.join(realCodexHomeOf(context.env), 'auth.json')
-  quietly(() => {
-    if (hasFileContent(authFile)) {
-      copyFileSync(authFile, path.join(codexHome, 'auth.json'))
+  const authCopy = safeCodexAuthCopyPath(context, codexHome)
+  if (authCopy === null || authCopyExists(authCopy)) {
+    throw new CodexAuthLifecycleError('stage')
+  }
+  if (!hasFileContent(authFile)) {
+    return
+  }
+  copyAuthAtomic(authFile, authCopy, lease)
+}
+
+type CodexAuthFailurePhase = 'stage' | 'operation' | 'cleanup'
+
+interface CodexAuthRun<OperationResult> {
+  context: WrapperContext
+  codexHome: string
+  operation: () => Promise<OperationResult>
+  finalize: (result: OperationResult) => CliResult
+  onFailure: (phase: CodexAuthFailurePhase) => CliResult
+}
+
+class CodexAuthLeaseController implements CodexAuthLease {
+  readonly #ownedArtifacts = new Map<string, CodexAuthArtifactKind>()
+  #cleaned = false
+  #cleaning = false
+  #cleanupSucceeded = true
+  #pendingSignal: CodexAuthSignal | null = null
+
+  public constructor() {
+    process.once('SIGINT', this.#onSigint)
+    process.once('SIGTERM', this.#onSigterm)
+    process.once('exit', this.#onExit)
+  }
+
+  public cleanup = (): boolean => {
+    if (this.#cleaned) {
+      return this.#cleanupSucceeded
     }
+    if (this.#cleaning) {
+      return false
+    }
+    this.#cleaning = true
+    this.#cleanupSucceeded = this.#cleanupOwnedArtifacts()
+    this.#cleaned = true
+    this.#cleaning = false
+    this.#sendPendingSignal()
+    return this.#cleanupSucceeded
+  }
+
+  public own = (artifact: string, kind: CodexAuthArtifactKind): void => {
+    this.#ownedArtifacts.set(artifact, kind)
+  }
+
+  public release = (artifact: string): void => {
+    this.#ownedArtifacts.delete(artifact)
+  }
+
+  readonly #cleanupOwnedArtifacts = (): boolean =>
+    [...this.#ownedArtifacts].map(([artifact, kind]) => this.#remove(artifact, kind)).every(Boolean)
+
+  readonly #remove = (artifact: string, kind: CodexAuthArtifactKind): boolean => {
+    try {
+      if (kind === 'published') {
+        unlinkSync(artifact)
+      } else {
+        rmSync(artifact, { force: true })
+      }
+      this.#ownedArtifacts.delete(artifact)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  readonly #removeHandlers = (): void => {
+    process.removeListener('SIGINT', this.#onSigint)
+    process.removeListener('SIGTERM', this.#onSigterm)
+    process.removeListener('exit', this.#onExit)
+  }
+
+  readonly #sendPendingSignal = (): void => {
+    if (this.#pendingSignal === null) {
+      return
+    }
+    const signal = this.#pendingSignal
+    this.#pendingSignal = null
+    process.kill(process.pid, signal)
+  }
+
+  readonly #terminate = (signal: CodexAuthSignal): void => {
+    if (this.#cleaning) {
+      this.#pendingSignal = signal
+      return
+    }
+    this.cleanup()
+    process.kill(process.pid, signal)
+  }
+
+  readonly #onSigint = (): void => {
+    this.#terminate('SIGINT')
+  }
+
+  readonly #onSigterm = (): void => {
+    this.#terminate('SIGTERM')
+  }
+
+  readonly #onExit = (): void => {
+    this.cleanup()
+    this.#removeHandlers()
+  }
+}
+
+const registerCodexAuthLease = (): CodexAuthLease => new CodexAuthLeaseController()
+
+const waitForPendingAuthSignal = async (): Promise<void> =>
+  await new Promise((resolve) => {
+    setImmediate(resolve)
   })
+
+const cleanupCodexAuthLease = async (lease: CodexAuthLease): Promise<boolean> => {
+  const cleaned = lease.cleanup()
+  await waitForPendingAuthSignal()
+  return cleaned
+}
+
+const runStagedCodexAuth = async <OperationResult>(
+  run: CodexAuthRun<OperationResult>,
+  lease: CodexAuthLease
+): Promise<CliResult> => {
+  const operation = await (async (): Promise<
+    { result: OperationResult; succeeded: true } | { succeeded: false }
+  > => {
+    try {
+      return { result: await run.operation(), succeeded: true as const }
+    } catch {
+      return { succeeded: false as const }
+    }
+  })()
+  if (!operation.succeeded) {
+    if (!(await cleanupCodexAuthLease(lease))) {
+      return run.onFailure('cleanup')
+    }
+    return run.onFailure('operation')
+  }
+  if (!(await cleanupCodexAuthLease(lease))) {
+    return run.onFailure('cleanup')
+  }
+  return run.finalize(operation.result)
+}
+
+export const runWithCodexAuth = async <OperationResult>(
+  run: CodexAuthRun<OperationResult>
+): Promise<CliResult> => {
+  const lease = registerCodexAuthLease()
+  try {
+    copyCodexAuth(run.context, run.codexHome, lease)
+  } catch {
+    if (!(await cleanupCodexAuthLease(lease))) {
+      return run.onFailure('cleanup')
+    }
+    return run.onFailure('stage')
+  }
+  await waitForPendingAuthSignal()
+  return runStagedCodexAuth(run, lease)
 }
 
 const recordFollowupMcp = (context: WrapperContext, codexHome: string): void => {
@@ -283,6 +586,19 @@ const finalizeCodexRun = (
   return wrapperResult(context, outcome)
 }
 
+const finishCodexAuthFailure = (
+  context: WrapperContext,
+  codexHome: string,
+  phase: CodexAuthFailurePhase
+): CliResult => {
+  const result = finishWithoutChild(context, 1, `ERROR: Codex credential ${phase} failed safely.`)
+  recordCodexSessionOutcome(context, codexHome, {
+    childStatus: 1,
+    responseAllowsResume: false,
+  })
+  return result
+}
+
 const maxOverrideOf = (followup: boolean): string => {
   if (followup) {
     return String(REQUEST_ARGV_INLINE_MAX)
@@ -318,35 +634,41 @@ const codexLaunchOf = (context: WrapperContext): CodexLaunch => {
   return { cliArgs: normalCodexArgs(context, files), stdinFile: promptFile }
 }
 
-const runCodexChild = async (context: WrapperContext, codexHome: string): Promise<CliResult> => {
-  copyCodexAuth(context, codexHome)
-  setupCodexMcp(context, codexHome)
-  const launch = codexLaunchOf(context)
-  const worker = spawnWorker({
-    command: 'codex',
-    args: launch.cliArgs,
-    cwd: context.repoRoot,
-    env: {
-      ...context.env,
-      CODEX_HOME: codexHome,
-      TMPDIR: path.join(context.workDir, 'tmp'),
+const runCodexChild = async (context: WrapperContext, codexHome: string): Promise<CliResult> =>
+  runWithCodexAuth({
+    context,
+    codexHome,
+    operation: async () => {
+      setupCodexMcp(context, codexHome)
+      const launch = codexLaunchOf(context)
+      const worker = spawnWorker({
+        command: 'codex',
+        args: launch.cliArgs,
+        cwd: context.repoRoot,
+        env: {
+          ...context.env,
+          CODEX_HOME: codexHome,
+          TMPDIR: path.join(context.workDir, 'tmp'),
+        },
+        stdinFile: launch.stdinFile,
+        stdoutCapture: context.stdoutCapture,
+        stderrCapture: context.stderrCapture,
+      })
+      const wait = await waitWithHeartbeat({
+        observeFile: context.args.observeFile,
+        runDir: context.workDir,
+        backend: context.backend,
+        worker,
+        stdoutCapture: context.stdoutCapture,
+        stderrCapture: context.stderrCapture,
+        responseFile: context.args.responseFile,
+        env: context.env,
+      })
+      return wait
     },
-    stdinFile: launch.stdinFile,
-    stdoutCapture: context.stdoutCapture,
-    stderrCapture: context.stderrCapture,
+    finalize: (wait) => finalizeCodexRun(context, codexHome, wait),
+    onFailure: (phase) => finishCodexAuthFailure(context, codexHome, phase),
   })
-  const wait = await waitWithHeartbeat({
-    observeFile: context.args.observeFile,
-    runDir: context.workDir,
-    backend: context.backend,
-    worker,
-    stdoutCapture: context.stdoutCapture,
-    stderrCapture: context.stderrCapture,
-    responseFile: context.args.responseFile,
-    env: context.env,
-  })
-  return finalizeCodexRun(context, codexHome, wait)
-}
 
 const wrapperCodexWithContext = async (context: WrapperContext): Promise<CliResult> => {
   const effortError = effortFailure(context)

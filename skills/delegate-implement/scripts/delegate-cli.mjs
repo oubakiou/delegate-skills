@@ -1,4 +1,4 @@
-import { accessSync, appendFileSync, closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import path from "node:path";
 import os, { constants as constants$1 } from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -3651,8 +3651,7 @@ var codexHomePrune = (codexHome, env) => {
 		"cache",
 		"models_cache.json",
 		"plugins",
-		"shell_snapshots",
-		"auth.json"
+		"shell_snapshots"
 	]) try {
 		rmSync(path.join(codexHome, entry), {
 			force: true,
@@ -4509,22 +4508,210 @@ var realCodexHomeOf = (env) => {
 	if (home !== "") return home;
 	return path.join(env.HOME ?? "", ".codex");
 };
-var setupCodexHome = (context) => {
-	const { sessionMode, resumeArg, sessionHome } = context.args;
-	if (sessionMode === "followup") {
-		if (sessionHome === "" || resumeArg === "") return finishWithoutChild(context, 5, "ERROR: follow-up requires session_home and resume_id.");
-		if (!isDirectory$1(sessionHome)) return finishWithoutChild(context, 5, `ERROR: Codex session_home does not exist: ${sessionHome}`);
-		return sessionHome;
+var CodexAuthLifecycleError = class extends Error {
+	name = "CodexAuthLifecycleError";
+};
+var followupObserveFileOf = (sessionHome) => `${path.dirname(sessionHome)}_observe.json`;
+var DELEGATE_SESSION_RUN = /^delegate_(?:implement|chore)_\d{8}_\d{6}_[A-Za-z0-9]{5}$/;
+var followupSessionRecordMatches = (context, sessionHome) => {
+	try {
+		const parsed = JSON.parse(readFileOrEmpty$1(followupObserveFileOf(sessionHome)));
+		if (!isRecord$3(parsed)) return false;
+		const field = (keys) => stringOf(getPath(parsed, keys));
+		return field(["backend_session", "backend"]) === "codex" && field(["backend_session", "model"]) === context.args.originalModel && field(["backend_session", "resume_id"]) === context.args.resumeArg && field(["backend_session", "persistence"]) === "resumable" && path.resolve(field(["backend_session", "home_dir"])) === path.resolve(sessionHome);
+	} catch {
+		return false;
 	}
+};
+var ownedRealDirectory = (directory) => {
+	if (typeof process.getuid !== "function") return false;
+	const stat = lstatSync(directory);
+	return stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid();
+};
+var safeFollowupSessionHome = (context, sessionHome) => {
+	const resolvedHome = path.resolve(sessionHome);
+	const realRoot = path.resolve(realCodexHomeOf(context.env));
+	try {
+		return path.basename(resolvedHome) === "codex-home" && DELEGATE_SESSION_RUN.test(path.basename(path.dirname(resolvedHome))) && ownedRealDirectory(path.dirname(resolvedHome)) && ownedRealDirectory(resolvedHome) && realpathSync(resolvedHome) !== realpathSync(realRoot) && followupSessionRecordMatches(context, resolvedHome);
+	} catch {
+		return false;
+	}
+};
+var setupFollowupCodexHome = (context) => {
+	const { resumeArg, sessionHome } = context.args;
+	if (sessionHome === "" || resumeArg === "") return finishWithoutChild(context, 5, "ERROR: follow-up requires session_home and resume_id.");
+	if (!isDirectory$1(sessionHome) || !safeFollowupSessionHome(context, sessionHome)) return finishWithoutChild(context, 5, "ERROR: Codex session_home ownership is invalid.");
+	return sessionHome;
+};
+var setupCodexHome = (context) => {
+	const { sessionMode } = context.args;
+	if (sessionMode === "followup") return setupFollowupCodexHome(context);
 	if (sessionMode !== "" && sessionMode !== "resumable") return finishWithoutChild(context, 2, `ERROR: session_mode must be empty, resumable, or followup: ${sessionMode}`);
 	return path.join(context.workDir, "codex-home");
 };
-var copyCodexAuth = (context, codexHome) => {
+var matchesRealCodexHome = (resolvedHome, rootAuth) => {
+	try {
+		return realpathSync(resolvedHome) === realpathSync(path.dirname(rootAuth));
+	} catch {
+		return true;
+	}
+};
+var authCopyIsSymlink = (authCopy) => {
+	try {
+		return lstatSync(authCopy).isSymbolicLink();
+	} catch {
+		return false;
+	}
+};
+var authCopyExists = (authCopy) => {
+	try {
+		lstatSync(authCopy);
+		return true;
+	} catch {
+		return false;
+	}
+};
+var safeCodexAuthCopyPath = (context, codexHome) => {
+	const resolvedHome = path.resolve(codexHome);
+	const authCopy = path.join(resolvedHome, "auth.json");
+	const rootAuth = path.resolve(realCodexHomeOf(context.env), "auth.json");
+	if (resolvedHome === path.parse(resolvedHome).root || authCopy === rootAuth) return null;
+	if (matchesRealCodexHome(resolvedHome, rootAuth) || authCopyIsSymlink(authCopy)) return null;
+	return authCopy;
+};
+var publishStagedAuth = (staged, destination, lease) => {
+	try {
+		linkSync(staged, destination);
+		lease.own(destination, "published");
+		unlinkSync(staged);
+		lease.release(staged);
+	} catch {
+		throw new CodexAuthLifecycleError("stage");
+	}
+};
+var copyAuthAtomic = (source, destination, lease) => {
+	const staged = path.join(path.dirname(destination), `.auth.json.stage-${process.pid}-${randomToken(8)}`);
+	lease.own(staged, "staging");
+	try {
+		copyFileSync(source, staged, constants.COPYFILE_EXCL);
+	} catch {
+		throw new CodexAuthLifecycleError("stage");
+	}
+	publishStagedAuth(staged, destination, lease);
+};
+var copyCodexAuth = (context, codexHome, lease) => {
 	mkdirSync(codexHome, { recursive: true });
 	const authFile = path.join(realCodexHomeOf(context.env), "auth.json");
-	quietly(() => {
-		if (hasFileContent(authFile)) copyFileSync(authFile, path.join(codexHome, "auth.json"));
-	});
+	const authCopy = safeCodexAuthCopyPath(context, codexHome);
+	if (authCopy === null || authCopyExists(authCopy)) throw new CodexAuthLifecycleError("stage");
+	if (!hasFileContent(authFile)) return;
+	copyAuthAtomic(authFile, authCopy, lease);
+};
+var CodexAuthLeaseController = class {
+	#ownedArtifacts = /* @__PURE__ */ new Map();
+	#cleaned = false;
+	#cleaning = false;
+	#cleanupSucceeded = true;
+	#pendingSignal = null;
+	constructor() {
+		process.once("SIGINT", this.#onSigint);
+		process.once("SIGTERM", this.#onSigterm);
+		process.once("exit", this.#onExit);
+	}
+	cleanup = () => {
+		if (this.#cleaned) return this.#cleanupSucceeded;
+		if (this.#cleaning) return false;
+		this.#cleaning = true;
+		this.#cleanupSucceeded = this.#cleanupOwnedArtifacts();
+		this.#cleaned = true;
+		this.#cleaning = false;
+		this.#sendPendingSignal();
+		return this.#cleanupSucceeded;
+	};
+	own = (artifact, kind) => {
+		this.#ownedArtifacts.set(artifact, kind);
+	};
+	release = (artifact) => {
+		this.#ownedArtifacts.delete(artifact);
+	};
+	#cleanupOwnedArtifacts = () => [...this.#ownedArtifacts].map(([artifact, kind]) => this.#remove(artifact, kind)).every(Boolean);
+	#remove = (artifact, kind) => {
+		try {
+			if (kind === "published") unlinkSync(artifact);
+			else rmSync(artifact, { force: true });
+			this.#ownedArtifacts.delete(artifact);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	#removeHandlers = () => {
+		process.removeListener("SIGINT", this.#onSigint);
+		process.removeListener("SIGTERM", this.#onSigterm);
+		process.removeListener("exit", this.#onExit);
+	};
+	#sendPendingSignal = () => {
+		if (this.#pendingSignal === null) return;
+		const signal = this.#pendingSignal;
+		this.#pendingSignal = null;
+		process.kill(process.pid, signal);
+	};
+	#terminate = (signal) => {
+		if (this.#cleaning) {
+			this.#pendingSignal = signal;
+			return;
+		}
+		this.cleanup();
+		process.kill(process.pid, signal);
+	};
+	#onSigint = () => {
+		this.#terminate("SIGINT");
+	};
+	#onSigterm = () => {
+		this.#terminate("SIGTERM");
+	};
+	#onExit = () => {
+		this.cleanup();
+		this.#removeHandlers();
+	};
+};
+var registerCodexAuthLease = () => new CodexAuthLeaseController();
+var waitForPendingAuthSignal = async () => await new Promise((resolve) => {
+	setImmediate(resolve);
+});
+var cleanupCodexAuthLease = async (lease) => {
+	const cleaned = lease.cleanup();
+	await waitForPendingAuthSignal();
+	return cleaned;
+};
+var runStagedCodexAuth = async (run, lease) => {
+	const operation = await (async () => {
+		try {
+			return {
+				result: await run.operation(),
+				succeeded: true
+			};
+		} catch {
+			return { succeeded: false };
+		}
+	})();
+	if (!operation.succeeded) {
+		if (!await cleanupCodexAuthLease(lease)) return run.onFailure("cleanup");
+		return run.onFailure("operation");
+	}
+	if (!await cleanupCodexAuthLease(lease)) return run.onFailure("cleanup");
+	return run.finalize(operation.result);
+};
+var runWithCodexAuth = async (run) => {
+	const lease = registerCodexAuthLease();
+	try {
+		copyCodexAuth(run.context, run.codexHome, lease);
+	} catch {
+		if (!await cleanupCodexAuthLease(lease)) return run.onFailure("cleanup");
+		return run.onFailure("stage");
+	}
+	await waitForPendingAuthSignal();
+	return runStagedCodexAuth(run, lease);
 };
 var recordFollowupMcp = (context, codexHome) => {
 	const configToml = path.join(codexHome, "config.toml");
@@ -4668,6 +4855,14 @@ var finalizeCodexRun = (context, codexHome, wait) => {
 	if (outcome.responseStatus === 0 && outcome.responseAllowsResume) codexHomePrune(codexHome, context.env);
 	return wrapperResult(context, outcome);
 };
+var finishCodexAuthFailure = (context, codexHome, phase) => {
+	const result = finishWithoutChild(context, 1, `ERROR: Codex credential ${phase} failed safely.`);
+	recordCodexSessionOutcome(context, codexHome, {
+		childStatus: 1,
+		responseAllowsResume: false
+	});
+	return result;
+};
 var maxOverrideOf = (followup) => {
 	if (followup) return String(REQUEST_ARGV_INLINE_MAX);
 	return "";
@@ -4697,34 +4892,39 @@ var codexLaunchOf = (context) => {
 		stdinFile: promptFile
 	};
 };
-var runCodexChild = async (context, codexHome) => {
-	copyCodexAuth(context, codexHome);
-	setupCodexMcp(context, codexHome);
-	const launch = codexLaunchOf(context);
-	const worker = spawnWorker({
-		command: "codex",
-		args: launch.cliArgs,
-		cwd: context.repoRoot,
-		env: {
-			...context.env,
-			CODEX_HOME: codexHome,
-			TMPDIR: path.join(context.workDir, "tmp")
-		},
-		stdinFile: launch.stdinFile,
-		stdoutCapture: context.stdoutCapture,
-		stderrCapture: context.stderrCapture
-	});
-	return finalizeCodexRun(context, codexHome, await waitWithHeartbeat({
-		observeFile: context.args.observeFile,
-		runDir: context.workDir,
-		backend: context.backend,
-		worker,
-		stdoutCapture: context.stdoutCapture,
-		stderrCapture: context.stderrCapture,
-		responseFile: context.args.responseFile,
-		env: context.env
-	}));
-};
+var runCodexChild = async (context, codexHome) => runWithCodexAuth({
+	context,
+	codexHome,
+	operation: async () => {
+		setupCodexMcp(context, codexHome);
+		const launch = codexLaunchOf(context);
+		const worker = spawnWorker({
+			command: "codex",
+			args: launch.cliArgs,
+			cwd: context.repoRoot,
+			env: {
+				...context.env,
+				CODEX_HOME: codexHome,
+				TMPDIR: path.join(context.workDir, "tmp")
+			},
+			stdinFile: launch.stdinFile,
+			stdoutCapture: context.stdoutCapture,
+			stderrCapture: context.stderrCapture
+		});
+		return await waitWithHeartbeat({
+			observeFile: context.args.observeFile,
+			runDir: context.workDir,
+			backend: context.backend,
+			worker,
+			stdoutCapture: context.stdoutCapture,
+			stderrCapture: context.stderrCapture,
+			responseFile: context.args.responseFile,
+			env: context.env
+		});
+	},
+	finalize: (wait) => finalizeCodexRun(context, codexHome, wait),
+	onFailure: (phase) => finishCodexAuthFailure(context, codexHome, phase)
+});
 var wrapperCodexWithContext = async (context) => {
 	const effortError = effortFailure(context);
 	if (effortError !== null) return effortError;
@@ -5313,7 +5513,6 @@ var prepareImagegenLaunch = (context) => {
 	const outputDir = outputDirOf(context.env);
 	mkdirSync(outputPathOf(context, outputDir), { recursive: true });
 	const codexHome = path.join(context.workDir, "codex-home");
-	copyCodexAuth(context, codexHome);
 	const schemaFile = path.join(context.workDir, "report-schema.json");
 	writeFileSync(schemaFile, REPORT_SCHEMA_JSON);
 	const promptFile = writePromptFile(context, imagegenPrompt({
@@ -5331,38 +5530,53 @@ var prepareImagegenLaunch = (context) => {
 	};
 };
 var runImagegenChild = async (context, lifecycle) => {
-	const launch = prepareImagegenLaunch(context);
-	const worker = spawnWorker({
-		command: "codex",
-		args: imagegenCodexArgs(context, {
-			lastMsg: launch.lastMsg,
-			schemaFile: launch.schemaFile
-		}),
-		cwd: process.cwd(),
-		env: {
-			...context.env,
-			CODEX_HOME: launch.codexHome,
-			TMPDIR: path.join(context.workDir, "tmp")
+	const codexHome = path.join(context.workDir, "codex-home");
+	return runWithCodexAuth({
+		context,
+		codexHome,
+		operation: async () => {
+			const launch = prepareImagegenLaunch(context);
+			const worker = spawnWorker({
+				command: "codex",
+				args: imagegenCodexArgs(context, {
+					lastMsg: launch.lastMsg,
+					schemaFile: launch.schemaFile
+				}),
+				cwd: process.cwd(),
+				env: {
+					...context.env,
+					CODEX_HOME: launch.codexHome,
+					TMPDIR: path.join(context.workDir, "tmp")
+				},
+				stdinFile: launch.promptFile,
+				stdoutCapture: context.stdoutCapture,
+				stderrCapture: context.stderrCapture
+			});
+			const wait = await waitWithHeartbeat({
+				observeFile: context.args.observeFile,
+				runDir: context.workDir,
+				backend: context.backend,
+				worker,
+				stdoutCapture: context.stdoutCapture,
+				stderrCapture: context.stderrCapture,
+				responseFile: context.args.responseFile,
+				env: context.env
+			});
+			return {
+				lastMsg: launch.lastMsg,
+				wait
+			};
 		},
-		stdinFile: launch.promptFile,
-		stdoutCapture: context.stdoutCapture,
-		stderrCapture: context.stderrCapture
+		finalize: ({ lastMsg, wait }) => finalizeImagegenRun(context, {
+			codexHome,
+			lastMsg,
+			lifecycle
+		}, wait),
+		onFailure: (phase) => finishDedicated(context, lifecycle, {
+			exitCode: 1,
+			message: `ERROR: Codex credential ${phase} failed safely.`
+		})
 	});
-	const wait = await waitWithHeartbeat({
-		observeFile: context.args.observeFile,
-		runDir: context.workDir,
-		backend: context.backend,
-		worker,
-		stdoutCapture: context.stdoutCapture,
-		stderrCapture: context.stderrCapture,
-		responseFile: context.args.responseFile,
-		env: context.env
-	});
-	return finalizeImagegenRun(context, {
-		codexHome: launch.codexHome,
-		lastMsg: launch.lastMsg,
-		lifecycle
-	}, wait);
 };
 var runWrapperImagegen = async (argv, env, io) => {
 	const parsed = parseDedicatedArgs(argv, "delegate-imagegen-codex.sh");

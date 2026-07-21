@@ -18,7 +18,7 @@
 | [MUST] full-access 起動ごとに外部境界の必要性を警告する            | child Codex は環境を問わず `danger-full-access` が既定                                   | launcher が環境を安全と推測せず、到達範囲と外部隔離の必要性を毎回1回警告して起動する                            | 毎回警告する launcher             | 実装完了                     |
 | [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 通常 profile の設定を §2.3 に固定 | 実装完了・qualification 待ち |
 | [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加          | 完了                         |
-| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | 未実装                            | 未着手                       |
+| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | auth cleanup と MCP 契約を実装    | 完了                         |
 | [SHOULD] inner sandbox 無しの運用を一度だけ qualification する     | test preflight は失敗を検出するが、container 境界自体は検証しない                        | image build / container start で境界と process capability を検証し、delegate ごとの probe は増やさない          | 方針を §6 に定義                  | 設計済み                     |
 
 スコープ外:
@@ -193,13 +193,15 @@ repository の `.codex/config.toml` に無条件の `sandbox_mode = "danger-full
 
 成果物: 環境を安全と推測せず、外部隔離の必要性を毎回警告する requester launcher + 利用手順
 
-### Step 4: (未着手) Codex credential / MCP lifecycle を hardening する
+### Step 4: (完了済み) Codex credential / MCP lifecycle を hardening する
 
 - `auth.json` copy を wrapper の成否にかかわらず削除する
 - cache prune の override から auth cleanup を分離し、session JSONL と `config.toml` は保持する
 - config / observe / stderr の credential redaction test を追加する
 - Codex MCP 継承が §5 の互換性維持判断と一致し、注入した server name だけを observe に記録することを確認する
 - GitHub / backend / MCP credential の推奨 scope を README に追加する
+
+通常 run / resumable initial / follow-up は起動直前に root requester の auth を isolated home と同じ directory の一意な owned staging file へ排他的に copy し、hard-link で stale destination を置換せず publish する。実 `copyFileSync` が destination 作成後に失敗しても staging file だけを削除して起動前に fail-closed する。auth lease は staging 開始前に登録し、owned staging / published artifact だけを追跡して cleanup 完了後に signal handler を解除する。wrapper lifecycle は stage → spawn/wait → auth cleanup → response/session/dispatch finalize の順で各1回とし、stage / cleanup 中、spawn 前後、child exit 後の SIGINT / SIGTERM race を含む wrapper 終了時に cleanup する。cleanup failure または同期 operation exception は resumable success metadata を残さない exactly-once の sanitized failed terminal state と非 0 exit に変える。cache prune の設定はこの cleanup に影響せず、session JSONL と `config.toml` は保持する。follow-up home は所有 user、非 symlink、`delegate_*` run と previous observe の session metadata 一致を確認し、root requester の real `CODEX_HOME` と無関係な external home を copy / config mutation / spawn 前に拒否する。既存の Codex MCP 継承判断は維持し、E2E test が注入 server name だけを observe に記録して command、URL、credential value を含めないことを確認する。README 英日、spec、development guide を同じ契約へ同期した。
 
 成果物: secret cleanup + MCP authority contract
 

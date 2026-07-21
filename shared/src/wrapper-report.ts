@@ -388,22 +388,13 @@ export const processTreeJson = (rootPid: number): string[] => {
 
 // codex-home のキャッシュ類は 1 dispatch あたり数十 MB 残留し、dispatch を多数回す
 // 用途（ベンチ・CI）でディスクを圧迫する。正常終了時のみ prune し、失敗時は調査の
-// ため残す。観測に使う sessions JSONL と config は残し、認証コピー（auth.json）は
-// 資格情報を run dir に残さないため削除する（follow-up は起動時に再コピーされる）
+// ため残す。観測と follow-up に使う sessions JSONL と config は常に残す
 export const codexHomePrune = (codexHome: string, env: Env): void => {
   const setting = env.DELEGATE_CODEX_HOME_PRUNE ?? '1'
   if (setting === '0' || setting === 'false' || setting === 'no') {
     return
   }
-  for (const entry of [
-    '.tmp',
-    'tmp',
-    'cache',
-    'models_cache.json',
-    'plugins',
-    'shell_snapshots',
-    'auth.json',
-  ]) {
+  for (const entry of ['.tmp', 'tmp', 'cache', 'models_cache.json', 'plugins', 'shell_snapshots']) {
     try {
       rmSync(path.join(codexHome, entry), { force: true, recursive: true })
     } catch {

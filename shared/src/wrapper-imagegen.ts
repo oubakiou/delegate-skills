@@ -13,7 +13,7 @@ import {
   writePromptFile,
   type WrapperContext,
 } from './wrapper-common.ts'
-import { copyCodexAuth } from './wrapper-codex.ts'
+import { runWithCodexAuth } from './wrapper-codex.ts'
 import {
   endDedicatedDispatch,
   finishDedicated,
@@ -146,7 +146,6 @@ const prepareImagegenLaunch = (context: WrapperContext): ImagegenLaunch => {
   const outputDir = outputDirOf(context.env)
   mkdirSync(outputPathOf(context, outputDir), { recursive: true })
   const codexHome = path.join(context.workDir, 'codex-home')
-  copyCodexAuth(context, codexHome)
   const schemaFile = path.join(context.workDir, 'report-schema.json')
   writeFileSync(schemaFile, REPORT_SCHEMA_JSON)
   const requestStep = requestPromptStep(context.args.requestFile, {
@@ -169,36 +168,46 @@ const runImagegenChild = async (
   context: WrapperContext,
   lifecycle: DedicatedLifecycle
 ): Promise<CliResult> => {
-  const launch = prepareImagegenLaunch(context)
-  const files = { lastMsg: launch.lastMsg, schemaFile: launch.schemaFile }
-  const worker = spawnWorker({
-    command: 'codex',
-    args: imagegenCodexArgs(context, files),
-    cwd: process.cwd(),
-    env: {
-      ...context.env,
-      CODEX_HOME: launch.codexHome,
-      TMPDIR: path.join(context.workDir, 'tmp'),
-    },
-    stdinFile: launch.promptFile,
-    stdoutCapture: context.stdoutCapture,
-    stderrCapture: context.stderrCapture,
-  })
-  const wait = await waitWithHeartbeat({
-    observeFile: context.args.observeFile,
-    runDir: context.workDir,
-    backend: context.backend,
-    worker,
-    stdoutCapture: context.stdoutCapture,
-    stderrCapture: context.stderrCapture,
-    responseFile: context.args.responseFile,
-    env: context.env,
-  })
-  return finalizeImagegenRun(
+  const codexHome = path.join(context.workDir, 'codex-home')
+  return runWithCodexAuth({
     context,
-    { codexHome: launch.codexHome, lastMsg: launch.lastMsg, lifecycle },
-    wait
-  )
+    codexHome,
+    operation: async () => {
+      const launch = prepareImagegenLaunch(context)
+      const files = { lastMsg: launch.lastMsg, schemaFile: launch.schemaFile }
+      const worker = spawnWorker({
+        command: 'codex',
+        args: imagegenCodexArgs(context, files),
+        cwd: process.cwd(),
+        env: {
+          ...context.env,
+          CODEX_HOME: launch.codexHome,
+          TMPDIR: path.join(context.workDir, 'tmp'),
+        },
+        stdinFile: launch.promptFile,
+        stdoutCapture: context.stdoutCapture,
+        stderrCapture: context.stderrCapture,
+      })
+      const wait = await waitWithHeartbeat({
+        observeFile: context.args.observeFile,
+        runDir: context.workDir,
+        backend: context.backend,
+        worker,
+        stdoutCapture: context.stdoutCapture,
+        stderrCapture: context.stderrCapture,
+        responseFile: context.args.responseFile,
+        env: context.env,
+      })
+      return { lastMsg: launch.lastMsg, wait }
+    },
+    finalize: ({ lastMsg, wait }) =>
+      finalizeImagegenRun(context, { codexHome, lastMsg, lifecycle }, wait),
+    onFailure: (phase) =>
+      finishDedicated(context, lifecycle, {
+        exitCode: 1,
+        message: `ERROR: Codex credential ${phase} failed safely.`,
+      }),
+  })
 }
 
 export const runWrapperImagegen = async (

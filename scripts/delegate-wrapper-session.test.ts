@@ -1,5 +1,15 @@
-import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
@@ -9,9 +19,11 @@ import { describe, expect, it, vi } from 'vitest'
 vi.setConfig({ testTimeout: 30_000 })
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+const codexAuthSecret = 'root-auth-secret'
 
 interface FakeCliLog {
   args: string[]
+  authPresent: boolean | null
   command: string | null
   cwd: string
   prompt: string | null
@@ -87,6 +99,13 @@ const stringOrNullValue = (value: unknown): string | null => {
   return null
 }
 
+const booleanOrNullValue = (value: unknown): boolean | null => {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  return null
+}
+
 const readUnknownJson = (filePath: string): unknown => JSON.parse(readFileSync(filePath, 'utf8'))
 
 const asLogRecords = (value: unknown): unknown[] => {
@@ -105,6 +124,7 @@ const readLog = (filePath: string): FakeCliLog => {
   }
   return {
     args: record.args.map(String),
+    authPresent: booleanOrNullValue(record.authPresent),
     command: stringOrNullValue(record.command),
     cwd: stringOrNullValue(record.cwd) ?? '',
     env: {
@@ -128,6 +148,7 @@ const readLogs = (filePath: string): FakeCliLog[] => {
     }
     return {
       args: record.args.map(String),
+      authPresent: booleanOrNullValue(record.authPresent),
       command: stringOrNullValue(record.command),
       cwd: stringOrNullValue(record.cwd) ?? '',
       env: {
@@ -237,6 +258,16 @@ const readResponseStatus = (filePath: string): string => {
   return value.status
 }
 
+const countMetricKind = (filePath: string, kind: string): number =>
+  readFileSync(filePath, 'utf8')
+    .trimEnd()
+    .split('\n')
+    .map((line): unknown => JSON.parse(line))
+    .filter((record) => isRecord(record) && record.kind === kind).length
+
+const countEventKind = (observe: ObserveJson, kind: string): number =>
+  observe.event_kinds.filter((eventKind) => eventKind === kind).length
+
 const requireBackendSession = (observe: ObserveJson): BackendSession => {
   if (!observe.backend_session) {
     throw new Error('missing backend_session')
@@ -297,8 +328,20 @@ if (prompt === '-') {
   prompt = ''
   try { prompt = fs.readFileSync(0, 'utf8') } catch {}
 }
+const authPresent = Boolean(process.env.CODEX_HOME && fs.existsSync(path.join(process.env.CODEX_HOME, 'auth.json')))
+const logRun = () => fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, authPresent, prompt, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+if (process.env.FAKE_CODEX_SIGNAL_SELF === '1') {
+  logRun()
+  process.kill(process.pid, 'SIGTERM')
+}
+if (process.env.FAKE_CODEX_WAIT_FOR_SIGNAL === '1') {
+  logRun()
+  fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, 'ready')
+  setInterval(() => {}, 1000)
+  await new Promise(() => {})
+}
 if (process.env.FAKE_CODEX_EXIT_WITHOUT_RESPONSE === '1') {
-  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+  logRun()
   process.exit(9)
 }
 const status = process.env.FAKE_CODEX_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
@@ -306,11 +349,19 @@ const lastMsgIndex = args.indexOf('--output-last-message')
 if (lastMsgIndex !== -1 && process.env.FAKE_CODEX_NO_LAST_MSG !== '1') {
   fs.writeFileSync(args[lastMsgIndex + 1], JSON.stringify({status, report_markdown: '# Summary\\nok'}))
 }
-fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+logRun()
 if (process.env.FAKE_CODEX_SESSION_EFFORT && process.env.CODEX_HOME && !args.includes('--ephemeral')) {
   const sessionDir = path.join(process.env.CODEX_HOME, 'sessions', '2026', '07', '18')
   fs.mkdirSync(sessionDir, {recursive: true})
   fs.writeFileSync(path.join(sessionDir, 'rollout.jsonl'), JSON.stringify({type: 'turn_context', payload: {effort: process.env.FAKE_CODEX_SESSION_EFFORT}}) + '\\n')
+}
+if (process.env.FAKE_CODEX_BREAK_AUTH_CLEANUP === '1' && process.env.CODEX_HOME) {
+  const authFile = path.join(process.env.CODEX_HOME, 'auth.json')
+  fs.rmSync(authFile, {force: true})
+  fs.mkdirSync(authFile)
+}
+if (process.env.FAKE_CODEX_SIGNAL_WRAPPER_AFTER_RESULT === '1') {
+  process.kill(process.ppid, 'SIGTERM')
 }
 if (process.env.FAKE_CODEX_NO_THREAD !== '1') {
   console.log(JSON.stringify({type: 'thread.started', thread_id: 'thread-1'}))
@@ -445,7 +496,10 @@ const writeFixtureFiles = (
   mkdirSync(path.join(paths.homeDir, '.codex'), { recursive: true })
   mkdirSync(path.join(paths.homeDir, '.cursor'), { recursive: true })
   writeFileSync(path.join(paths.homeDir, '.claude', '.credentials.json'), '{}')
-  writeFileSync(path.join(paths.homeDir, '.codex', 'auth.json'), '{}')
+  writeFileSync(
+    path.join(paths.homeDir, '.codex', 'auth.json'),
+    JSON.stringify({ access_token: codexAuthSecret })
+  )
   writeFileSync(path.join(paths.homeDir, '.cursor', 'cli-config.json'), '{}')
   writeFileSync(paths.requestFile, JSON.stringify({ sections: ['request'] }))
   writeFakeCli(paths.binDir, backend)
@@ -818,10 +872,159 @@ const prepareClaudeSessionHome = (workDir: string): string => {
   return sessionHome
 }
 
-const prepareCodexSessionHome = (workDir: string): string => {
-  const sessionHome = path.join(workDir, 'codex-home')
-  mkdirSync(sessionHome, { recursive: true })
+const prepareCodexSessionHome = (workDir: string, model = 'gpt-5.5'): string => {
+  const previousRun = path.join(workDir, 'delegate_implement_20260721_120000_abcde')
+  const sessionHome = path.join(previousRun, 'codex-home')
+  mkdirSync(path.join(sessionHome, 'sessions'), { recursive: true })
+  writeFileSync(path.join(sessionHome, 'config.toml'), '# session config\n')
+  writeFileSync(path.join(sessionHome, 'sessions', 'rollout.jsonl'), '{}\n')
+  writeFileSync(
+    `${previousRun}_observe.json`,
+    JSON.stringify({
+      backend_session: {
+        backend: 'codex',
+        home_dir: sessionHome,
+        model,
+        persistence: 'resumable',
+        resume_id: 'thread-1',
+      },
+    })
+  )
   return sessionHome
+}
+
+type CodexTestMode = 'normal' | 'resumable' | 'followup'
+
+const codexTestModeArgs = (fixture: Fixture, mode: CodexTestMode): string[] => {
+  if (mode === 'normal') {
+    return []
+  }
+  if (mode === 'resumable') {
+    return ['resumable', '', '']
+  }
+  return ['followup', 'thread-1', prepareCodexSessionHome(fixture.workDir)]
+}
+
+const codexTerminationCases = [
+  { failure: 'child error', envName: 'FAKE_CODEX_EXIT_WITHOUT_RESPONSE', expectedStatus: 9 },
+  { failure: 'missing response', envName: 'FAKE_CODEX_NO_LAST_MSG', expectedStatus: 1 },
+  { failure: 'child signal', envName: 'FAKE_CODEX_SIGNAL_SELF', expectedStatus: 143 },
+] as const
+
+const codexAuthCleanupMatrix = (['normal', 'resumable', 'followup'] as const).flatMap((mode) =>
+  codexTerminationCases.map((termination) => ({
+    envName: termination.envName,
+    expectedStatus: termination.expectedStatus,
+    failure: termination.failure,
+    mode,
+  }))
+)
+
+const waitForFile = async (filePath: string, attempts = 100): Promise<void> => {
+  if (existsSync(filePath)) {
+    return Promise.resolve()
+  }
+  if (attempts <= 0) {
+    return Promise.reject(new Error('timed out waiting for fake Codex'))
+  }
+  return new Promise((resolve) => {
+    setTimeout(resolve, 20)
+  }).then(async () => waitForFile(filePath, attempts - 1))
+}
+
+const terminateRunningCodexWrapper = async (fixture: Fixture): Promise<number> => {
+  const readyFile = path.join(fixture.workDir, 'codex-ready')
+  const child = spawn(
+    'bash',
+    [path.join(repoRoot, 'shared', 'delegate-codex.sh'), ...codexArgs(fixture)],
+    {
+      cwd: repoRoot,
+      env: {
+        ...fixture.env,
+        FAKE_CODEX_READY_FILE: readyFile,
+        FAKE_CODEX_WAIT_FOR_SIGNAL: '1',
+      },
+      stdio: 'ignore',
+    }
+  )
+  const exited = new Promise<number>((resolve) => {
+    child.once('exit', (code) => resolve(code ?? 1))
+  })
+  await waitForFile(readyFile)
+  child.kill('SIGTERM')
+  return exited
+}
+
+interface ProcessExit {
+  code: number | null
+  signal: NodeJS.Signals | null
+}
+
+const runCodexProcess = async (
+  fixture: Fixture,
+  env: NodeJS.ProcessEnv = fixture.env
+): Promise<ProcessExit> => {
+  const child = spawn(
+    'bash',
+    [path.join(repoRoot, 'shared', 'delegate-codex.sh'), ...codexArgs(fixture)],
+    {
+      cwd: repoRoot,
+      env,
+      stdio: 'ignore',
+    }
+  )
+  return new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code, signal) => resolve({ code, signal }))
+  })
+}
+
+const writeNodePreload = (fixture: Fixture, name: string, source: string): string => {
+  const preload = path.join(fixture.workDir, `${name}.cjs`)
+  writeFileSync(preload, source)
+  return preload
+}
+
+const preloadEnv = (fixture: Fixture, preload: string): NodeJS.ProcessEnv => ({
+  ...fixture.env,
+  NODE_OPTIONS: `${fixture.env.NODE_OPTIONS ?? ''} --require=${preload}`.trim(),
+})
+
+const expectNoCodexAuthArtifacts = (fixture: Fixture): void => {
+  const codexHome = path.join(fixture.runDir, 'codex-home')
+  expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+  expect(readdirSync(codexHome).filter((name) => name.startsWith('.auth.json.stage-'))).toEqual([])
+}
+
+interface ExpectedSynchronousAuthOperationFailure {
+  fixture: Fixture
+  metricsFile: string
+  observe: ObserveJson
+  eventKinds: readonly string[]
+  metricKinds: readonly string[]
+  expectUnavailableSession?: boolean
+}
+
+const expectSynchronousAuthOperationFailure = ({
+  fixture,
+  metricsFile,
+  observe,
+  eventKinds,
+  metricKinds,
+  expectUnavailableSession = false,
+}: ExpectedSynchronousAuthOperationFailure): void => {
+  expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+  expect(existsSync(fixture.logFile)).toBe(false)
+  expect(existsSync(path.join(fixture.runDir, 'codex-home', 'auth.json'))).toBe(false)
+  for (const kind of eventKinds) {
+    expect(countEventKind(observe, kind)).toBe(1)
+  }
+  for (const kind of metricKinds) {
+    expect(countMetricKind(metricsFile, kind)).toBe(1)
+  }
+  if (expectUnavailableSession) {
+    expect(requireBackendSession(observe).persistence).toBe('unavailable')
+  }
 }
 
 const mcpServers: Record<string, unknown> = {
@@ -873,6 +1076,14 @@ const expectNoMcpPayloadInObserve = (observeFile: string): void => {
   expect(content).not.toContain('alpha-server')
   expect(content).not.toContain('secret')
   expect(content).not.toContain('https://example.test/mcp')
+}
+
+const expectNoCodexAuthPayloadInDiagnostics = (fixture: Fixture, configToml: string): void => {
+  expect(configToml).not.toContain(codexAuthSecret)
+  expect(readFileSync(fixture.observeFile, 'utf8')).not.toContain(codexAuthSecret)
+  expect(readFileSync(path.join(fixture.runDir, 'worker-stderr.capture'), 'utf8')).not.toContain(
+    codexAuthSecret
+  )
 }
 
 const expectClaudeMcpConfigArg = (fixture: Fixture, log: FakeCliLog): string => {
@@ -971,6 +1182,8 @@ describe('wrapper MCP config injection', () => {
     expect(result.status).toBe(0)
     expectCodexMcpToml(configToml)
     expectInjectedMcpObserve(readObserve(fixture.observeFile))
+    expectNoMcpPayloadInObserve(fixture.observeFile)
+    expectNoCodexAuthPayloadInDiagnostics(fixture, configToml)
   })
 
   it('does not generate Codex MCP config when parent MCP is absent', () => {
@@ -1244,8 +1457,11 @@ describe('delegate-codex.sh session modes', () => {
     expect(log.args).toContain('-C')
     expect(log.args).not.toContain('--ignore-user-config')
     expect(log.args).not.toContain('resume')
+    expect(log.authPresent).toBe(true)
   })
+})
 
+describe('delegate-codex.sh auth cleanup', () => {
   it('prunes codex-home caches and the auth copy after successful runs', () => {
     const fixture = makeFixture('codex')
     const codexHome = seedCodexHomeLeftovers(fixture)
@@ -1259,7 +1475,7 @@ describe('delegate-codex.sh session modes', () => {
     expect(existsSync(path.join(codexHome, 'config.toml'))).toBe(true)
   })
 
-  it('keeps codex-home intact when DELEGATE_CODEX_HOME_PRUNE is 0', () => {
+  it('keeps caches but removes auth when DELEGATE_CODEX_HOME_PRUNE is 0', () => {
     const fixture = makeFixture('codex')
     const codexHome = seedCodexHomeLeftovers(fixture)
     const result = runCodex(fixture, [], {
@@ -1269,10 +1485,12 @@ describe('delegate-codex.sh session modes', () => {
 
     expect(result.status).toBe(0)
     expect(existsSync(path.join(codexHome, '.tmp'))).toBe(true)
-    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+    expect(existsSync(path.join(codexHome, 'sessions', 'rollout.jsonl'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'config.toml'))).toBe(true)
   })
 
-  it('keeps codex-home intact when the run fails', () => {
+  it('keeps failed-run diagnostics but removes auth after a child error', () => {
     const fixture = makeFixture('codex')
     const codexHome = seedCodexHomeLeftovers(fixture)
     const result = runCodex(fixture, [], {
@@ -1282,9 +1500,270 @@ describe('delegate-codex.sh session modes', () => {
 
     expect(result.status).toBe(9)
     expect(existsSync(path.join(codexHome, '.tmp'))).toBe(true)
-    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
   })
 
+  it('removes auth when the child exits without a structured response', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = seedCodexHomeLeftovers(fixture)
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_NO_LAST_MSG: '1',
+    })
+
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+  })
+
+  it('removes auth after child signal termination', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = seedCodexHomeLeftovers(fixture)
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_SIGNAL_SELF: '1',
+    })
+
+    expect(result.status).toBe(143)
+    expect(readLog(fixture.logFile).authPresent).toBe(true)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+  })
+})
+
+describe('delegate-codex.sh auth lifecycle failures', () => {
+  it('fails before launch instead of overwriting a stale destination auth file', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = path.join(fixture.runDir, 'codex-home')
+    const staleAuth = path.join(codexHome, 'auth.json')
+    mkdirSync(codexHome, { recursive: true })
+    writeFileSync(staleAuth, 'stale-auth')
+
+    const result = runCodex(fixture)
+
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(existsSync(fixture.logFile)).toBe(false)
+    expect(readFileSync(staleAuth, 'utf8')).toBe('stale-auth')
+  })
+
+  it('fails before launch when the auth copy syscall rejects the source', () => {
+    const fixture = makeFixture('codex')
+    const sourceAuth = path.join(fixture.workDir, 'home', '.codex', 'auth.json')
+    rmSync(sourceAuth)
+    mkdirSync(sourceAuth)
+
+    const result = runCodex(fixture)
+
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(existsSync(fixture.logFile)).toBe(false)
+  })
+
+  it('removes a partial staging file when the auth copy syscall creates then fails', () => {
+    const fixture = makeFixture('codex')
+    const preload = writeNodePreload(
+      fixture,
+      'partial-auth-copy-failure',
+      `const fs = require('node:fs')
+const { syncBuiltinESMExports } = require('node:module')
+const copyFileSync = fs.copyFileSync
+fs.copyFileSync = (source, destination, flags) => {
+  if (String(destination).includes('.auth.json.stage-')) {
+    fs.writeFileSync(destination, 'partial-credential')
+    throw new Error('forced partial auth copy failure')
+  }
+  return copyFileSync(source, destination, flags)
+}
+syncBuiltinESMExports()
+`
+    )
+
+    const result = runCodex(fixture, [], preloadEnv(fixture, preload))
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(existsSync(fixture.logFile)).toBe(false)
+    expectNoCodexAuthArtifacts(fixture)
+  })
+})
+
+describe('delegate-codex.sh auth signal windows', () => {
+  it('cleans owned auth artifacts when SIGTERM arrives during staging', async () => {
+    const fixture = makeFixture('codex')
+    const marker = path.join(fixture.workDir, 'signal-during-stage')
+    const preload = writeNodePreload(
+      fixture,
+      'signal-during-auth-stage',
+      `const fs = require('node:fs')
+const { syncBuiltinESMExports } = require('node:module')
+const copyFileSync = fs.copyFileSync
+fs.copyFileSync = (source, destination, flags) => {
+  const result = copyFileSync(source, destination, flags)
+  if (String(destination).includes('.auth.json.stage-')) {
+    fs.writeFileSync(${JSON.stringify(marker)}, 'signaled')
+    process.kill(process.pid, 'SIGTERM')
+  }
+  return result
+}
+syncBuiltinESMExports()
+`
+    )
+
+    const exit = await runCodexProcess(fixture, preloadEnv(fixture, preload))
+
+    expect(existsSync(marker)).toBe(true)
+    expect(exit).toEqual({ code: null, signal: 'SIGTERM' })
+    expectNoCodexAuthArtifacts(fixture)
+  })
+
+  it('cleans auth when SIGTERM arrives at the child spawn boundary', async () => {
+    const fixture = makeFixture('codex')
+    const preload = writeNodePreload(
+      fixture,
+      'signal-at-spawn',
+      `const childProcess = require('node:child_process')
+const { syncBuiltinESMExports } = require('node:module')
+const spawn = childProcess.spawn
+childProcess.spawn = function (command, ...args) {
+  const child = spawn.call(this, command, ...args)
+  if (command === 'codex') process.kill(process.pid, 'SIGTERM')
+  return child
+}
+syncBuiltinESMExports()
+`
+    )
+
+    const exit = await runCodexProcess(fixture, preloadEnv(fixture, preload))
+
+    expect(exit).toEqual({ code: 143, signal: null })
+    expect(existsSync(path.join(fixture.runDir, 'codex-home', 'auth.json'))).toBe(false)
+  })
+
+  it('cleans auth when SIGTERM races with child exit', async () => {
+    const fixture = makeFixture('codex')
+
+    const exit = await runCodexProcess(fixture, {
+      ...fixture.env,
+      FAKE_CODEX_SIGNAL_WRAPPER_AFTER_RESULT: '1',
+    })
+
+    expect(exit).toEqual({ code: 143, signal: null })
+    expect(existsSync(path.join(fixture.runDir, 'codex-home', 'auth.json'))).toBe(false)
+  })
+
+  it('finishes auth cleanup when SIGTERM arrives during unlink', async () => {
+    const fixture = makeFixture('codex')
+    const marker = path.join(fixture.workDir, 'signal-during-cleanup')
+    const preload = writeNodePreload(
+      fixture,
+      'signal-during-auth-cleanup',
+      `const fs = require('node:fs')
+const path = require('node:path')
+const { syncBuiltinESMExports } = require('node:module')
+const unlinkSync = fs.unlinkSync
+fs.unlinkSync = (target) => {
+  if (path.basename(String(target)) === 'auth.json' && !fs.existsSync(${JSON.stringify(marker)})) {
+    fs.writeFileSync(${JSON.stringify(marker)}, 'signaled')
+    process.emit('SIGTERM')
+  }
+  return unlinkSync(target)
+}
+syncBuiltinESMExports()
+`
+    )
+
+    const exit = await runCodexProcess(fixture, preloadEnv(fixture, preload))
+
+    expect(existsSync(marker)).toBe(true)
+    expect(exit).toEqual({ code: null, signal: 'SIGTERM' })
+    expectNoCodexAuthArtifacts(fixture)
+  })
+})
+
+describe('delegate-codex.sh auth lifecycle finalization', () => {
+  it('finalizes a synchronous Codex operation exception exactly once', () => {
+    const fixture = makeFixture('codex')
+    const metricsFile = path.join(fixture.workDir, 'metrics.jsonl')
+    mkdirSync(path.join(fixture.runDir, 'worker-prompt.txt'))
+
+    const result = runCodex(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      DELEGATE_METRICS_FILE: metricsFile,
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(1)
+    expectSynchronousAuthOperationFailure({
+      fixture,
+      metricsFile,
+      observe,
+      eventKinds: ['resume_unavailable', 'failed_response_written'],
+      metricKinds: ['build_response'],
+      expectUnavailableSession: true,
+    })
+  })
+
+  it('turns an auth unlink failure into a sanitized failed response', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_BREAK_AUTH_CLEANUP: '1',
+    })
+    const diagnostic = readFileSync(path.join(fixture.runDir, 'worker-stderr.capture'), 'utf8')
+
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(diagnostic).toBe('ERROR: Codex credential cleanup failed safely.\n')
+    expect(diagnostic).not.toContain(codexAuthSecret)
+  })
+
+  it('finalizes a resumable auth unlink failure exactly once without resumable metadata', () => {
+    const fixture = makeFixture('codex')
+    const metricsFile = path.join(fixture.workDir, 'metrics.jsonl')
+    const result = runCodex(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      DELEGATE_METRICS_FILE: metricsFile,
+      FAKE_CODEX_BREAK_AUTH_CLEANUP: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(requireBackendSession(observe).persistence).toBe('unavailable')
+    expect(countEventKind(observe, 'resume_unavailable')).toBe(1)
+    expect(countEventKind(observe, 'failed_response_written')).toBe(1)
+    expect(countMetricKind(metricsFile, 'build_response')).toBe(1)
+  })
+
+  it('removes the auth copy when the wrapper itself receives SIGTERM', async () => {
+    const fixture = makeFixture('codex')
+
+    const status = await terminateRunningCodexWrapper(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(status).toBe(143)
+    expect(log.authPresent).toBe(true)
+    expect(existsSync(path.join(fixture.runDir, 'codex-home', 'auth.json'))).toBe(false)
+  })
+})
+
+describe('delegate-codex.sh auth cleanup matrix', () => {
+  it.each(codexAuthCleanupMatrix)(
+    'cleans auth for $mode after $failure',
+    ({ envName, expectedStatus, mode }) => {
+      const fixture = makeFixture('codex')
+      const modeArgs = codexTestModeArgs(fixture, mode)
+      const result = runCodex(fixture, modeArgs, { ...fixture.env, [envName]: '1' })
+      const log = readLog(fixture.logFile)
+      const codexHome = log.env.CODEX_HOME ?? ''
+
+      expect(result.status).toBe(expectedStatus)
+      expect(log.authPresent).toBe(true)
+      expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+    }
+  )
+})
+
+describe('delegate-codex.sh resumable session modes', () => {
   it('starts resumable runs without --ephemeral and records thread.started', () => {
     const fixture = makeFixture('codex')
     const result = runCodex(fixture, ['resumable', '', ''])
@@ -1292,6 +1771,8 @@ describe('delegate-codex.sh session modes', () => {
     const observe = readObserve(fixture.observeFile)
 
     expectCodexResumable({ fixture, log, observe, result })
+    expect(log.authPresent).toBe(true)
+    expect(existsSync(path.join(fixture.runDir, 'codex-home', 'auth.json'))).toBe(false)
   })
 
   it('resumes follow-up runs from the lineage home', () => {
@@ -1302,6 +1783,70 @@ describe('delegate-codex.sh session modes', () => {
     const observe = readObserve(fixture.observeFile)
 
     expectCodexFollowup({ log, observe, result, sessionHome })
+    expect(log.authPresent).toBe(true)
+    expect(existsSync(path.join(sessionHome, 'auth.json'))).toBe(false)
+    expect(existsSync(path.join(sessionHome, 'sessions', 'rollout.jsonl'))).toBe(true)
+    expect(existsSync(path.join(sessionHome, 'config.toml'))).toBe(true)
+  })
+
+  it('rejects the real requester CODEX_HOME before launching a follow-up', () => {
+    const fixture = makeFixture('codex')
+    const realCodexHome = path.join(fixture.workDir, 'home', '.codex')
+    const rootAuth = path.join(realCodexHome, 'auth.json')
+    const result = runCodex(fixture, ['followup', 'thread-1', realCodexHome])
+
+    expectFailedWithoutChild(fixture, result)
+    expect(existsSync(rootAuth)).toBe(true)
+  })
+
+  it('rejects a follow-up home symlink to the real CODEX_HOME before launching', () => {
+    const fixture = makeFixture('codex')
+    const realCodexHome = path.join(fixture.workDir, 'home', '.codex')
+    const linkedHome = path.join(fixture.workDir, 'linked-codex-home')
+    const rootAuth = path.join(realCodexHome, 'auth.json')
+    symlinkSync(realCodexHome, linkedHome, 'dir')
+
+    const result = runCodex(fixture, ['followup', 'thread-1', linkedHome])
+
+    expectFailedWithoutChild(fixture, result)
+    expect(existsSync(rootAuth)).toBe(true)
+  })
+
+  it('rejects an unrelated external follow-up home before mutation or launch', () => {
+    const fixture = makeFixture('codex')
+    const unrelatedHome = path.join(fixture.workDir, 'unrelated', 'codex-home')
+    mkdirSync(unrelatedHome, { recursive: true })
+    writeFileSync(path.join(unrelatedHome, 'sentinel'), 'keep')
+
+    const result = runCodex(fixture, ['followup', 'thread-1', unrelatedHome])
+
+    expectFailedWithoutChild(fixture, result)
+    expect(readFileSync(path.join(unrelatedHome, 'sentinel'), 'utf8')).toBe('keep')
+    expect(existsSync(path.join(unrelatedHome, 'auth.json'))).toBe(false)
+  })
+
+  it('rejects a follow-up home whose previous observe session metadata does not match', () => {
+    const fixture = makeFixture('codex')
+    const sessionHome = prepareCodexSessionHome(fixture.workDir)
+    const configFile = path.join(sessionHome, 'config.toml')
+    writeFileSync(
+      `${path.dirname(sessionHome)}_observe.json`,
+      JSON.stringify({
+        backend_session: {
+          backend: 'codex',
+          home_dir: sessionHome,
+          model: 'gpt-mismatch',
+          persistence: 'resumable',
+          resume_id: 'thread-1',
+        },
+      })
+    )
+
+    const result = runCodex(fixture, ['followup', 'thread-1', sessionHome])
+
+    expectFailedWithoutChild(fixture, result)
+    expect(readFileSync(configFile, 'utf8')).toBe('# session config\n')
+    expect(existsSync(path.join(sessionHome, 'auth.json'))).toBe(false)
   })
 
   it('fails closed before launching Codex when session_home is missing', () => {
@@ -1401,7 +1946,7 @@ describe('delegate-imagegen-codex.sh prune', () => {
     expect(existsSync(path.join(codexHome, 'sessions', 'rollout.jsonl'))).toBe(true)
   })
 
-  it('keeps codex-home when the protocol response status is failed', () => {
+  it('keeps caches but removes auth when the protocol response status is failed', () => {
     const fixture = makeFixture('codex')
     const codexHome = seedCodexHomeLeftovers(fixture)
     const result = runImagegen(fixture, {
@@ -1412,7 +1957,71 @@ describe('delegate-imagegen-codex.sh prune', () => {
     expect(result.status).toBe(0)
     expect(readResponseStatus(fixture.responseFile)).toBe('failed')
     expect(existsSync(path.join(codexHome, '.tmp'))).toBe(true)
-    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(true)
+    expect(existsSync(path.join(codexHome, 'auth.json'))).toBe(false)
+  })
+
+  it.each(codexTerminationCases)(
+    'removes auth after imagegen $failure',
+    ({ envName, expectedStatus }) => {
+      const fixture = makeFixture('codex')
+      const result = runImagegen(fixture, { ...fixture.env, [envName]: '1' })
+
+      expect(result.status).toBe(expectedStatus)
+      expect(readLog(fixture.logFile).authPresent).toBe(true)
+      expect(existsSync(path.join(fixture.runDir, 'codex-home', 'auth.json'))).toBe(false)
+    }
+  )
+
+  it('fails before imagegen launch when a stale auth destination exists', () => {
+    const fixture = makeFixture('codex')
+    const codexHome = path.join(fixture.runDir, 'codex-home')
+    mkdirSync(codexHome, { recursive: true })
+    writeFileSync(path.join(codexHome, 'auth.json'), 'stale-auth')
+
+    const result = runImagegen(fixture)
+
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(existsSync(fixture.logFile)).toBe(false)
+  })
+
+  it('finalizes an imagegen auth unlink failure once with exit 1', () => {
+    const fixture = makeFixture('codex')
+    const metricsFile = path.join(fixture.workDir, 'metrics.jsonl')
+    const result = runImagegen(fixture, {
+      ...fixture.env,
+      DELEGATE_METRICS_FILE: metricsFile,
+      FAKE_CODEX_BREAK_AUTH_CLEANUP: '1',
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(1)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(countEventKind(observe, 'dispatch_end')).toBe(1)
+    expect(countEventKind(observe, 'failed_response_written')).toBe(1)
+    expect(countMetricKind(metricsFile, 'dispatch')).toBe(1)
+    expect(countMetricKind(metricsFile, 'build_response')).toBe(1)
+  })
+
+  it('finalizes a synchronous imagegen operation exception exactly once', () => {
+    const fixture = makeFixture('codex')
+    const metricsFile = path.join(fixture.workDir, 'metrics.jsonl')
+    mkdirSync(path.join(fixture.runDir, 'report-schema.json'))
+
+    const result = runImagegen(fixture, {
+      ...fixture.env,
+      DELEGATE_METRICS_FILE: metricsFile,
+    })
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(1)
+    expectSynchronousAuthOperationFailure({
+      fixture,
+      metricsFile,
+      observe,
+      eventKinds: ['dispatch_end', 'failed_response_written'],
+      metricKinds: ['dispatch', 'build_response'],
+    })
   })
 })
 
@@ -1842,7 +2451,7 @@ describe('wrapper effort suffix', () => {
 
   it('reuses the effort flag on follow-up and fails validation for a respecified base model', () => {
     const fixture = makeFixture('codex')
-    const sessionHome = prepareCodexSessionHome(fixture.workDir)
+    const sessionHome = prepareCodexSessionHome(fixture.workDir, 'gpt-5.5@high')
     const result = runWrapper(
       'delegate-codex.sh',
       wrapperModelArgs(fixture, 'gpt-5.5@high', ['followup', 'thread-1', sessionHome]),
@@ -2097,8 +2706,7 @@ describe('argv-path inline gate', () => {
       fixture.requestFile,
       JSON.stringify({ sections: [bigSection], task_type_chain: ['chore'] })
     )
-    const followupHome = path.join(fixture.workDir, 'codex-home')
-    mkdirSync(followupHome, { recursive: true })
+    const followupHome = prepareCodexSessionHome(fixture.workDir)
     const result = runWrapper(
       'delegate-codex.sh',
       [...taskTypeArgs(fixture, 'gpt-5.5', 'chore'), 'followup', 'thread-1', followupHome],
