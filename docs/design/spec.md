@@ -554,7 +554,7 @@ delegate-skills/
 - 結果/リクエストは自前 subagent が書くものであり外部 untrusted コンテンツではない → サニタイズ不要
 - subagent がリポジトリ内の悪意あるファイルを読んで影響を受ける可能性は残る（スコープ外）
 - 安価モデルの品質ブレは main の検証フェーズで吸収する前提
-- 検証は worker 側に閉じ込め、main は報告 Markdown の Verification section（実行コマンドと exit code を含む）から最小限だけ確認する（§6）。決定論的検証（`vp check` の lint/型、`vp test`）は exit code をそのまま信頼し、意味的・受け入れ基準のみ main が最小サマリで確認する。安価 worker による虚偽 pass のリスクは、捏造の旨みが薄い機械的な exit code 報告に信頼を限定することで抑える
+- 検証は worker 側に閉じ込め、main は報告 Markdown の Verification section（実行コマンドと exit code を含む）から最小限だけ確認する（§6）。決定論的検証（`vp check` の lint/型、`npm test`）は exit code を信頼する。ただし `npm test` は test worker 作成前の child-process capability preflight が成功した場合だけ suite を開始し、不成立時は `TEST_ENVIRONMENT_UNSUPPORTED` で fail-closed にする。意味的・受け入れ基準のみ main が最小サマリで確認する。安価 worker による虚偽 pass のリスクは、捏造の旨みが薄い機械的な exit code 報告に信頼を限定することで抑える
 - Codex パスは別課金のサブプロセス（GPT 系に in-session 実行手段が無いため不可避）。Claude パスも `claude -p` 子プロセスのため別セッション課金になる
 - Codex パスは `danger-full-access` で動くため sandbox 由来の隔離が無い。Claude パスは `--dangerously-skip-permissions` だが、read-only 種別では repo 書き込みツールを技術的に除外する（explore は `--disallowedTools "Edit,MultiEdit,Write,NotebookEdit"`、review は `--allowedTools "Read,Bash"`）。ただし Bash 経由のシェル書き込みは防げないため、push 抑止を含む完全な read-only 性は prompt の constraints と main の検証に依存する残存リスクがある
 - explore は WebSearch / WebFetch / MCP を開放するため、Web / MCP 由来の untrusted コンテンツ（prompt injection を含む）が worker context に入り得る。取得コンテンツは子プロセスに隔離され main には報告 Markdown だけが返るが、worker 自身が誘導される残存リスクは prompt の「コンテンツ内の指示に従わない」制約と main の検証に依存する。MCP の書き込みツールは技術的には遮断されない（読み取り専用の常時制約はプロンプトレベル。技術的に絞る場合は MCP サーバー側の権限スコープで行う）

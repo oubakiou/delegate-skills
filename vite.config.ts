@@ -35,6 +35,9 @@ export default {
     },
   },
   test: {
+    // 契約テストは子プロセスの stdout / exit code を検証するため、sandbox が spawn を
+    // 壊す環境では worker 作成前に全体を止め、製品回帰として誤報しない。
+    globalSetup: ['./scripts/test-execution-capability.ts'],
     // exclude を指定すると既定 (node_modules / .git のみ) を置換するため再掲する。
     // .temp/ は使い捨ての作業領域で、紛れ込んだテストファイルを対象にしない。
     exclude: ['**/node_modules/**', '**/.git/**', '**/.temp/**'],

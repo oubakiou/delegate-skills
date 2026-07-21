@@ -10,7 +10,8 @@
     "metrics:fixtures": "bash scripts/run-metrics-fixtures.sh",
     "metrics:summarize": "node scripts/summarize-metrics.ts",
     "sync-shared": "node scripts/sync-shared.ts",
-    "sync-shared:check": "node scripts/sync-shared.ts --check"
+    "sync-shared:check": "node scripts/sync-shared.ts --check",
+    "test": "node scripts/test-execution-capability.ts && vp test"
   },
   "devDependencies": {
     "@anthropic-ai/claude-code": "^2.1.80",

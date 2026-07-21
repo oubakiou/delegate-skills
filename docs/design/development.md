@@ -73,6 +73,7 @@ delegate-skills/
     run-latency-bench.sh           # レイテンシ反復ベンチ（duration p50 の移行前後比較）
     check-metrics-baseline.sh      # fixture ベースラインのドリフト検知
     check-no-jq-md2idx.sh          # 配布 tree に jq / md2idx 参照が残っていないかの静的検査
+    test-execution-capability.ts   # Vitest 起動前の子プロセス capability preflight
   docs/
     design/
       spec.md
@@ -104,7 +105,7 @@ format / lint / test / 型チェックは [vite-plus](https://www.npmjs.com/pack
 | --------------------- | ---------------------------------------------------------- |
 | `vp check`            | format + lint + 型チェックの横断確認（CI / 最終確認向け）  |
 | `vp check --fix`      | 上記を自動修正付きで実行                                   |
-| `vp test`             | Vitest 実行                                                |
+| `npm test`            | CLI + global preflight 付きの正規 Vitest gate              |
 | `npm run build`       | `vp build --config vite.cli.config.ts` で CLI バンドル生成 |
 | `npm run build:check` | 再ビルド byte 比較（コミット済み dist のドリフト検知）     |
 
@@ -113,11 +114,15 @@ format / lint / test / 型チェックは [vite-plus](https://www.npmjs.com/pack
 - import の並びは fmt（oxfmt の sortImports）が所有する。lint の `sort-imports` は別アルゴリズムで衝突するため off
 - **build**（`vp build`）: `shared/src/main.ts` を `shared/dist/delegate-cli.mjs` へ SSR バンドル（`md2idx` 内包 / `import.meta.vitest` 除去）。dist は生成物だがコミット対象（`gh skill install` がリポジトリ内容をそのまま配布するため）で lint 対象外。`shared/src/` を編集したら `npm run build` → `npm run sync-shared` を回す
 
+テストの正規コマンドは `npm test` とする。`test` script 本体が Vitest 起動前に、`vite.config.ts` の `globalSetup` が test worker 作成前に、それぞれ sync / async の Node 子プロセスを sentinel 付きで起動し、spawn error・exit status・signal・stdout を検証する。capability が成立しない環境では `TEST_ENVIRONMENT_UNSUPPORTED` を 1 件だけ返して fail-closed に停止し、test skip や成功扱いにはしない。preflight は npm lifecycle の `pretest` に置かないため、`ignore-scripts=true` の環境でも省略されない。`globalSetup` は `vp test` を直接実行した場合にも同じ防護を適用する。対象を絞る場合は `npm test -- <filter>` を使う。
+
 TypeScript のコード調査・変更検証には Claude Code の `LSP` deferred tool を併用する（`goToDefinition` / `findReferences` / `getDiagnostics`）。`getDiagnostics` は指定ファイル中心のため、横断的な最終確認は `vp check` を使う。
 
 ## テスト
 
 Vitest の **in-source testing** で TS モジュールを単体検証する。対象は `vite.config.ts` の `test.includeSource`（`shared/src/**/*.ts` ほか）。各モジュールの `if (import.meta.vitest)` ブロックにテストを隣接させ、バンドル時は `define` で dead-code 除去される。
+
+契約テストは Node / bash / fake backend CLI の子プロセスを実際に起動する。preflight は `status === 0` だけではなく spawn error が無いことと sentinel stdout が一致することを要求するため、sandbox が子プロセスを抑止しながら status 0 を返す環境でも製品 assertion の失敗や偽成功として分類しない。Codex では、管理・host policy が許す場合に新しい session を `--sandbox danger-full-access` で開始するか、通常の terminal / CI で `npm test` を再実行する。project `.codex/config.toml` は CLI override より優先度が低く managed requirements の制約も受けるため、repository の設定だけで実行 capability が得られるとは見なさない。
 
 正本（canonical）は `shared/src/` 側に置き、各 skill 配下の生成コピー（バンドル）はテストを重複実行しない。CLI レベルの契約（argv / stdout / exit code / observe JSON）は fake CLI golden で end-to-end 検証する:
 
@@ -150,7 +155,7 @@ backend の CLI 出力を observe JSON へ正規化する処理は `shared/src/o
 4. **README 更新（英日両方）**: `README.md` と `README_ja.md` の Documented model names 表と Effort handling 節（suffix 対応状況・既定挙動表）に追加する。両言語の記載が対応していることを確認する
 5. **価格チャート再生成**: `docs/assets/model-token-prices.svg`（全 priced モデル）と `docs/assets/model-token-prices-low-cost.svg`（input ≤ \$1 または output ≤ \$5 per 1M tokens のみ）を更新後の JSON から再生成する（dataviz-svg skill / Vega-Lite）。low-cost 側の掲載可否は閾値で機械的に判定する
 6. **テスト追加**: 価格解決やコスト推定の挙動が変わる場合（新 provider、prefix 解決、alias 変更等）は `shared/src/observe-cost.ts` の in-source test にケースを追加する
-7. **検証**: `npm run sync-shared:check` / `vp check` / `vp test`
+7. **検証**: `npm run sync-shared:check` / `vp check` / `npm test`
 
 ## git hooks（pre-commit）
 
@@ -163,9 +168,9 @@ backend の CLI 出力を observe JSON へ正規化する処理は `shared/src/o
 5. 最終ドリフト検証（dist 再ビルド byte 比較含む、fail-closed）
 6. `check-no-jq-md2idx.sh` で配布 tree（+ 正本 TS の spawn）に jq / md2idx 参照が残っていないことを静的検査
 7. `metrics:baseline:check` で metrics レコード形状のドリフト検知
-8. `vp test`
+8. `npm test`
 
-CI（`.github/workflows/ci.yml`）も pinned Node / Linux の clean checkout で同じゲート（`build:check` / `sync-shared:check` / `check-no-jq-md2idx` / `metrics:baseline:check` / `vp check` / `vp test`）を PR 必須にする。
+CI（`.github/workflows/ci.yml`）も pinned Node / Linux の clean checkout で同じゲート（`build:check` / `sync-shared:check` / `check-no-jq-md2idx` / `metrics:baseline:check` / `vp check` / `npm test`）を PR 必須にする。
 
 ## issue triage（ラベル）
 
@@ -249,7 +254,7 @@ publish が付ける auto notes を What's New 形式に置き換える。
 - [ ] リリース対象の変更がすべて main にマージ済み
 - [ ] `git fetch --tags origin` 済みで、次タグ = 既存最大タグ（`git tag -l 'v*' --sort=-v:refname | head -1`）の次番号。既存タグの再利用・移動はしない
 - [ ] `vp check` がエラーなし
-- [ ] `vp test` が全パス
+- [ ] `npm test` が全パス
 - [ ] `gh skill publish --dry-run` がエラーなし
 - [ ] `gh skill publish --tag vX.Y.Z` 後、tag が正しい commit を指す（`git ls-remote --tags origin vX.Y.Z`）
 - [ ] `gh release edit` で What's New ノートに差し替え済み

@@ -23,4 +23,4 @@ jobs:
       - run: bash scripts/check-no-jq-md2idx.sh
       - run: npm run metrics:baseline:check
       - run: npx --no-install vp check
-      - run: npx --no-install vp test
+      - run: npm test
