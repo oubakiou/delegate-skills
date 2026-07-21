@@ -1,6 +1,6 @@
 # 外部隔離境界を前提とする Codex requester delegation 設計・実装計画
 
-[![MKDN](https://img.shields.io/badge/MKDN-review-red?style=for-the-badge)](https://mkdn.review/?url=https%3A%2F%2Fraw.githubusercontent.com%2Foubakiou%2Fdelegate-skills%2Frefs%2Fheads%2Fmain%2Fdocs%2Ffeature%2Fcodex-devcontainer-delegation.md)
+[![MKDN](https://img.shields.io/badge/MKDN-review-red?style=for-the-badge)](https://mkdn.review/?url=https%3A%2F%2Fraw.githubusercontent.com%2Foubakiou%2Fdelegate-skills%2Frefs%2Fheads%2Fmain%2Fdocs%2Farchive%2Fcodex-devcontainer-delegation.archive.md)
 
 [spec.md の委譲アーキテクチャ](../design/spec.md#2-アーキテクチャ概要)と
 [development.md の test execution capability](../design/development.md#テスト)に対応し、requester と delegate worker を外部隔離境界の内側で動かす運用における Codex の実行境界を定義する。
@@ -11,15 +11,15 @@
 
 ## 1. 対応スコープ
 
-| 要件                                                               | 開始時の状態                                                                             | 完了条件                                                                                                        | 最終状態                       | 状態     |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------ | -------- |
-| [MUST] requester Codex から契約テストと delegate を起動できる      | requester の inner sandbox で Node anonymous pipe、network、nested `bwrap` が失敗する    | 同梱 Dev Container 内の requester から canonical test と最小 Codex delegate が成功する                          | test / real delegate 実測済み  | 完了     |
-| [MUST] sandbox owner を外部隔離境界に一意化する                    | requester、child、host sandbox の責任が混在している                                      | requester / child の Codex sandbox を境界と数えず、mount・namespace・credential・egress の owner を明記する     | 契約を §3 に定義               | 設計済み |
-| [MUST] full-access 起動ごとに外部境界の必要性を警告する            | child Codex は環境を問わず `danger-full-access` が既定                                   | launcher が環境を安全と推測せず、到達範囲と外部隔離の必要性を毎回1回警告して起動する                            | 毎回警告する launcher          | 実装完了 |
-| [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 通常 profile を実測済み        | 完了     |
-| [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加       | 完了     |
-| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | auth cleanup と MCP 契約を実装 | 完了     |
-| [SHOULD] inner sandbox 無しの運用を一度だけ qualification する     | test preflight は失敗を検出するが、container 境界自体は検証しない                        | image build / container start で境界と process capability を検証し、delegate ごとの probe は増やさない          | 2026-07-21 に実測              | 完了     |
+| 要件                                                               | 開始時の状態                                                                             | 完了条件                                                                                                        | 最終状態                       | 状態 |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------ | ---- |
+| [MUST] requester Codex から契約テストと delegate を起動できる      | requester の inner sandbox で Node anonymous pipe、network、nested `bwrap` が失敗する    | 同梱 Dev Container 内の requester から canonical test と最小 Codex delegate が成功する                          | test / real delegate 実測済み  | 完了 |
+| [MUST] sandbox owner を外部隔離境界に一意化する                    | requester、child、host sandbox の責任が混在している                                      | requester / child の Codex sandbox を境界と数えず、mount・namespace・credential・egress の owner を明記する     | 契約を §3 に定義               | 完了 |
+| [MUST] full-access 起動ごとに外部境界の必要性を警告する            | child Codex は環境を問わず `danger-full-access` が既定                                   | launcher が環境を安全と推測せず、到達範囲と外部隔離の必要性を毎回1回警告して起動する                            | 毎回警告する launcher          | 完了 |
+| [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 通常 profile を実測済み        | 完了 |
+| [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加       | 完了 |
+| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | auth cleanup と MCP 契約を実装 | 完了 |
+| [SHOULD] inner sandbox 無しの運用を一度だけ qualification する     | test preflight は失敗を検出するが、container 境界自体は検証しない                        | image build / container start で境界と process capability を検証し、delegate ごとの probe は増やさない          | 2026-07-21 に実測              | 完了 |
 
 スコープ外:
 
@@ -213,15 +213,15 @@ qualification 対象は repository が同梱する non-privileged Dev Container 
 - container 内で Node sync / async pipe、multi-level process、canonical test を検証する
 - requester Codex から最小の `gpt-*` delegate を一度実行する
 - failure run 後に auth copy が無いことを検証する
-- 2026-07-21 に non-privileged default profile を再 build し、process capability、`npm test`（37 files / 352 tests）、`gpt-5.6-luna` delegate、実 child failure 後の auth cleanup、container stop 後の process lifecycle を確認した。実測値と再現コマンドは [qualification report](./codex-devcontainer-qualification.md) に記録した
+- 2026-07-21 に non-privileged default profile を再 build し、process capability、`npm test`（37 files / 352 tests）、`gpt-5.6-luna` delegate、実 child failure 後の auth cleanup、container stop 後の process lifecycle を確認した。実測値と再現コマンドは [qualification report](../feature/codex-devcontainer-qualification.md) に記録した
 
 成果物: container boundary report + test / delegate の成功記録
 
-### Step 6: (一部完了) 永続文書へ反映する
+### Step 6: (完了済み) 永続文書へ反映する
 
-- `docs/design/spec.md` に外部隔離境界と Codex child の full-access 契約を最終反映する
+- `docs/design/spec.md` に外部隔離境界、requester / child Codex の full-access、launcher の非保証契約を反映済み
 - `docs/design/development.md` の requester launcher 説明と Step 5 qualification report への導線は反映済み
-- 本文書の完了項目を更新し、ユーザー確認後に archive する
+- 本文書の完了項目を更新し、`docs/archive/codex-devcontainer-delegation.archive.md` へ archive 済み
 
 成果物: design / development 更新 + archive 判断
 
