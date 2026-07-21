@@ -31,6 +31,9 @@
 - `composer-*` / `cursor-*` を使う場合: Cursor agent CLI（コマンド名は `agent`。ログイン済み、または `CURSOR_API_KEY` 設定済み）
 - 現在の backend で `delegate-x-research` を使う場合: `grok` CLI（ログイン済み、X 調査へアクセス可能）
 
+> [!WARNING]
+> Codex worker は `codex exec --sandbox danger-full-access` で動くため、child Codex の sandbox は security boundary にならない。requester も Codex で、delegate または process contract test を起動する場合は、隔離された runner / Dev Container 内に限って `codex --sandbox danger-full-access --ask-for-approval on-request` で起動すること。その環境へ mount または認証した repository、Codex / GitHub credential、MCP authority は agent から到達可能になる。host Docker socket や広い host directory を mount しないこと。同梱 Dev Container は現在 privileged Docker-in-Docker を使うため、Docker Desktop では Linux VM が外側の境界になる。native Linux ではこの feature を外すか、別の hardened runner を使う。詳細は [Dev Container boundary 計画](./docs/feature/codex-devcontainer-delegation.md)を参照。
+
 ### インストール
 
 #### gh skill（GitHub CLI v2.90.0+）
