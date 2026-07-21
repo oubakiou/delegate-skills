@@ -15,7 +15,7 @@
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------- | ---------------------------- |
 | [MUST] requester Codex から契約テストと delegate を起動できる      | requester の inner sandbox で Node anonymous pipe、network、nested `bwrap` が失敗する    | Dev Container 内の requester から canonical test と最小 Codex delegate が成功する                               | 起動方式を本計画で確定            | 設計済み・実装未着手         |
 | [MUST] sandbox owner を Dev Container に一意化する                 | requester、child、host sandbox の責任が混在している                                      | requester / child の Codex sandbox を境界と数えず、mount・namespace・credential・egress の owner を明記する     | 契約を §3 に定義                  | 設計済み                     |
-| [MUST] host での full-access 誤起動を防ぐ                          | child Codex は環境を問わず `danger-full-access` が既定                                   | container 専用 launcher または同等の operator guard が container 外で fail-closed する                          | 未実装                            | 未着手                       |
+| [MUST] host での full-access 誤起動を防ぐ                          | child Codex は環境を問わず `danger-full-access` が既定                                   | container 専用 launcher または同等の operator guard が container 外で fail-closed する                          | 固定 marker を確認する launcher   | 実装完了                     |
 | [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 通常 profile の設定を §2.3 に固定 | 実装完了・qualification 待ち |
 | [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加          | 完了                         |
 | [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | 未実装                            | 未着手                       |
@@ -184,13 +184,15 @@ repository の `.codex/config.toml` に無条件の `sandbox_mode = "danger-full
 
 成果物: non-privileged default Dev Container + 必要なら明示的な別 Docker profile
 
-### Step 3: (未着手) requester の container 専用起動経路を追加する
+### Step 3: (完了済み) requester の container 専用起動経路を追加する
 
 - container marker を確認してから Codex を起動する薄い launcher を追加する
 - `.devcontainer/devcontainer.json` に launcher 用の明示 marker を設定する
 - interactive 既定を `--sandbox danger-full-access --ask-for-approval on-request` にする
 - unattended bypass は別 flag とし、README で追加条件を示す
 - IDE extension 用の container-local config 手順を追加する
+
+`scripts/codex-devcontainer.sh` は `DELEGATE_DEVCONTAINER_BOUNDARY=1` と固定 runtime marker の二条件を満たす場合だけ Codex を `exec` する。通常 mode は `danger-full-access` と `on-request` を組み合わせ、argv 全体から execution boundary または policy を上書きし得る remote app-server flag、sandbox / approval flag、config、profile 選択を拒否する。`--unattended` を指定した場合だけ `codex exec` と approval bypass を launcher が構成する。launcher test は production の判定を環境変数で差し替えず、一時コピーの固定 marker path を fixture path へ置換して全組合せ、adversarial argv、fake Codex の argv / PID を検証し、fixture を test ごとに削除する。README 英日と development guide に CLI と IDE extension の container-local 設定手順を記載した。
 
 成果物: host で fail-closed する requester launcher + 利用手順
 

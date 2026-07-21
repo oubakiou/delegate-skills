@@ -34,6 +34,10 @@
 > [!WARNING]
 > Codex worker は `codex exec --sandbox danger-full-access` で動くため、child Codex の sandbox は security boundary にならない。requester も Codex で、delegate または process contract test を起動する場合は、隔離された runner / Dev Container 内に限って `codex --sandbox danger-full-access --ask-for-approval on-request` で起動すること。その環境へ mount または認証した repository、Codex / GitHub credential、MCP authority は agent から到達可能になる。host Docker socket や広い host directory を mount しないこと。同梱の既定 Dev Container は、Docker-in-Docker と host Docker socket mount を持たない non-privileged 構成である。repository 更新後は container を rebuild すること。詳細は [Dev Container boundary 計画](./docs/feature/codex-devcontainer-delegation.md)を参照。
 
+repository の Dev Container 内では、interactive requester を `scripts/codex-devcontainer.sh [Codex の引数...]` で起動する。launcher は `DELEGATE_DEVCONTAINER_BOUNDARY=1` と固定 container runtime marker の両方を要求し、Codex を `--sandbox danger-full-access --ask-for-approval on-request` で起動する。それ以外の環境では fail-closed し、remote app-server、config / profile override を含む execution boundary、sandbox、approval policy を上書きできる引数を拒否する。`scripts/codex-devcontainer.sh --unattended [codex exec の引数...]` は非対話の `codex exec` subcommand を固定した上で approval も無効にするため、呼び出し側では `exec` を指定しない。この mode は repository が trusted で、credential、MCP server、mount、egress を外層で個別に制限した専用 run に限って使用する。
+
+VS Code Codex extension は、Dev Container へ接続してから開き、user scope の `CODEX_HOME` を container 内だけに置く。host の `~/.codex` を bind mount または copy しない。同じ requester mode が必要なら、container-local な `~/.codex/config.toml` に `sandbox_mode = "danger-full-access"` と `approval_policy = "on-request"` を設定する。repository の `.codex/config.toml` にこれらの既定値を追加すると host で repository を開いた場合にも適用されるため、追加しない。
+
 ### インストール
 
 #### gh skill（GitHub CLI v2.90.0+）
