@@ -3,10 +3,6 @@
   // https://hub.docker.com/r/microsoft/devcontainers-base
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
-    // https://github.com/devcontainers/features/tree/main/src/docker-in-docker
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "version": "latest"
-    },
     // https://github.com/devcontainers/features/tree/main/src/node
     "ghcr.io/devcontainers/features/node:1": {
       "version": "latest"
@@ -15,6 +11,12 @@
     "ghcr.io/devcontainers/features/github-cli:1": {
       "version": "2.90.0"
     }
+  },
+  "privileged": false,
+  "init": true,
+  "remoteUser": "vscode",
+  "containerEnv": {
+    "DELEGATE_DEVCONTAINER_BOUNDARY": "1"
   },
   "runArgs": ["--name", "${localEnv:USER}-delegate-skills"],
   "postCreateCommand": "./local_setup.sh",

@@ -11,15 +11,15 @@
 
 ## 1. 対応スコープ
 
-| 要件                                                               | 開始時の状態                                                                             | 完了条件                                                                                                        | 最終状態                 | 状態                 |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------ | -------------------- |
-| [MUST] requester Codex から契約テストと delegate を起動できる      | requester の inner sandbox で Node anonymous pipe、network、nested `bwrap` が失敗する    | Dev Container 内の requester から canonical test と最小 Codex delegate が成功する                               | 起動方式を本計画で確定   | 設計済み・実装未着手 |
-| [MUST] sandbox owner を Dev Container に一意化する                 | requester、child、host sandbox の責任が混在している                                      | requester / child の Codex sandbox を境界と数えず、mount・namespace・credential・egress の owner を明記する     | 契約を §3 に定義         | 設計済み             |
-| [MUST] host での full-access 誤起動を防ぐ                          | child Codex は環境を問わず `danger-full-access` が既定                                   | container 専用 launcher または同等の operator guard が container 外で fail-closed する                          | 未実装                   | 未着手               |
-| [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 現状の弱点を §2.2 で実測 | 調査完了・実装未着手 |
-| [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加 | 完了                 |
-| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | 未実装                   | 未着手               |
-| [SHOULD] inner sandbox 無しの運用を一度だけ qualification する     | test preflight は失敗を検出するが、container 境界自体は検証しない                        | image build / container start で境界と process capability を検証し、delegate ごとの probe は増やさない          | 方針を §6 に定義         | 設計済み             |
+| 要件                                                               | 開始時の状態                                                                             | 完了条件                                                                                                        | 最終状態                          | 状態                         |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------- | ---------------------------- |
+| [MUST] requester Codex から契約テストと delegate を起動できる      | requester の inner sandbox で Node anonymous pipe、network、nested `bwrap` が失敗する    | Dev Container 内の requester から canonical test と最小 Codex delegate が成功する                               | 起動方式を本計画で確定            | 設計済み・実装未着手         |
+| [MUST] sandbox owner を Dev Container に一意化する                 | requester、child、host sandbox の責任が混在している                                      | requester / child の Codex sandbox を境界と数えず、mount・namespace・credential・egress の owner を明記する     | 契約を §3 に定義                  | 設計済み                     |
+| [MUST] host での full-access 誤起動を防ぐ                          | child Codex は環境を問わず `danger-full-access` が既定                                   | container 専用 launcher または同等の operator guard が container 外で fail-closed する                          | 未実装                            | 未着手                       |
+| [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 通常 profile の設定を §2.3 に固定 | 実装完了・qualification 待ち |
+| [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加          | 完了                         |
+| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | 未実装                            | 未着手                       |
+| [SHOULD] inner sandbox 無しの運用を一度だけ qualification する     | test preflight は失敗を検出するが、container 境界自体は検証しない                        | image build / container start で境界と process capability を検証し、delegate ごとの probe は増やさない          | 方針を §6 に定義                  | 設計済み                     |
 
 スコープ外:
 
@@ -42,7 +42,7 @@ Codex の公式 security guide は、Dev Container を outer isolation boundary 
 | [Codex app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)                     | `externalSandbox` は app-server client 用であり、CLI delegation のためには導入しない                 |
 | [Docker privileged mode](https://docs.docker.com/reference/cli/docker/container/run/#privileged)                       | privileged container は安全な host sandbox ではないため、通常の agent profile から除外する           |
 
-### 2.2 現在の Dev Container 実測
+### 2.2 Step 2 適用前の Dev Container 実測
 
 2026-07-21 時点の `.devcontainer/devcontainer.json` と実行中 container を確認した。
 
@@ -58,7 +58,23 @@ Codex の公式 security guide は、Dev Container を outer isolation boundary 
 | canonical test            | requester の inner sandbox 外で `npm test` を実行し、36 files / 283 tests が成功                               | inner sandbox を外すだけで Node process / pipe preflight と全 test が成立                                         |
 | real Codex delegate       | `gpt-5.6-luna` child が Node grandchild の sentinel を完全取得し、response / observe を生成                    | CLI 直接実行で worker command と model round trip が成立。成功 run の auth copy も削除済み                        |
 
-Docker Desktop は Linux VM による追加境界を提供するが、privileged container は VM 内部と Docker Engine に強い権限を持つ。native Linux では VM 境界が無いため、現状の profile を security boundary として採用しない。Docker が必要な場合も、host Docker socket を mount する `docker-outside-of-docker` へ単純に置換しない。
+Docker Desktop は Linux VM による追加境界を提供するが、privileged container は VM 内部と Docker Engine に強い権限を持つ。native Linux では VM 境界が無いため、Step 2 適用前の profile を security boundary として採用しない。Docker が必要な場合も、host Docker socket を mount する `docker-outside-of-docker` へ単純に置換しない。
+
+### 2.3 Step 2 適用後の default profile
+
+source、test、build script に Docker CLI / daemon 依存が無いことを再確認し、`docker-in-docker:2` とその lock entry を削除した。Docker 用の別 profile は、現時点で利用者がいないため追加しない。
+
+| 項目                   | default profile の設定                          | effective state                                                                                  |
+| ---------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| user                   | `remoteUser: "vscode"`                          | base image に含まれる non-root `vscode` user で VS Code lifecycle command と terminal を実行する |
+| init                   | `init: true`                                    | container runtime の init が PID 1 となり、signal forwarding と zombie reaping を担う            |
+| privilege / capability | `privileged: false`、`capAdd` なし              | privileged mode と追加 Linux capability を使わない                                               |
+| namespace              | host namespace を選ぶ `runArgs` なし            | host PID / network / IPC namespace を共有しない                                                  |
+| mount                  | `mounts` なし                                   | Dev Container が管理する workspace mount 以外の host path と host Docker socket を追加しない     |
+| seccomp                | `securityOpt` なし                              | runtime の default seccomp / AppArmor または Docker Desktop の同等 isolation を無効化しない      |
+| boundary marker        | `containerEnv.DELEGATE_DEVCONTAINER_BOUNDARY=1` | container 内の process にだけ Step 3 launcher 用 marker を公開する                               |
+
+この表は configuration contract を記録するもので、image rebuild 後の runtime 状態は Step 5 の container qualification で検証する。
 
 ## 3. 設計の中核
 
@@ -102,7 +118,7 @@ child wrapper の `CODEX_DELEGATE_SANDBOX` は互換性・診断用の override 
 | process / resource | descendant process を同じ container / cgroup 内に留め、container stop でまとめて終了させる           | PID / memory / CPU limit と init による zombie reaping                                   |
 | persistence        | workspace と明示 volume 以外は再作成可能にする                                                       | command history、auth、sessions、cache を別 volume に分け、寿命と削除手順を明記          |
 
-現在の `docker-in-docker` feature は [feature manifest](https://github.com/devcontainers/features/blob/main/src/docker-in-docker/devcontainer-feature.json) で privileged を要求する。Rootless DinD も outer `--privileged` を必要とするため、通常 agent profile の境界強化にはならない。Docker を使わない本 repository の通常作業では feature 自体を外す案を第一候補とする。
+Step 2 適用前の `docker-in-docker` feature は [feature manifest](https://github.com/devcontainers/features/blob/main/src/docker-in-docker/devcontainer-feature.json) で privileged を要求していた。Rootless DinD も outer `--privileged` を必要とするため、通常 agent profile の境界強化にはならない。Docker を使わない本 repository の通常作業では feature 自体を外す。
 
 ### 3.3 credential と MCP は container 境界の内側にある
 
@@ -159,11 +175,11 @@ repository の `.codex/config.toml` に無条件の `sandbox_mode = "danger-full
 
 成果物: 本文書 + README 注意事項
 
-### Step 2: (未着手) 通常 Dev Container を non-privileged にする
+### Step 2: (完了済み) 通常 Dev Container を non-privileged にする
 
 - repository の Docker CLI / daemon 依存が無いことを最終確認する
 - `.devcontainer/devcontainer.json` から `docker-in-docker:2` を外す
-- Docker が必要なら別名の privileged profile に分離し、通常 agent 起動では選択しない
+- Docker 依存が無いため privileged な別 profile は作成しない。将来必要になった場合は別名 profile へ分離し、通常 agent 起動では選択しない
 - `remoteUser`、`init`、host namespace、mount、capability、seccomp の effective state を記録する
 
 成果物: non-privileged default Dev Container + 必要なら明示的な別 Docker profile
