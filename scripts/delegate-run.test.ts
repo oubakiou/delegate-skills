@@ -119,8 +119,13 @@ const makeHarness = (): Harness => {
   mkdirSync(tempRoot, { recursive: true })
   const workDir = mkdtempSync(path.join(tempRoot, 'delegate-run-test-'))
   const binDir = makeFakeBinDir(workDir)
+  const codexHome = path.join(workDir, 'root-codex-home')
+  mkdirSync(codexHome, { recursive: true })
+  writeFileSync(path.join(codexHome, 'auth.json'), '{"fixture":true}\n')
+  const env = makeHarnessEnv(workDir, binDir)
+  env.CODEX_HOME = codexHome
   return {
-    env: makeHarnessEnv(workDir, binDir),
+    env,
     metricsFile: path.join(workDir, 'metrics.jsonl'),
     workDir,
   }
