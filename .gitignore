@@ -28,3 +28,5 @@ skills-lock.json
 # レビュー依頼の生成物・回収パッケージ (§8 ファイル命名規約)
 *-review.html
 *-feedback.json
+
+docs/handover.md
