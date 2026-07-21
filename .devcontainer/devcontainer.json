@@ -15,9 +15,6 @@
   "privileged": false,
   "init": true,
   "remoteUser": "vscode",
-  "containerEnv": {
-    "DELEGATE_DEVCONTAINER_BOUNDARY": "1"
-  },
   "runArgs": ["--name", "${localEnv:USER}-delegate-skills"],
   "postCreateCommand": "./local_setup.sh",
   "customizations": {

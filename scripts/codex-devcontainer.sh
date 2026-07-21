@@ -1,15 +1,7 @@
 #!/bin/sh
 set -eu
 
-if [ "${DELEGATE_DEVCONTAINER_BOUNDARY:-}" != "1" ]; then
-  echo "codex-devcontainer: DELEGATE_DEVCONTAINER_BOUNDARY=1 is required; start this launcher inside the repository Dev Container." >&2
-  exit 1
-fi
-
-if [ ! -e /.dockerenv ] && [ ! -e /run/.containerenv ]; then
-  echo "codex-devcontainer: no container runtime marker found (expected /.dockerenv or /run/.containerenv); refusing full-access Codex." >&2
-  exit 1
-fi
+echo "WARNING: codex-devcontainer does not provide isolation; full-access Codex can reach available files, credentials, services, and network resources. Run it only inside an external isolation boundary such as the included Dev Container, a dedicated VM, an ephemeral CI runner, or another hardened container." >&2
 
 if [ "${1:-}" = "--unattended" ]; then
   shift

@@ -1,13 +1,5 @@
 import { spawn } from 'node:child_process'
-import {
-  chmodSync,
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -17,8 +9,6 @@ const launcherPath = path.join(repoRoot, 'scripts', 'codex-devcontainer.sh')
 const fixtureRoots = new Set<string>()
 
 interface LauncherFixture {
-  containerenv: string
-  dockerenv: string
   env: NodeJS.ProcessEnv
   launcher: string
 }
@@ -51,17 +41,9 @@ console.log(JSON.stringify({ args: process.argv.slice(2), pid: process.pid }))
   chmodSync(fakeCodex, 0o755)
 }
 
-const writeFixtureLauncher = (
-  fixtureDir: string,
-  dockerenv: string,
-  containerenv: string
-): string => {
+const writeFixtureLauncher = (fixtureDir: string): string => {
   const launcher = path.join(fixtureDir, 'codex-devcontainer.sh')
   copyFileSync(launcherPath, launcher)
-  const launcherSource = readFileSync(launcher, 'utf8')
-    .replaceAll('/.dockerenv', dockerenv)
-    .replaceAll('/run/.containerenv', containerenv)
-  writeFileSync(launcher, launcherSource)
   chmodSync(launcher, 0o755)
   return launcher
 }
@@ -69,36 +51,17 @@ const writeFixtureLauncher = (
 const makeFixture = (): LauncherFixture => {
   const { binDir, fixtureDir } = createFixtureDirectory()
   writeFakeCodex(binDir)
-  const dockerenv = path.join(fixtureDir, '.dockerenv')
-  const containerenv = path.join(fixtureDir, '.containerenv')
-  const launcher = writeFixtureLauncher(fixtureDir, dockerenv, containerenv)
+  const launcher = writeFixtureLauncher(fixtureDir)
 
   return {
-    containerenv,
-    dockerenv,
     env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
     launcher,
   }
 }
 
-const makeLauncherEnv = (fixture: LauncherFixture, boundaryEnabled: boolean): NodeJS.ProcessEnv => {
-  const env = { ...fixture.env }
-  if (boundaryEnabled) {
-    env.DELEGATE_DEVCONTAINER_BOUNDARY = '1'
-  } else {
-    delete env.DELEGATE_DEVCONTAINER_BOUNDARY
-  }
-  return env
-}
-
-const runLauncher = async (
-  fixture: LauncherFixture,
-  args: string[],
-  boundaryEnabled: boolean
-): Promise<LauncherOutcome> =>
+const runLauncher = async (fixture: LauncherFixture, args: string[]): Promise<LauncherOutcome> =>
   new Promise((resolve, reject) => {
-    const env = makeLauncherEnv(fixture, boundaryEnabled)
-    const child = spawn(fixture.launcher, args, { cwd: repoRoot, env })
+    const child = spawn(fixture.launcher, args, { cwd: repoRoot, env: fixture.env })
     let stderr = ''
     let stdout = ''
     child.stderr.on('data', (chunk: Buffer) => {
@@ -113,11 +76,31 @@ const runLauncher = async (
     })
   })
 
-const runtimeMarkerCases = [
-  { containerenv: false, dockerenv: false, name: 'no runtime marker' },
-  { containerenv: false, dockerenv: true, name: '.dockerenv' },
-  { containerenv: true, dockerenv: false, name: '.containerenv' },
-  { containerenv: true, dockerenv: true, name: 'both runtime markers' },
+const launcherModeCases = [
+  {
+    expectedArgs: [
+      '--sandbox',
+      'danger-full-access',
+      '--ask-for-approval',
+      'on-request',
+      '--model',
+      'gpt-test',
+      'prompt text',
+    ],
+    inputArgs: ['--model', 'gpt-test', 'prompt text'],
+    name: 'interactive',
+  },
+  {
+    expectedArgs: [
+      'exec',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--model',
+      'gpt-test',
+      'prompt text',
+    ],
+    inputArgs: ['--unattended', '--model', 'gpt-test', 'prompt text'],
+    name: 'unattended',
+  },
 ] as const
 
 const rejectedPolicyArgv: string[][] = [
@@ -159,41 +142,30 @@ const rejectedPolicyArgv: string[][] = [
 
 const rejectedPolicyCases = rejectedPolicyArgv.map((args) => ({ args }))
 
-const writeRuntimeMarkers = (
-  fixture: LauncherFixture,
-  dockerenv: boolean,
-  containerenv: boolean
-): void => {
-  if (dockerenv) {
-    writeFileSync(fixture.dockerenv, '')
-  }
-  if (containerenv) {
-    writeFileSync(fixture.containerenv, '')
-  }
-}
-
 const expectRejectedLauncher = (outcome: LauncherOutcome, message: string): void => {
   expect(outcome.status).not.toBe(0)
   expect(outcome.stderr).toContain(message)
   expect(outcome.stdout).toBe('')
 }
 
-const expectInteractiveInvocation = (outcome: LauncherOutcome): void => {
+const expectLauncherInvocation = (
+  outcome: LauncherOutcome,
+  expectedArgs: readonly string[]
+): void => {
   expect(outcome.status).toBe(0)
-  expect(outcome.stderr).toBe('')
   const invocation: unknown = JSON.parse(outcome.stdout)
   expect(invocation).toEqual({
-    args: [
-      '--sandbox',
-      'danger-full-access',
-      '--ask-for-approval',
-      'on-request',
-      '--model',
-      'gpt-test',
-      'prompt text',
-    ],
+    args: expectedArgs,
     pid: outcome.childPid,
   })
+}
+
+const expectIsolationWarning = (outcome: LauncherOutcome): void => {
+  const warnings = outcome.stderr.match(/WARNING: codex-devcontainer/g) ?? []
+  expect(warnings).toHaveLength(1)
+  expect(outcome.stderr).toContain('does not provide isolation')
+  expect(outcome.stderr).toContain('full-access Codex can reach')
+  expect(outcome.stderr).toContain('external isolation boundary')
 }
 
 afterEach(() => {
@@ -204,66 +176,22 @@ afterEach(() => {
 })
 
 describe('codex Dev Container launcher', () => {
-  it.each(runtimeMarkerCases)(
-    'rejects a missing explicit boundary marker with $name',
-    async ({ containerenv, dockerenv }) => {
-      const fixture = makeFixture()
-      writeRuntimeMarkers(fixture, dockerenv, containerenv)
-
-      const outcome = await runLauncher(fixture, ['prompt text'], false)
-
-      expectRejectedLauncher(outcome, 'DELEGATE_DEVCONTAINER_BOUNDARY=1 is required')
-    }
-  )
-
-  it.each(runtimeMarkerCases)(
-    'handles the explicit marker with $name',
-    async ({ containerenv, dockerenv }) => {
-      const fixture = makeFixture()
-      writeRuntimeMarkers(fixture, dockerenv, containerenv)
-
-      const outcome = await runLauncher(fixture, ['--model', 'gpt-test', 'prompt text'], true)
-
-      if (!dockerenv && !containerenv) {
-        expectRejectedLauncher(outcome, 'no container runtime marker found')
-        return
-      }
-
-      expectInteractiveInvocation(outcome)
-    }
-  )
-
-  it('keeps unattended approval bypass behind an explicit launcher flag', async () => {
+  it.each(launcherModeCases)('launches $name with one isolation warning', async (mode) => {
     const fixture = makeFixture()
-    writeFileSync(fixture.dockerenv, '')
 
-    const outcome = await runLauncher(
-      fixture,
-      ['--unattended', '--model', 'gpt-test', 'prompt text'],
-      true
-    )
+    const outcome = await runLauncher(fixture, [...mode.inputArgs])
 
-    expect(outcome.status).toBe(0)
-    const invocation: unknown = JSON.parse(outcome.stdout)
-    expect(invocation).toEqual({
-      args: [
-        'exec',
-        '--dangerously-bypass-approvals-and-sandbox',
-        '--model',
-        'gpt-test',
-        'prompt text',
-      ],
-      pid: outcome.childPid,
-    })
+    expectLauncherInvocation(outcome, mode.expectedArgs)
+    expectIsolationWarning(outcome)
   })
 
   it('keeps unattended mode non-interactive when no exec arguments are supplied', async () => {
     const fixture = makeFixture()
-    writeFileSync(fixture.containerenv, '')
 
-    const outcome = await runLauncher(fixture, ['--unattended'], true)
+    const outcome = await runLauncher(fixture, ['--unattended'])
 
     expect(outcome.status).toBe(0)
+    expectIsolationWarning(outcome)
     const invocation: unknown = JSON.parse(outcome.stdout)
     expect(invocation).toEqual({
       args: ['exec', '--dangerously-bypass-approvals-and-sandbox'],
@@ -275,11 +203,11 @@ describe('codex Dev Container launcher', () => {
     'rejects normal-mode policy override argv $args',
     async ({ args }) => {
       const fixture = makeFixture()
-      writeFileSync(fixture.dockerenv, '')
 
-      const outcome = await runLauncher(fixture, args, true)
+      const outcome = await runLauncher(fixture, args)
 
       expectRejectedLauncher(outcome, 'normal mode does not allow policy override argument')
+      expectIsolationWarning(outcome)
     }
   )
 })
