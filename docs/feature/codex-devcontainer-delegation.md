@@ -11,15 +11,15 @@
 
 ## 1. 対応スコープ
 
-| 要件                                                               | 開始時の状態                                                                             | 完了条件                                                                                                        | 最終状態                          | 状態                         |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------- | ---------------------------- |
-| [MUST] requester Codex から契約テストと delegate を起動できる      | requester の inner sandbox で Node anonymous pipe、network、nested `bwrap` が失敗する    | 同梱 Dev Container 内の requester から canonical test と最小 Codex delegate が成功する                          | launcher 実装済み                 | qualification 待ち           |
-| [MUST] sandbox owner を外部隔離境界に一意化する                    | requester、child、host sandbox の責任が混在している                                      | requester / child の Codex sandbox を境界と数えず、mount・namespace・credential・egress の owner を明記する     | 契約を §3 に定義                  | 設計済み                     |
-| [MUST] full-access 起動ごとに外部境界の必要性を警告する            | child Codex は環境を問わず `danger-full-access` が既定                                   | launcher が環境を安全と推測せず、到達範囲と外部隔離の必要性を毎回1回警告して起動する                            | 毎回警告する launcher             | 実装完了                     |
-| [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 通常 profile の設定を §2.3 に固定 | 実装完了・qualification 待ち |
-| [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加          | 完了                         |
-| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | auth cleanup と MCP 契約を実装    | 完了                         |
-| [SHOULD] inner sandbox 無しの運用を一度だけ qualification する     | test preflight は失敗を検出するが、container 境界自体は検証しない                        | image build / container start で境界と process capability を検証し、delegate ごとの probe は増やさない          | 方針を §6 に定義                  | 設計済み                     |
+| 要件                                                               | 開始時の状態                                                                             | 完了条件                                                                                                        | 最終状態                       | 状態     |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------ | -------- |
+| [MUST] requester Codex から契約テストと delegate を起動できる      | requester の inner sandbox で Node anonymous pipe、network、nested `bwrap` が失敗する    | 同梱 Dev Container 内の requester から canonical test と最小 Codex delegate が成功する                          | test / real delegate 実測済み  | 完了     |
+| [MUST] sandbox owner を外部隔離境界に一意化する                    | requester、child、host sandbox の責任が混在している                                      | requester / child の Codex sandbox を境界と数えず、mount・namespace・credential・egress の owner を明記する     | 契約を §3 に定義               | 設計済み |
+| [MUST] full-access 起動ごとに外部境界の必要性を警告する            | child Codex は環境を問わず `danger-full-access` が既定                                   | launcher が環境を安全と推測せず、到達範囲と外部隔離の必要性を毎回1回警告して起動する                            | 毎回警告する launcher          | 実装完了 |
+| [MUST] Dev Container 自体を境界として成立させる                    | `docker-in-docker` feature が outer container を privileged にする                       | 通常 profile が non-privileged で、host Docker socket、host PID/network namespace、不要な host mount を持たない | 通常 profile を実測済み        | 完了     |
+| [MUST] Codex 固有の full-access 条件を利用者へ公開する             | README には child Codex の sandbox 無効化と必要な outer boundary が明記されていない      | README / README_ja が起動条件、保護されない資産、Dev Container の注意点を説明する                               | 本計画と同時に注意を追加       | 完了     |
+| [SHOULD] delegate の資格情報 lifecycle と MCP authority を定義する | `auth.json` と MCP config を isolated `CODEX_HOME` へコピーし、失敗 run では auth も残す | auth copy は成否にかかわらず削除し、MCP 継承の設計判断・実装・テスト・公開説明が一致する                        | auth cleanup と MCP 契約を実装 | 完了     |
+| [SHOULD] inner sandbox 無しの運用を一度だけ qualification する     | test preflight は失敗を検出するが、container 境界自体は検証しない                        | image build / container start で境界と process capability を検証し、delegate ごとの probe は増やさない          | 2026-07-21 に実測              | 完了     |
 
 スコープ外:
 
@@ -205,7 +205,7 @@ repository の `.codex/config.toml` に無条件の `sandbox_mode = "danger-full
 
 成果物: secret cleanup + MCP authority contract
 
-### Step 5: (一部完了) Dev Container qualification と real delegate を固定する
+### Step 5: (完了済み) Dev Container qualification と real delegate を固定する
 
 qualification 対象は repository が同梱する non-privileged Dev Container だけとする。専用 VM、一時的な CI runner、別の hardened container の安全性は operator が確認し、repository と launcher は検出、attest、自動 qualification を行わない。
 
@@ -213,14 +213,14 @@ qualification 対象は repository が同梱する non-privileged Dev Container 
 - container 内で Node sync / async pipe、multi-level process、canonical test を検証する
 - requester Codex から最小の `gpt-*` delegate を一度実行する
 - failure run 後に auth copy が無いことを検証する
-- 2026-07-21 の現行 profile では、inner sandbox 外の `npm test`（36 files / 283 tests）と `gpt-5.6-luna` delegate の Node child sentinel capture が成功した。non-privileged profile への変更後に同じ確認を再実行する
+- 2026-07-21 に non-privileged default profile を再 build し、process capability、`npm test`（37 files / 352 tests）、`gpt-5.6-luna` delegate、実 child failure 後の auth cleanup、container stop 後の process lifecycle を確認した。実測値と再現コマンドは [qualification report](./codex-devcontainer-qualification.md) に記録した
 
 成果物: container boundary report + test / delegate の成功記録
 
 ### Step 6: (一部完了) 永続文書へ反映する
 
 - `docs/design/spec.md` に外部隔離境界と Codex child の full-access 契約を最終反映する
-- `docs/design/development.md` の requester launcher 説明は反映済み。Step 5 の qualification command と結果を追加する
+- `docs/design/development.md` の requester launcher 説明と Step 5 qualification report への導線は反映済み
 - 本文書の完了項目を更新し、ユーザー確認後に archive する
 
 成果物: design / development 更新 + archive 判断
@@ -293,14 +293,14 @@ qualification 対象は repository が同梱する non-privileged Dev Container 
 
 この checklist は同梱 default profile の reference qualification であり、代替の外部隔離境界を検証するものではない。
 
-- [ ] host の `docker inspect` で `Privileged=false` である
-- [ ] host PID / network / IPC namespace を共有していない
-- [ ] host Docker socket と host `$HOME` が mount されていない
-- [ ] host から公開された writable mount が workspace と明示した named volume だけである
-- [ ] default seccomp / AppArmor または同等の Docker Desktop isolation が有効である
-- [ ] requester から `npm test` が canonical baseline 以上の件数で成功する
-- [ ] requester から最小 Codex delegate が response / observe を生成する
-- [ ] container stop 後に requester / child / worker process が残らない
+- [x] host の `docker inspect` で `Privileged=false` である
+- [x] host PID / network / IPC namespace を共有していない
+- [x] host Docker socket と host `$HOME` が mount されていない
+- [x] host から公開された writable mount が workspace と明示した named volume だけである
+- [x] default seccomp / AppArmor または同等の Docker Desktop isolation が有効である
+- [x] requester から `npm test` が canonical baseline 以上の件数で成功する
+- [x] requester から最小 Codex delegate が response / observe を生成する
+- [x] container stop 後に requester / child / worker process が残らない
 
 ## 7. 受け入れ基準
 
