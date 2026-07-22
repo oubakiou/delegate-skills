@@ -31,10 +31,15 @@ Keep an expensive model as the main agent and offload routine "read, investigate
 - When using `composer-*` / `cursor-*`: the Cursor agent CLI (command name `agent`; logged in or `CURSOR_API_KEY` set)
 - When using `delegate-x-research` with the current backend: the `grok` CLI (logged in, with access to X research)
 
-> [!WARNING]
-> Codex-backed workers run with `codex exec --sandbox danger-full-access`; the child Codex sandbox is not a security boundary. When the requester is also Codex and must launch delegates or the process-contract tests, start it with `codex --sandbox danger-full-access --ask-for-approval on-request` only behind an external isolation boundary. The included non-privileged Dev Container is the default, but a dedicated VM, ephemeral CI runner, or another hardened container is also valid. Anything mounted or authenticated inside that environment—including the repository, Codex/GitHub credentials, and MCP authority—is reachable by the agent. Do not expose the host Docker socket or broad host directories. Rebuild the included Dev Container after updating this repository. See the [Codex isolation boundary contract](./docs/design/spec.md#requester-codex-と外部隔離境界) and [Dev Container qualification report](./docs/feature/codex-devcontainer-qualification.md).
+When using Codex as the requester, add the following to `.codex/config.toml` in the project where you installed the delegate skills, then restart Codex:
 
-Start an interactive requester with `scripts/codex-devcontainer.sh [codex arguments...]`. The launcher does not infer that its environment is safe: every invocation emits one warning that it provides no isolation, identifies the reach of full-access Codex, and requires an external boundary. The included Dev Container, a dedicated VM, an ephemeral CI runner, or another hardened container can supply that boundary; ordinary laptops and shared hosts are not recommended. Normal mode rejects arguments that could override its execution boundary, sandbox, or approval policy, including remote app-server and config/profile overrides. `scripts/codex-devcontainer.sh --unattended [codex exec arguments...]` fixes the non-interactive `codex exec` subcommand and bypasses approvals; do not include `exec` yourself. This mode is only for a dedicated run whose repository is trusted and whose credentials, MCP servers, mounts, and egress are independently restricted.
+```toml
+approval_policy = "on-request"
+sandbox_mode = "danger-full-access"
+```
+
+> [!WARNING]
+> Codex workers and a Codex requester run with `danger-full-access`, so the Codex sandbox is not a security boundary. We recommend using them inside a dedicated Dev Container, VM, ephemeral CI runner, or another hardened container. The agent can reach anything mounted or authenticated there; do not expose the host Docker socket or broad host directories. See the [Codex isolation boundary contract](./docs/design/spec.md#requester-codex-と外部隔離境界).
 
 ### Installation
 
@@ -68,7 +73,7 @@ npx skills add oubakiou/delegate-skills --skill delegate-explore -a claude-code 
 
 ### Try it
 
-No extra configuration is needed after installation. Ask the main agent as usual, and it delegates automatically based on each skill's description.
+Apart from the Codex requester setup above, no extra configuration is needed. Ask the main agent as usual, and it delegates automatically based on each skill's description.
 
 ```text
 Find out where authentication is implemented in this repository
@@ -90,45 +95,20 @@ To make the main agent delegate more aggressively, add one line to your project'
 
 ## How it works
 
-Delegate routine, mechanical work to a cheaper model without polluting the main agent's (expensive model) context. The execution backend is **determined by the model-name prefix**:
+The model-name prefix selects the execution backend:
 
-| Model name                            | Backend                     | Launch                             |
-| ------------------------------------- | --------------------------- | ---------------------------------- |
-| `sonnet` / `haiku` / `opus` / `fable` | Claude subprocess           | `claude -p` (`delegate-claude.sh`) |
-| `gpt-*`                               | Codex subprocess            | `codex exec` (`delegate-codex.sh`) |
-| `swe-*` / `devin-*`                   | Devin CLI subprocess        | `devin -p` (`delegate-devin.sh`)   |
-| `composer-*` / `cursor-*`             | Cursor agent CLI subprocess | `agent -p` (`delegate-cursor.sh`)  |
+| Model name                            | Backend          |
+| ------------------------------------- | ---------------- |
+| `sonnet` / `haiku` / `opus` / `fable` | Claude Code      |
+| `gpt-*`                               | Codex            |
+| `swe-*` / `devin-*`                   | Devin CLI        |
+| `composer-*` / `cursor-*`             | Cursor agent CLI |
 
-What the prefixes mean:
-
-- `swe-*` and `composer-*` are each CLI's native model names and are passed through as-is (e.g. `swe-1.7`, `composer-2.5`)
-- `devin-*` and `cursor-*` are backend-pinning prefixes that fix "use this CLI"; the prefix is stripped and the remainder is passed as the model name (e.g. `devin-glm-5.2` → `glm-5.2` on Devin CLI, `cursor-glm-5.2-high` → `glm-5.2-high` on Cursor agent CLI)
-
-All four paths launch a child process via a shell wrapper, so the skills work uniformly regardless of whether the requester is Claude Code, Codex, Devin CLI, or Cursor. Each `delegate-*.sh` is a thin exec shim over a single self-contained TypeScript bundle (`delegate-cli.mjs`, `md2idx` inlined), so at runtime only Node.js and the target backend CLI are required — no `jq` and no `npx`. Hand-off between main and sub is [file-based (request/response)](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md). Both files use the [md2idx](https://github.com/oubakiou/md2idx) format (`index` + `sections`) and are read incrementally to save tokens.
-
-The parent-side happy path is a single one-shot call: each skill's `run.sh` (`run-imagegen.sh` / `run-x-research.sh` for the two dedicated skills) chains prepare → dispatch → read-response in one Bash invocation and prints a single JSON object (`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`) on success and failure alike, passing internal exit codes through. `content` is capped at `DELEGATE_RUN_CONTENT_MAX` bytes; the full response stays readable via `response_file`. Advanced flows — resumable / follow-up sessions, observe monitoring, background dispatch — keep using the individual scripts. Interactive parents can hide the wait by dispatching in the background and polling the observe JSON before reading the response; this improves perceived latency only, total wall time is unchanged.
-
-The request body is embedded into the worker's initial prompt from the canonical request JSON (up to `DELEGATE_REQUEST_INLINE_MAX`, default 256KB; larger requests fall back to the `read-request.sh` instruction), so the worker spends no round trip on reading it. Prompts are passed via stdin (Claude / Codex / Cursor) or `--prompt-file` (Devin) rather than argv. Worker reports are collected by the wrapper, not written by the worker: Claude and Codex workers return a structured final answer `{status, report_markdown}` (schema-enforced via `--json-schema` / `--output-schema`), while Cursor / Devin / Grok workers write a single front-matter Markdown report file. The wrapper converts either form into the protocol response (md2idx + envelope) with zero extra LLM round trips; collection failures produce a failed response (fail-closed), and structured-parse success is recorded in the observe `timing`.
-
-In managed-policy environments where Claude's bypass permissions mode is disabled, Claude backend workers run in default permission mode. The wrapper pre-approves the minimal tools needed to read the request — the report comes back through the structured final answer, so no write permission is needed for the protocol response — but other Bash commands or tools may be rejected. To run full tasks in that environment, add the required allowlist entries to project settings or select a non-Claude backend with `DELEGATE_<TYPE>_MODEL`; tools explicitly denied by managed policy cannot be enabled by the wrapper.
+Each backend runs as a child process and exchanges request/response files with the main agent, keeping detailed work out of the main context. Runs are one-shot by default. See [protocol-v1](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md) and [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for details.
 
 ### Resumable worker sessions
 
-Normal delegate runs stay non-persistent. For larger `delegate-implement` or `delegate-chore` tasks where the main agent expects a review/fix loop, the main agent may explicitly start a resumable initial run. That opt-in records a backend resume handle, `lineage_id`, and `run_context` in the observe JSON so a later follow-up can resume the same backend session while still creating a fresh request/response/observe run.
-
-Follow-up is explicit and fail-closed: it requires a previous observe JSON whose `backend_session.persistence` is `resumable`, a resume handle, matching backend/model/repo/worktree context, and a compatible git HEAD. If validation fails, delegation does not silently fall back to a new session; the main agent must issue a normal delegate run instead. Claude, Codex, Devin, and Cursor backends support the resumable path. No new environment variables are required.
-
-Claude and Codex follow-ups keep using the MCP server set captured for the initial resumable run. Cursor regenerates the isolated MCP config from the parent global config on each run.
-
-Codex workers create a fresh, exclusive copy of the requester `auth.json` in their isolated `CODEX_HOME` immediately before every normal, resumable-initial, and follow-up launch. Copying first uses a uniquely owned staging file in the same directory and publishes it without replacing an existing destination; partial-copy failures remove the staging file. A lifecycle lease is active before staging starts, tracks only owned staging and published artifacts, and keeps its signal handlers until cleanup finishes. A stale destination, copy failure, unrelated or symlinked follow-up home, or requester `CODEX_HOME` reuse fails before child launch. The wrapper removes only the fresh copy on every exit path, including child errors, missing structured responses, child signals, wrapper termination, and signals during staging or cleanup or racing with spawn or child exit. Cleanup completes before response/session/dispatch finalization; cleanup or synchronous operation failure produces exactly one sanitized failed terminal state and never resumable success metadata. `DELEGATE_CODEX_HOME_PRUNE=0` keeps diagnostic caches but does not disable auth cleanup; resumable session JSONL and `config.toml` remain available for follow-up. Use dedicated, short-lived credentials with the minimum repository and service scopes needed for the task. The same applies to GitHub/backend tokens and MCP credentials: a full-access worker can use every authority exposed inside the container, so restrict write-capable MCP servers and remote identities at the server/token layer.
-
-`delegate-explore` covers not only code and repository documents but also web research via WebSearch / WebFetch and internal-knowledge research via MCP tools (Notion, Atlassian, etc.) configured in the runtime environment. All four backends use the parent user-scope MCP configuration by default: Claude/Devin inherit shared runtime settings, while resumable Claude, Codex, and Cursor wrappers extract the parent config and inject an isolated config into the worker. MCP tool execution quality still depends on each CLI. For Claude backends with bypass permissions enabled, the denylist approach (only the built-in file-editing tools `Edit` / `MultiEdit` / `Write` / `NotebookEdit` are denied) leaves WebSearch / WebFetch available; in managed-policy environments where bypass is disabled, tools beyond the pre-approved minimum may be rejected. The other backends depend on their own built-in web tools and sandbox settings. If a worker reports it cannot reach the web, the main agent re-delegates to a backend with working web access or handles the research itself. The worker is always limited to read-only MCP tools via a prompt-level constraint; delegate MCP-writing work to `delegate-chore` / `delegate-implement` instead. Fetched web/MCP content (including prompt-injection risk) stays isolated in the child process; only the worker's report returns to the main agent.
-
-Each observe JSON records `mcp_config: {source, servers}`. `servers` lists wrapper-injected MCP server names for `injected`; `shared` uses natural inheritance that the wrapper does not own, so it records an empty list, and `none` also records an empty list. Server definitions and credentials are never written to observe JSON. Manage which MCP servers workers can see in the parent user-scope config. Injected config files may include token-bearing environment entries, so they stay under the run directory and are covered by `DELEGATE_RUN_RETENTION_DAYS` cleanup.
-
-`delegate-imagegen` resolves a Codex model with the same env/default mechanism as the other delegates, but it remains a Codex-only capability bridge: `DELEGATE_IMAGEGEN_MODEL` selects the child model, `gpt*` routes to Codex, and non-`gpt*` fails closed instead of falling through to Claude.
-
-`delegate-x-research` resolves `DELEGATE_X_RESEARCH_MODEL` with default `grok-build`, then launches the current X research backend, currently Grok CLI, to investigate x.com / X posts, accounts, threads, and reactions. It does not route through Claude or Codex.
+For larger `delegate-implement` or `delegate-chore` tasks that may need a review/fix loop, the main agent can opt into a resumable session. If resume validation fails, it does not silently start a replacement; the agent issues a normal run instead. Claude, Codex, Devin, and Cursor support this mode.
 
 ## Skills
 
@@ -152,35 +132,46 @@ Rationale for default models: explore / chore are read-centric and low-risk, so 
 
 ## Environment variables
 
-| Variable                                 | Default                                | Description                                                        |
-| ---------------------------------------- | -------------------------------------- | ------------------------------------------------------------------ |
-| `DELEGATE_<TYPE>_MODEL`                  | per skill                              | Per-type model override                                            |
-| `DELEGATE_WORK_DIR`                      | mktemp default (`TMPDIR`, else `/tmp`) | Location for request/response files                                |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                          | Inline/stepwise threshold for `read-response.sh auto` / `decision` |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes (`0` = unlimited)        | `content` cap in the one-shot `run.sh` JSON output                 |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                         | Request-size gate for embedding the request into the worker prompt |
-| `DELEGATE_METRICS_FILE`                  | unset                                  | Optional JSONL proxy-metric / timing telemetry output path         |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                           | Worker observe JSON heartbeat interval                             |
-| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` seconds                           | Bounded wait for the observe JSON symlink lock (error on timeout)  |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection)       | Bash tool timeout caps injected into Claude backend children       |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (enabled, `0` = keep)              | Prune caches after success; auth copy is always removed            |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                         | Kill a child after this many seconds without stream byte growth    |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)        | Max stdout/stderr content stored in observe JSON                   |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                         | Delete old per-run scratch directories during request preparation  |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`             | Default output directory for `delegate-imagegen`                   |
-| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                           | Model for `delegate-x-research`                                    |
+Most users only need the model variables.
+
+### Common settings
+
+| Variable                       | Default                                | Purpose                                        |
+| ------------------------------ | -------------------------------------- | ---------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`        | per skill                              | Override the model for a delegate type         |
+| `DELEGATE_X_RESEARCH_MODEL`    | `grok-build`                           | Select the `delegate-x-research` model         |
+| `DELEGATE_WORK_DIR`            | mktemp default (`TMPDIR`, else `/tmp`) | Store request, response, and observe files     |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR` | `delegate-imagegen-output`             | Set the default image-generation output folder |
 
 Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
+### Advanced settings
+
+| Variable                                 | Default                          | Purpose                                                    |
+| ---------------------------------------- | -------------------------------- | ---------------------------------------------------------- |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                    | Response inline/stepwise threshold                         |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes (`0` = unlimited)  | Maximum inline content in one-shot JSON output             |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                   | Maximum request embedded in the worker prompt              |
+| `DELEGATE_METRICS_FILE`                  | unset                            | Optional JSONL telemetry output                            |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                     | Observe heartbeat interval                                 |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` seconds                     | Observe lock timeout                                       |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection) | Claude child Bash timeout                                  |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (`0` = keep)                 | Prune successful-run caches; auth is always removed        |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                   | Stop a child after this many seconds without stream growth |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)  | Maximum stdout/stderr retained in observe JSON             |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                   | Delete old per-run scratch directories                     |
+
+### Work files and telemetry
+
 For reproducible local debugging and external watchdogs, set `DELEGATE_WORK_DIR=.temp/delegate/work` so request, response, observe JSON, and per-run scratch files stay under a repo-local ignored directory.
 Set `DELEGATE_RUN_RETENTION_DAYS` to prune old per-run scratch directories in that work directory; request, response, and observe JSON files are kept for audit/debugging.
-Worker token usage is recorded in observe JSON as `usage.measurement: "measured" | "estimated"` when a run ends. Claude stream-json, Codex JSON/session JSONL, Devin ATIF export, and Cursor stream-json can provide measured values; unsupported or unparsable backends fall back to a chars/4 estimate and emit a `usage_parse_failed` observe event. Estimated usage carries `estimation_basis: "protocol_payload_only"`: it counts only the request/response protocol payload and is a guaranteed lower bound of the worker's real consumption (context reads, tool round-trips, thinking are not included), so do not compare it against measured backends. The cursor backend launches the agent CLI with `--output-format stream-json` and parses the final result event's usage (measured since cursor-agent 2026.07.09); older CLIs that report no usage fall back to this estimate.
+Completed runs record usage and timing in observe JSON. Usage is marked `measured` when the backend exposes it; otherwise, a request/response-only estimate is recorded and must not be compared with measured usage. Set `DELEGATE_METRICS_FILE` for JSONL telemetry and use `scripts/summarize-metrics.ts` to aggregate it. See [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for the field-level contract.
 
-Alongside `usage`, each completed run records `timing` in observe JSON: `total_ms` (child wall time), `time_to_first_useful_event_ms` (launch to the first tool execution or content delta, detected at 1-second poll resolution), `report_ready_at_ms` (launch to response availability), plus stream-derived `model_turns` / `tool_calls` and a `measurement_source` (`claude_stream_json` / `codex_json` / `cursor_stream_json` / `devin_atif` / `grok_streaming_json` / `unavailable`). All time values are elapsed milliseconds from a monotonic clock, never wall-clock timestamps; values a backend's stream does not expose are `null`. The Grok wrapper currently runs with plain text output, so its runs record `measurement_source: "unavailable"` with null stream-derived fields; `grok_streaming_json` is a reserved value until the wrapper switches to streaming JSON. `structured_output_parse` records the structured-final-answer parse outcome (`true` / `false`) on Claude / Codex runs and stays `null` on report.md-mode backends.
+## Models and reasoning effort
 
-When `DELEGATE_METRICS_FILE` is set, `prepare` and `read_response` records carry `duration_ms`, and dispatch completion appends a `dispatch` record (wall time, exit code, response presence, and a copy of the observe `timing` fields). `scripts/summarize-metrics.ts` aggregates p50/p95 per backend/model with nearest-rank percentiles: `null` values are excluded from the denominator with the exclusion count reported, and p95 is only reported at 20 or more samples (below that, p50 and counts only).
+### Supported model names
 
-Documented model names for `DELEGATE_<TYPE>_MODEL`:
+Use these documented names with `DELEGATE_<TYPE>_MODEL`:
 
 | Runtime          | Model names                                                                                                                                           | Notes                                                                     |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -191,29 +182,27 @@ Documented model names for `DELEGATE_<TYPE>_MODEL`:
 
 The list above is documented support, not a hard allowlist. The target CLI must also expose the requested model. `delegate-x-research` uses `DELEGATE_X_RESEARCH_MODEL` instead, with documented model `grok-build`.
 
-Effort handling for those documented names:
+### Reasoning effort
 
-Reasoning effort is declared opt-in by appending an `@<effort>` suffix to the model string, for example `DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high`. Without `@`, delegate-skills keeps the previous behavior and does not add an effort flag to the target CLI argv.
+Append `@<effort>` to a model name:
 
-Backend support for suffixes is explicit and fail-closed. Claude accepts `low`, `medium`, `high`, `xhigh`, and `max` and passes them as `--effort`. Codex accepts `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` and passes them as `-c model_reasoning_effort=<value>` (`max` / `ultra` verified against Codex CLI v0.144.1 with `gpt-5.6-sol`; older CLIs may reject them at runtime). Cursor support is model-specific: `cursor-glm-5.2@high|max` becomes `glm-5.2[reasoning=<value>]`, and `cursor-grok-4.5@low|medium|high` becomes `grok-4.5[effort=<value>]`. Devin, `delegate-imagegen`, and `delegate-x-research` do not support suffix effort declarations. Invalid values, unsupported backends, and Cursor double declarations such as a `-high` / `-max` slug plus `@...` stop before dispatch with exit 6 and a single stderr line listing the allowed values.
+```sh
+DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
+```
 
-Observe JSON records `run.effort.requested` and `run.effort.effective` for completed wrapper runs. The effective value is measured only where run artifacts expose it: Codex resumable / follow-up runs (persisted session JSONL) and Cursor (model slug or post-run cli-config). Claude, Devin, Grok, and ephemeral Codex runs (normal runs and `delegate-imagegen`) record `not_exposed`, so a declared effort cannot be verified against the actual run there. Model fields keep the suffix-bearing model specifier; cost estimates strip the suffix for price lookup.
+| Backend / model             | Supported values                                 | Notes                         |
+| --------------------------- | ------------------------------------------------ | ----------------------------- |
+| Claude                      | `low`, `medium`, `high`, `xhigh`, `max`          | Passed as `--effort`          |
+| Codex                       | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Passed as reasoning config    |
+| `cursor-glm-5.2`            | `high`, `max`                                    | Model-specific Cursor mapping |
+| `cursor-grok-4.5`           | `low`, `medium`, `high`                          | Model-specific Cursor mapping |
+| Devin, imagegen, X research | Not supported                                    | No effort suffix              |
 
-When no suffix is specified, the backend default behavior is:
+Invalid values and unsupported combinations stop before dispatch. Do not combine a Cursor `-high` / `-max` model slug with an `@...` suffix.
 
-| Model name(s)                                                                                            | Default effort behavior                                                                                      |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `fable`, `opus`, `sonnet`, `haiku`                                                                       | No explicit Claude `--effort`; the Claude CLI default for the alias applies.                                 |
-| `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`                                                | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
-| `gpt-5`                                                                                                  | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
-| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                                     | Codex catalog default is `medium`; supported explicit suffix levels are `low`, `medium`, `high`, `xhigh`.    |
-| `gpt-5.4-nano`                                                                                           | No explicit Codex effort; if the installed Codex CLI accepts the model, its runtime default applies.         |
-| `gpt-5.3-codex-spark`                                                                                    | No explicit Codex effort; Spark availability and defaults are determined by the installed Codex CLI/runtime. |
-| `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`      | No separate Devin effort flag is passed; the Devin-side default for the selected model applies.              |
-| `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | No Cursor effort override is passed; the Cursor model default applies.                                       |
-| `cursor-glm-5.2-high`                                                                                    | Cursor receives `glm-5.2-high`; `high` is encoded in the model slug.                                         |
-| `cursor-glm-5.2-max`                                                                                     | Cursor receives `glm-5.2-max`; `max` is encoded in the model slug.                                           |
-| `grok-build` (`DELEGATE_X_RESEARCH_MODEL`)                                                               | No separate effort setting is passed; the X research backend default applies.                                |
+Without a suffix, delegate-skills does not set an effort override and the target CLI default applies. The documented exceptions are `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-mini` (catalog default `medium`) and Cursor `-high` / `-max` model slugs, which already encode the effort.
+
+Requested and effective values are recorded in observe JSON when the backend exposes them. See [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for details. Codex `max` / `ultra` support was verified with Codex CLI v0.144.1 and `gpt-5.6-sol`; older CLIs may reject those values.
 
 ## Model price reference
 

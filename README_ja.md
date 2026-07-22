@@ -31,10 +31,15 @@
 - `composer-*` / `cursor-*` を使う場合: Cursor agent CLI（コマンド名は `agent`。ログイン済み、または `CURSOR_API_KEY` 設定済み）
 - 現在の backend で `delegate-x-research` を使う場合: `grok` CLI（ログイン済み、X 調査へアクセス可能）
 
-> [!WARNING]
-> Codex worker は `codex exec --sandbox danger-full-access` で動くため、child Codex の sandbox は security boundary にならない。requester も Codex で、delegate または process contract test を起動する場合は、外部隔離境界の内側に限って `codex --sandbox danger-full-access --ask-for-approval on-request` で起動すること。同梱の non-privileged Dev Container を既定とするが、専用 VM、一時的な CI runner、別の hardened container も利用できる。その環境へ mount または認証した repository、Codex / GitHub credential、MCP authority は agent から到達可能になる。host Docker socket や広い host directory を公開しないこと。repository 更新後は同梱 Dev Container を rebuild すること。詳細は [Codex isolation boundary 契約](./docs/design/spec.md#requester-codex-と外部隔離境界)と [Dev Container qualification report](./docs/feature/codex-devcontainer-qualification.md)を参照。
+requester に Codex を使う場合は、delegate skills をインストールした project の `.codex/config.toml` に次を追加して Codex を再起動する。
 
-interactive requester は `scripts/codex-devcontainer.sh [Codex の引数...]` で起動する。launcher は環境が安全だと推測せず、起動ごとに launcher 自体が isolation を提供しないこと、full-access Codex の到達範囲、外部境界の必要性を1回警告する。同梱 Dev Container、専用 VM、一時的な CI runner、別の hardened container を外部境界として利用できるが、通常 laptop と共有 host は推奨しない。通常 mode では remote app-server、config / profile override を含む execution boundary、sandbox、approval policy を上書きできる引数を拒否する。`scripts/codex-devcontainer.sh --unattended [codex exec の引数...]` は非対話の `codex exec` subcommand を固定した上で approval も無効にするため、呼び出し側では `exec` を指定しない。この mode は repository が trusted で、credential、MCP server、mount、egress を外層で個別に制限した専用 run に限って使用する。
+```toml
+approval_policy = "on-request"
+sandbox_mode = "danger-full-access"
+```
+
+> [!WARNING]
+> Codex worker と requester Codex は `danger-full-access` で動くため、Codex sandbox は security boundary にならない。専用 Dev Container、VM、一時的な CI runner、別の hardened container 内での利用を推奨する。agent はその環境に mount または認証したものへ到達できるため、host Docker socket や広い host directory を公開しないこと。詳細は [Codex isolation boundary 契約](./docs/design/spec.md#requester-codex-と外部隔離境界)を参照。
 
 ### インストール
 
@@ -68,7 +73,7 @@ npx skills add oubakiou/delegate-skills --skill delegate-explore -a claude-code 
 
 ### 使ってみる
 
-インストール後の追加設定は不要。main agent に普段どおり依頼すれば、各 skill の description に基づいて自動で委譲される。
+上記の Codex requester 設定を除き、追加設定は不要。main agent に普段どおり依頼すれば、各 skill の description に基づいて自動で委譲される。
 
 ```text
 このリポジトリの認証処理がどこで実装されているか調べて
@@ -90,45 +95,20 @@ delegate-review でこのブランチの差分をレビューして
 
 ## 仕組み
 
-main agent（高価なモデル）の context を汚さず、定型的・機械的な作業を安価なモデルへ委譲する。委譲先の実行系は**モデル名のプレフィックスで決まる**:
+モデル名のプレフィックスで実行系を選ぶ:
 
-| モデル名                              | 実行系                      | 起動方法                            |
-| ------------------------------------- | --------------------------- | ----------------------------------- |
-| `sonnet` / `haiku` / `opus` / `fable` | Claude 子プロセス           | `claude -p`（`delegate-claude.sh`） |
-| `gpt-*`                               | Codex 子プロセス            | `codex exec`（`delegate-codex.sh`） |
-| `swe-*` / `devin-*`                   | Devin CLI 子プロセス        | `devin -p`（`delegate-devin.sh`）   |
-| `composer-*` / `cursor-*`             | Cursor agent CLI 子プロセス | `agent -p`（`delegate-cursor.sh`）  |
+| モデル名                              | 実行系           |
+| ------------------------------------- | ---------------- |
+| `sonnet` / `haiku` / `opus` / `fable` | Claude Code      |
+| `gpt-*`                               | Codex            |
+| `swe-*` / `devin-*`                   | Devin CLI        |
+| `composer-*` / `cursor-*`             | Cursor agent CLI |
 
-プレフィックスの意味:
-
-- `swe-*` と `composer-*` は各 CLI ネイティブのモデル名なのでそのまま渡す（例: `swe-1.7`、`composer-2.5`）
-- `devin-*` と `cursor-*` は「この CLI 経由で使う」ことを固定するバックエンド固定プレフィックスで、剥がした残りをモデル名として渡す（例: `devin-glm-5.2` → Devin CLI に `glm-5.2`、`cursor-glm-5.2-high` → Cursor agent CLI に `glm-5.2-high`）
-
-いずれのパスもシェルラッパ経由で子プロセスを起動するため、requester が Claude Code / Codex / Devin CLI / Cursor でも同じように動作する。各 `delegate-*.sh` は単一の自己完結型 TypeScript バンドル（`delegate-cli.mjs`、`md2idx` 内包）への薄い exec shim なので、実行時に必要なのは Node.js と対象バックエンド CLI だけで、`jq` も `npx` も要らない。main↔sub の受け渡しは[ファイルベース（リクエスト/レスポンス）](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md)で、両方とも [md2idx](https://github.com/oubakiou/md2idx) 形式（`index` + `sections`）を採用し段階読み取りでトークンを節約する。
-
-親側の happy path は one-shot 1 回の呼び出しに畳まれている: 各 skill の `run.sh`（専用 2 skill は `run-imagegen.sh` / `run-x-research.sh`）が prepare → dispatch → read-response を 1 回の Bash 呼び出しで連結し、成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を返して内部の exit code を透過する。`content` は `DELEGATE_RUN_CONTENT_MAX` バイトで切り詰められ、全文は `response_file` から読める。resumable / follow-up・observe 監視・background dispatch などの高度なフローは従来どおり個別スクリプトを使う。対話親は dispatch を background 実行して observe JSON を確認してから response を読む運用で待ち時間を隠蔽できる（体感改善のみで総所要時間は不変）。
-
-request 本文は正本の request JSON から worker の初期 prompt へ埋め込まれる（`DELEGATE_REQUEST_INLINE_MAX`、既定 256KB まで。超過時は `read-request.sh` 指示へ fallback）ため、worker は request 読取に往復を使わない。prompt は argv ではなく stdin（Claude / Codex / Cursor）または `--prompt-file`（Devin）で渡す。worker の報告は worker が書くのではなく wrapper が回収する: Claude / Codex の worker は構造化最終応答 `{status, report_markdown}` を返し（`--json-schema` / `--output-schema` で schema 強制）、Cursor / Devin / Grok の worker は front-matter 付き Markdown report を 1 回書く。wrapper がどちらの形式も protocol response（md2idx + envelope）へ変換するため、報告のための追加 LLM 往復はゼロになる。回収失敗は failed response（fail-closed）とし、構造化 parse の成否は observe の `timing` に記録される。
-
-Claude の bypass permissions mode が managed policy で無効化されている環境では、Claude backend の worker は default 権限モードで動く。wrapper は request 読み取りに必要な最小ツールを事前許可する（報告は構造化最終応答で返るため protocol response の書き込み許可は不要）。それ以外の Bash コマンドやツールは拒否され得る。この環境でタスク全体を動かすには、project settings に必要な allowlist を追加するか、`DELEGATE_<TYPE>_MODEL` で非 Claude backend を選ぶ。managed policy が明示 deny しているツールは wrapper では許可できない。
+各 backend は子プロセスとして動き、main agent と request / response file を受け渡すため、詳細な作業内容は main context に入らない。run は既定で one-shot。詳細は [protocol-v1](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md) と [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。
 
 ### 再開可能な worker session
 
-通常の delegate run は非永続のまま。大きめの `delegate-implement` / `delegate-chore` で、main agent が review/fix の往復を見込む場合だけ、初回 run を明示的に resumable initial run として起動できる。この opt-in により observe JSON に backend の resume handle、`lineage_id`、`run_context` が記録され、後続 follow-up は新しい request / response / observe run を作りながら同じ backend session を再開できる。
-
-follow-up は明示的かつ fail-closed。前回 observe JSON の `backend_session.persistence` が `resumable` であること、resume handle があること、backend / model / repo / worktree context が一致すること、git HEAD が互換であることを要求する。検証に失敗した場合、新規 session へ暗黙 fallback せず、main agent は通常 delegate run として出し直す。resumable path は Claude / Codex / Devin / Cursor backend で対応する。新しい環境変数は不要。
-
-Claude / Codex の follow-up は、初回 resumable run で捕捉した MCP サーバー構成を使い続ける。Cursor は run ごとに親の global config から隔離 MCP config を再生成する。
-
-Codex worker は通常 run、resumable initial、follow-up の各起動直前に requester の `auth.json` を隔離 `CODEX_HOME` へ fresh copy として排他的に作成する。copy は同じ directory の一意な owned staging file に書いてから既存 destination を置換せずに publish し、途中で失敗した staging file は削除する。lifecycle lease は staging 開始前から有効になり、owned staging / published artifact だけを追跡して cleanup 完了まで signal handler を保持する。コピー先の残留、copy failure、無関係または symlink の follow-up home、requester `CODEX_HOME` の再利用は child 起動前に fail-closed する。wrapper は child error、構造化 response 欠落、child signal、wrapper termination、staging / cleanup 中または spawn / child exit と競合する signal を含むすべての終了経路で、その fresh copy だけを削除する。cleanup は response / session / dispatch の finalization より前に完了し、cleanup failure または同期 operation failure は resumable success metadata を残さない exactly-once の sanitized failed terminal state にする。`DELEGATE_CODEX_HOME_PRUNE=0` は診断用 cache を保持するが auth cleanup は無効化せず、follow-up 用の session JSONL と `config.toml` は保持する。credential は task 専用・短命・必要最小 scope にする。GitHub / backend token と MCP credential も同様であり、full-access worker は container 内で公開された authority をすべて利用できるため、write capability を持つ MCP server と remote identity は server / token 側で制限する。
-
-`delegate-explore` はコード・リポジトリ内ドキュメントに加え、WebSearch / WebFetch による Web 調査と、実行環境に設定済みの MCP ツール（Notion・Atlassian 等）経由の社内ナレッジ調査も対象にする。4 backend とも親の user スコープ MCP 設定を既定で利用する。Claude / Devin は実行環境の共有設定を継承し、resumable Claude / Codex / Cursor wrapper は親設定を抽出して隔離 config として worker に注入する。MCP ツールの実行品質は各 CLI に依存する。Claude backend は bypass permissions が有効な環境では denylist 方式（built-in のファイル編集ツール `Edit` / `MultiEdit` / `Write` / `NotebookEdit` のみ deny）のため WebSearch / WebFetch が利用でき、bypass が無効な managed-policy 環境では事前許可された最小ツール以外は拒否され得る。他 backend は各 CLI の内蔵ツールとサンドボックス設定に依存する。worker が Web 到達不可を報告した場合は、Web 到達可能な backend への再委譲または main 側での処理に切り替える。worker の MCP 利用は常に読み取り系ツールのみに制限される（プロンプトレベルの制約）。MCP への書き込みを伴う作業は `delegate-chore` / `delegate-implement` に委譲する。取得した Web / MCP コンテンツ（prompt injection リスクを含む）は子プロセスに隔離され、main agent には worker の報告だけが返る。
-
-observe JSON には `mcp_config: {source, servers}` を記録する。`servers` は `injected` で wrapper が注入した MCP サーバー名の配列にする。`shared` は wrapper が所有しない自然継承のため空配列、`none` も空配列にする。定義本体や認証情報は observe JSON に記録しない。worker に見せる MCP サーバーは親の user スコープ設定で管理する。注入 config は token を含む env を持ち得るため run directory 配下に限定し、`DELEGATE_RUN_RETENTION_DAYS` の cleanup 対象にする。
-
-`delegate-imagegen` は画像生成向けだが、モデル解決は他 delegate と同じ形に揃える。`DELEGATE_IMAGEGEN_MODEL` で子モデルを選び、`gpt*` は Codex、非 `gpt*` は Claude へフォールバックせず中止する。
-
-`delegate-x-research` は `DELEGATE_X_RESEARCH_MODEL`（既定 `grok-build`）を解決し、現在の X 調査 backend（現時点では Grok CLI）を起動して x.com / X の投稿・アカウント・スレッド・反応を調査する。Claude / Codex へはフォールバックしない。
+大きめの `delegate-implement` / `delegate-chore` で review/fix の往復が見込まれる場合は、resumable session を選択できる。再開の検証に失敗しても別 session を暗黙に起動せず、通常の run として出し直す。Claude / Codex / Devin / Cursor が対応する。
 
 ## skill 一覧
 
@@ -152,35 +132,46 @@ observe JSON には `mcp_config: {source, servers}` を記録する。`servers` 
 
 ## 環境変数
 
-| 環境変数                                 | 既定                                     | 説明                                                          |
-| ---------------------------------------- | ---------------------------------------- | ------------------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                          |
-| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                         |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                            | `read-response.sh auto` / `decision` の inline/段階読みの閾値 |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限）            | one-shot `run.sh` の JSON 出力の `content` 上限               |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                           | request 本文を worker prompt へ埋め込むサイズ gate            |
-| `DELEGATE_METRICS_FILE`                  | 未設定                                   | proxy-metric / timing テレメトリの JSONL 出力先（任意）       |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                                  | observe JSON の heartbeat 更新間隔                            |
-| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                                  | observe JSON symlink lock の bounded wait（超過時はエラー）   |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）            | Claude backend の子へ注入する Bash tool timeout 上限          |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 成功時に cache を削除。auth copy は設定によらず常に削除       |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子を指定秒数後に kill           |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限）            | observe JSON に保存する stdout/stderr content 上限            |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除      |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                              |
-| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` のモデル                                |
+通常はモデル関連の変数だけ設定すればよい。
+
+### 基本設定
+
+| 環境変数                       | 既定                                     | 用途                                     |
+| ------------------------------ | ---------------------------------------- | ---------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`        | skill 毎                                 | delegate 種別ごとのモデルを上書きする    |
+| `DELEGATE_X_RESEARCH_MODEL`    | `grok-build`                             | `delegate-x-research` のモデルを選ぶ     |
+| `DELEGATE_WORK_DIR`            | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | request / response / observe file を置く |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR` | `delegate-imagegen-output`               | 画像生成の既定出力 directory を指定する  |
 
 モデル解決順: `DELEGATE_<TYPE>_MODEL` → skill 固有デフォルト。
 
+### 高度な設定
+
+| 環境変数                                 | 既定                          | 用途                                              |
+| ---------------------------------------- | ----------------------------- | ------------------------------------------------- |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                 | response の inline / 段階読み閾値                 |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限） | one-shot JSON に含める content の上限             |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                | worker prompt に埋め込む request の上限           |
+| `DELEGATE_METRICS_FILE`                  | 未設定                        | 任意の JSONL telemetry 出力先                     |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                       | observe heartbeat の間隔                          |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                       | observe lock の timeout                           |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし） | Claude child の Bash timeout                      |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）             | 成功 run の cache を削除する。auth は常に削除する |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                   | stream が増えない child を指定秒数後に停止する    |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限） | observe JSON に保持する stdout / stderr の上限    |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                   | 古い run ごとの scratch directory を削除する      |
+
+### 作業ファイルとテレメトリ
+
 ローカルでの再現調査や外部 watchdog からの監視には `DELEGATE_WORK_DIR=.temp/delegate/work` を設定し、request / response / observe JSON / run ごとの scratch file をリポジトリ内の ignore 済みディレクトリに集約する。
 `DELEGATE_RUN_RETENTION_DAYS` を設定すると、その work directory 内の古い run ごとの scratch directory を削除する。監査・デバッグ用の request / response / observe JSON は削除しない。
-worker の token usage は run 終了時に observe JSON の `usage.measurement: "measured" | "estimated"` として記録する。Claude stream-json、Codex JSON/session JSONL、Devin ATIF export、Cursor stream-json は実測値を返せる場合があり、未対応または parse 不能な backend では chars/4 推定に fallback し、`usage_parse_failed` observe event を残す。推定 usage には `estimation_basis: "protocol_payload_only"` が入る。これは request/response のプロトコルペイロード分だけを数えた確定的な下限値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まないため、実測 backend とのモデル間比較には使わないこと。cursor backend は agent CLI を `--output-format stream-json` で起動して最終 result イベントの usage をパースする（cursor-agent 2026.07.09 以降で実測化）。usage を出さない旧 CLI ではこの推定に fallback する。
+完走した run は observe JSON に usage と timing を記録する。backend が usage を公開する場合は `measured`、それ以外は request / response だけに基づく推定値となるため、実測値とは比較しないこと。`DELEGATE_METRICS_FILE` を設定すると JSONL telemetry を出力し、`scripts/summarize-metrics.ts` で集計できる。各 field の契約は [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。
 
-`usage` と並んで、完走した run は observe JSON に `timing` を記録する: `total_ms`（子プロセスの wall time）、`time_to_first_useful_event_ms`（起動から最初の tool 実行または本文 delta まで。1 秒 poll の分解能で検出）、`report_ready_at_ms`（起動から response 確定まで）、stream 由来の `model_turns` / `tool_calls`、`measurement_source`（`claude_stream_json` / `codex_json` / `cursor_stream_json` / `devin_atif` / `grok_streaming_json` / `unavailable`）。時間値はすべて monotonic clock 由来の経過 ms で、時刻は記録しない。backend の stream から取得できない項目は `null` とする。Grok wrapper は現在 plain text 出力で起動するため、その run は `measurement_source: "unavailable"` と null の stream 由来フィールドを記録する。`grok_streaming_json` は wrapper が streaming JSON へ切り替わるまでの予約値。`structured_output_parse` は Claude / Codex run で構造化最終応答の parse 成否（`true` / `false`）を記録し、report.md 方式の backend では `null` のまま。
+## モデルと推論強度
 
-`DELEGATE_METRICS_FILE` を設定すると、`prepare` / `read_response` record に `duration_ms` が入り、dispatch 完了時に `dispatch` record（wall time・exit code・response 有無と observe `timing` の転記）が追記される。`scripts/summarize-metrics.ts` は backend / model 別の p50/p95 を nearest-rank で集計する: `null` は分母から除外して除外数を併記し、p95 は 20 サンプル以上でのみ報告する（未満は p50 と件数のみ）。
+### 対応モデル名
 
-`DELEGATE_<TYPE>_MODEL` で指定できるドキュメント済みモデル名:
+`DELEGATE_<TYPE>_MODEL` には次のドキュメント済みモデル名を指定できる:
 
 | 実行系           | モデル名                                                                                                                                              | 補足                                                     |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
@@ -191,29 +182,27 @@ worker の token usage は run 終了時に observe JSON の `usage.measurement:
 
 上記はドキュメント済みの対応モデルであり、厳密な allowlist ではない。実行先 CLI 側でも指定モデルが利用可能である必要がある。`delegate-x-research` は別途 `DELEGATE_X_RESEARCH_MODEL` を使い、ドキュメント済みモデルは `grok-build`。
 
-上記モデル名の effort 挙動:
+### 推論強度（reasoning effort）
 
-reasoning effort はモデル文字列へ `@<effort>` suffix を付けて opt-in で宣言する。例: `DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high`。`@` が無い場合、delegate-skills は従来どおり実行先 CLI argv に effort flag を追加しない。
+モデル名に `@<effort>` を付けて指定する。
 
-suffix 対応は backend ごとに明示され、非対応指定は fail-closed する。Claude は `low`, `medium`, `high`, `xhigh`, `max` を受け付け、`--effort` として渡す。Codex は `low`, `medium`, `high`, `xhigh`, `max`, `ultra` を受け付け、`-c model_reasoning_effort=<value>` として渡す（`max` / `ultra` は Codex CLI v0.144.1 + `gpt-5.6-sol` で受理確認済み。古い CLI では実行時に拒否されうる）。Cursor はモデル別対応で、`cursor-glm-5.2@high|max` は `glm-5.2[reasoning=<value>]`、`cursor-grok-4.5@low|medium|high` は `grok-4.5[effort=<value>]` へ変換する。Devin、`delegate-imagegen`、`delegate-x-research` は effort suffix 宣言に対応しない。不正値、非対応 backend、Cursor の `-high` / `-max` slug と `@...` の二重指定は dispatch 前に exit 6 で停止し、stderr 1 行に許容値を列挙する。
+```sh
+DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
+```
 
-observe JSON には wrapper が完走した run の `run.effort.requested` と `run.effort.effective` を記録する。実効値が measured になるのは run artifacts が実効値を露出する場合のみ（Codex の resumable / follow-up は永続 session JSONL、Cursor は model slug または run 後の cli-config）。Claude、Devin、Grok、および ephemeral な Codex run（通常 run と `delegate-imagegen`）は `not_exposed` を記録し、宣言した effort を実 run と突合できない。model 系フィールドは suffix 込みのモデル指定子を保持し、費用概算では suffix を剥がして価格 lookup する。
+| backend / model             | 指定できる値                                     | 補足                        |
+| --------------------------- | ------------------------------------------------ | --------------------------- |
+| Claude                      | `low`, `medium`, `high`, `xhigh`, `max`          | `--effort` として渡す       |
+| Codex                       | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | reasoning config として渡す |
+| `cursor-glm-5.2`            | `high`, `max`                                    | Cursor 固有の変換           |
+| `cursor-grok-4.5`           | `low`, `medium`, `high`                          | Cursor 固有の変換           |
+| Devin、imagegen、X research | 非対応                                           | effort suffix なし          |
 
-suffix 未指定時の backend 既定挙動:
+不正な値や非対応の組み合わせは dispatch 前に停止する。Cursor の `-high` / `-max` model slug と `@...` suffix は併用できない。
 
-| モデル名                                                                                                 | 既定 effort 挙動                                                                                           |
-| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `fable`, `opus`, `sonnet`, `haiku`                                                                       | Claude `--effort` は明示しない。Claude CLI の alias 既定が適用される。                                     |
-| `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`                                                | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
-| `gpt-5`                                                                                                  | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
-| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`                                                                     | Codex catalog 既定は `medium`。明示 suffix 対応 level は `low`, `medium`, `high`, `xhigh`。                |
-| `gpt-5.4-nano`                                                                                           | Codex effort は明示しない。インストール済み Codex CLI が受け付ける場合、その runtime 既定になる。          |
-| `gpt-5.3-codex-spark`                                                                                    | Codex effort は明示しない。Spark の availability と既定値はインストール済み Codex CLI/runtime 側で決まる。 |
-| `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`      | Devin の separate effort flag は渡さない。選択モデルの Devin 側既定が適用される。                          |
-| `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code` | Cursor effort override は渡さない。Cursor model 既定が適用される。                                         |
-| `cursor-glm-5.2-high`                                                                                    | Cursor には `glm-5.2-high` を渡す。`high` は model slug に含まれる。                                       |
-| `cursor-glm-5.2-max`                                                                                     | Cursor には `glm-5.2-max` を渡す。`max` は model slug に含まれる。                                         |
-| `grok-build`（`DELEGATE_X_RESEARCH_MODEL`）                                                              | separate effort setting は渡さない。X 調査 backend の既定が適用される。                                    |
+suffix を付けない場合、delegate-skills は effort を明示せず、実行先 CLI の既定値を使う。例外は、catalog 既定が `medium` の `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` と、model slug 自体に effort を含む Cursor の `-high` / `-max` である。
+
+backend が公開する場合、指定値と実効値を observe JSON へ記録する。詳細は [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。Codex の `max` / `ultra` は Codex CLI v0.144.1 と `gpt-5.6-sol` で確認済みで、古い CLI では拒否される場合がある。
 
 ## モデル価格参照データ
 
