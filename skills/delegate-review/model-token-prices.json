@@ -41,6 +41,16 @@
     },
     {
       "model_provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "display_name": "Claude Sonnet 5",
+      "input": 2,
+      "cached_input": 0.2,
+      "output": 10,
+      "pricing_status": "introductory_pricing_until_2026-08-31",
+      "pricing_source": "anthropic"
+    },
+    {
+      "model_provider": "anthropic",
       "model": "claude-sonnet-4.6",
       "display_name": "Claude Sonnet 4.6",
       "input": 3,
@@ -283,11 +293,41 @@
     {
       "model_provider": "anthropic",
       "alias": "sonnet",
-      "alias_for": "claude-sonnet-4.6"
+      "alias_for": "claude-sonnet-5"
     },
     {
       "model_provider": "anthropic",
       "alias": "haiku",
+      "alias_for": "claude-haiku-4.5"
+    },
+    {
+      "model_provider": "anthropic",
+      "alias": "claude-opus-5[1m]",
+      "alias_for": "claude-opus-5"
+    },
+    {
+      "model_provider": "anthropic",
+      "alias": "claude-opus-4-8",
+      "alias_for": "claude-opus-4.8"
+    },
+    {
+      "model_provider": "anthropic",
+      "alias": "claude-opus-4-8[1m]",
+      "alias_for": "claude-opus-4.8"
+    },
+    {
+      "model_provider": "anthropic",
+      "alias": "claude-sonnet-5[1m]",
+      "alias_for": "claude-sonnet-5"
+    },
+    {
+      "model_provider": "anthropic",
+      "alias": "claude-sonnet-4-6",
+      "alias_for": "claude-sonnet-4.6"
+    },
+    {
+      "model_provider": "anthropic",
+      "alias": "claude-haiku-4-5",
       "alias_for": "claude-haiku-4.5"
     },
     {

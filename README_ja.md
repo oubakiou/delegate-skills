@@ -173,12 +173,12 @@ delegate-review でこのブランチの差分をレビューして
 
 `DELEGATE_<TYPE>_MODEL` には次のドキュメント済みモデル名を指定できる:
 
-| 実行系           | モデル名                                                                                                                                              | 補足                                                     |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`                                                                                                                    | Claude 系モデルの alias                                  |
-| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`       | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける |
-| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`                                                   | `devin-*` は prefix を剥がして Devin CLI に渡す          |
-| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` は prefix を剥がして Cursor agent CLI に渡す  |
+| 実行系           | モデル名                                                                                                                                                                                                                | 補足                                                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`, `claude-fable-5`, `claude-opus-5`, `claude-opus-5[1m]`, `claude-opus-4-8`, `claude-opus-4-8[1m]`, `claude-sonnet-5`, `claude-sonnet-5[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5` | Claude 系モデルの alias に加え、バージョン固定用にフル `claude-*` モデル ID も指定可（`[1m]` は 1M context 変種） |
+| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                         | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける                                                          |
+| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`                                                                                                                     | `devin-*` は prefix を剥がして Devin CLI に渡す                                                                   |
+| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max`                                                                   | `cursor-*` は prefix を剥がして Cursor agent CLI に渡す                                                           |
 
 上記はドキュメント済みの対応モデルであり、厳密な allowlist ではない。実行先 CLI 側でも指定モデルが利用可能である必要がある。`delegate-x-research` は別途 `DELEGATE_X_RESEARCH_MODEL` を使い、ドキュメント済みモデルは `grok-build`。
 
