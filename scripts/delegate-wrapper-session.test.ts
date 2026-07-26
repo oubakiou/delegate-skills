@@ -507,15 +507,21 @@ const writeFixtureFiles = (
 
 const fixtureEnv = (
   paths: Omit<Fixture, 'env'> & { binDir: string; homeDir: string }
-): NodeJS.ProcessEnv => ({
-  ...process.env,
-  CURSOR_CONFIG_DIR: '',
-  DELEGATE_OBSERVE_HEARTBEAT_INTERVAL: '1',
-  FAKE_CLI_LOG: paths.logFile,
-  HOME: paths.homeDir,
-  PATH: `${paths.binDir}:${process.env.PATH ?? ''}`,
-  XDG_CONFIG_HOME: '',
-})
+): NodeJS.ProcessEnv => {
+  // 親環境の実クレデンシャル home が leak すると failure injection が空振りする
+  // （wrapper は CODEX_HOME / CLAUDE_CONFIG_DIR を fixture の HOME より優先する）。
+  // 空文字ではなくキー削除にするのは、子 env の「未設定」を検証するテストがあるため
+  const { CLAUDE_CONFIG_DIR: _claudeConfigDir, CODEX_HOME: _codexHome, ...parentEnv } = process.env
+  return {
+    ...parentEnv,
+    CURSOR_CONFIG_DIR: '',
+    DELEGATE_OBSERVE_HEARTBEAT_INTERVAL: '1',
+    FAKE_CLI_LOG: paths.logFile,
+    HOME: paths.homeDir,
+    PATH: `${paths.binDir}:${process.env.PATH ?? ''}`,
+    XDG_CONFIG_HOME: '',
+  }
+}
 
 const makeFixture = (backend: Backend): Fixture => {
   const paths = makeFixturePaths(backend)
