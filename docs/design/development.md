@@ -93,6 +93,8 @@ devcontainer 前提。初回はリポジトリ root で `local_setup.sh` を実�
 ./local_setup.sh
 ```
 
+`postCreateCommand`（`local_setup.sh`）は Devin CLI など対話 login を伴うインストールを含むため、非対話の `devcontainer up` では exit 1 になり得る。その場合も image build と container start は完了しているので、container 内の対話端末で `./local_setup.sh` を再実行して setup を継続する。
+
 主な処理:
 
 - `npm ci`（`package-lock.json` があればロック厳守、無ければ `npm install`）
@@ -128,7 +130,62 @@ Vitest の **in-source testing** で TS モジュールを単体検証する。�
 
 契約テストは Node / bash / fake backend CLI の子プロセスを実際に起動する。preflight は `status === 0` だけではなく spawn error が無いことと sentinel stdout が一致することを要求するため、sandbox が子プロセスを抑止しながら status 0 を返す環境でも製品 assertion の失敗や偽成功として分類しない。Codex では、管理・host policy が許す場合に新しい session を `--sandbox danger-full-access` で開始するか、通常の terminal / CI で `npm test` を再実行する。project `.codex/config.toml` は CLI override より優先度が低く managed requirements の制約も受けるため、repository の設定だけで実行 capability が得られるとは見なさない。
 
-同梱 default Dev Container の reference qualification は、host から Dev Containers CLI で build / start した新しい container に対して行う。`docker inspect` で privilege、namespace、mount を、`docker info` で runtime security option を確認し、container 内で process preflight、multi-level process、`npm test`、最小の実 Codex delegate、failure 後の auth cleanup を検証する。最後に container を stop し、`Running=false` と `Pid=0` を確認する。2026-07-21 の実測コマンドと結果は [qualification report](../feature/codex-devcontainer-qualification.md) を参照する。
+同梱 default Dev Container の reference qualification は、host から Dev Containers CLI で build / start した新しい container に対して行う。`docker inspect` で privilege、namespace、mount を、`docker info` で runtime security option を確認し、container 内で process preflight、multi-level process、`npm test`、最小の実 Codex delegate、failure 後の auth cleanup を検証する。最後に container を stop し、`Running=false` と `Pid=0` を確認する。
+
+build / boundary 確認は repository root で実行する。`--remove-existing-container` は同名の既存 container を停止・削除するため、対象名を確認し、qualification 専用 container にだけ実行する:
+
+```sh
+QUAL_REPO_ROOT="$(pwd -P)"
+QUAL_CONTAINER_NAME="${USER}-delegate-skills"
+docker ps -a --filter "name=^/${QUAL_CONTAINER_NAME}$"
+npx -y @devcontainers/cli@0.87.0 up \
+  --workspace-folder "${QUAL_REPO_ROOT}" \
+  --remove-existing-container
+docker inspect "${QUAL_CONTAINER_NAME}"
+docker info
+```
+
+container 内の capability と canonical test:
+
+```sh
+node scripts/test-execution-capability.ts
+node -e 'const {spawnSync}=require("node:child_process"); const child=spawnSync(process.execPath,["-e","const {spawnSync}=require(\\"node:child_process\\");const grandchild=spawnSync(process.execPath,[\\"-e\\",\\"process.stdout.write(\\\\\\"LEVEL3_OK\\\\\\")\\"],{encoding:\\"utf8\\"});if(grandchild.status!==0||grandchild.stdout!==\\"LEVEL3_OK\\")process.exit(1);process.stdout.write(\\"LEVEL2_OK\\")"],{encoding:"utf8"}); if(child.status!==0||child.stdout!=="LEVEL2_OK")process.exit(1); process.stdout.write("MULTILEVEL_OK\\n")'
+npm test
+```
+
+実 Codex delegate と failure 後の auth cleanup（要 codex CLI login。1 回目の run は `completed`、2 回目の無効 model run は `failed` を返し、最後の `find` が何も出力しないこと = auth copy / staging file の残存なし）:
+
+```sh
+QUAL_WORK_DIR="$(mktemp -d /tmp/delegate-qual.XXXXXX)"
+req='# Request
+
+## Objective
+Reply with STEP5_DELEGATE_OK only.
+
+## Scope
+- 追加調査なし。応答の Summary に STEP5_DELEGATE_OK とだけ書く
+
+## Context
+- boundary qualification 用の read-only sentinel request
+
+## Acceptance criteria
+- Summary が STEP5_DELEGATE_OK を含む'
+printf '%s' "$req" | DELEGATE_WORK_DIR="$QUAL_WORK_DIR" DELEGATE_EXPLORE_MODEL=gpt-5.6-luna \
+  bash .claude/skills/delegate-explore/scripts/run.sh explore DELEGATE_EXPLORE_MODEL haiku "" ""
+printf '%s' "$req" | DELEGATE_WORK_DIR="$QUAL_WORK_DIR" DELEGATE_EXPLORE_MODEL=gpt-qualification-invalid \
+  bash .claude/skills/delegate-explore/scripts/run.sh explore DELEGATE_EXPLORE_MODEL haiku "" ""
+find "$QUAL_WORK_DIR" \( -name 'auth.json' -o -name '.auth.json.stage-*' \)
+```
+
+停止確認（最後の `docker rm` は停止済み qualification container を削除する。別用途の container 名を指定しない）:
+
+```sh
+docker stop "${QUAL_CONTAINER_NAME}"
+docker inspect --format 'running={{.State.Running}} status={{.State.Status}} pid={{.State.Pid}}' "${QUAL_CONTAINER_NAME}"
+docker rm "${QUAL_CONTAINER_NAME}"
+```
+
+直近の実施記録は [qualification report（2026-07-21 実施）](../report/codex-devcontainer-qualification-20260721.md) を参照する。
 
 正本（canonical）は `shared/src/` 側に置き、各 skill 配下の生成コピー（バンドル）はテストを重複実行しない。CLI レベルの契約（argv / stdout / exit code / observe JSON）は fake CLI golden で end-to-end 検証する:
 

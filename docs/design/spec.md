@@ -181,7 +181,7 @@ Codex requester から delegate や process contract test を起動する場合�
 
 一般の利用 project では、Codex requester が delegate を起動できるよう `.codex/config.toml` に `sandbox_mode = "danger-full-access"` と `approval_policy = "on-request"` を設定できる。この設定は isolation を提供せず project の Codex session すべてに適用されるため、利用者向け文書では外部隔離環境を推奨し、full-access の到達範囲を警告する。
 
-同梱 profile の実測条件と再現コマンドは [Dev Container qualification report](../feature/codex-devcontainer-qualification.md) に記録する。この report は代替の外部隔離境界の安全性を保証しない。
+qualification の手順は [development.md](development.md) に置き、同梱 profile の実測条件と結果は [Dev Container qualification report](../report/codex-devcontainer-qualification-20260721.md) に記録する。この report は代替の外部隔離境界の安全性を保証しない。
 
 ## 6. ファイルプロトコル（protocol v1）
 
