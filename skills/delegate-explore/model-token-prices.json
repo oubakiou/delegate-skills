@@ -2,7 +2,7 @@
   "schema_version": 1,
   "currency": "USD",
   "unit": "per_1m_tokens",
-  "retrieved_at": "2026-07-09",
+  "retrieved_at": "2026-07-26",
   "usage": "Reference data for cost analysis and reporting. It is not used as a cost gate.",
   "null_price": "No explicit price row was found in the listed source at retrieved_at.",
   "pricing_sources": {
@@ -19,6 +19,15 @@
       "input": 10,
       "cached_input": 1,
       "output": 50,
+      "pricing_source": "anthropic"
+    },
+    {
+      "model_provider": "anthropic",
+      "model": "claude-opus-5",
+      "display_name": "Claude Opus 5",
+      "input": 5,
+      "cached_input": 0.5,
+      "output": 25,
       "pricing_source": "anthropic"
     },
     {
@@ -269,7 +278,7 @@
     {
       "model_provider": "anthropic",
       "alias": "opus",
-      "alias_for": "claude-opus-4.8"
+      "alias_for": "claude-opus-5"
     },
     {
       "model_provider": "anthropic",
