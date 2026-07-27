@@ -262,6 +262,40 @@ if (import.meta.vitest) {
       )
     })
 
+    it('resolves cursor slug variants via -high stripping and explicit aliases', () => {
+      const cursorTable: PriceTable = {
+        models: [
+          {
+            model: 'flash-1',
+            pricing_source: 'cursor',
+            input: 1.5,
+            cached_input: 0.15,
+            output: 7.5,
+          },
+        ],
+        aliases: [{ alias: 'flash-1-low', alias_for: 'flash-1' }],
+      }
+      const expected = (1000 * 1.5 + 100 * 7.5) / 1_000_000
+      const high = augmentCostEstimate(
+        usage({ model: 'cursor-flash-1-high' }),
+        'cursor',
+        cursorTable
+      )
+      expect(high.cost_usd_estimated).toBeCloseTo(expected, 12)
+      const low = augmentCostEstimate(usage({ model: 'cursor-flash-1-low' }), 'cursor', cursorTable)
+      expect(low.cost_usd_estimated).toBeCloseTo(expected, 12)
+    })
+
+    it('strips the devin prefix and falls back when no provider-preferred entry exists', () => {
+      const devinTable: PriceTable = {
+        models: [{ model: 'ultra-1', pricing_source: 'cognition_cli', input: 0.6, output: 2.4 }],
+        aliases: [],
+      }
+      const result = augmentCostEstimate(usage({ model: 'devin-ultra-1' }), 'devin', devinTable)
+      expect(result.cost_usd_estimated).toBeCloseTo((1000 * 0.6 + 100 * 2.4) / 1_000_000, 12)
+      expect(result.pricing_source).toBe('model-token-prices.json:cognition_cli')
+    })
+
     it('leaves estimated or already-costed usage untouched', () => {
       expect(
         augmentCostEstimate(usage({ measurement: 'estimated' }), 'codex', table)

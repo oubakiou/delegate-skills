@@ -2,13 +2,14 @@
   "schema_version": 1,
   "currency": "USD",
   "unit": "per_1m_tokens",
-  "retrieved_at": "2026-07-26",
+  "retrieved_at": "2026-07-27",
   "usage": "Reference data for cost analysis and reporting. It is not used as a cost gate.",
   "null_price": "No explicit price row was found in the listed source at retrieved_at.",
   "pricing_sources": {
     "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
     "openai": "https://developers.openai.com/api/docs/pricing",
     "cognition": "https://docs.devin.ai/desktop/models",
+    "cognition_cli": "Devin CLI model listing (price shown only in the CLI; not listed on https://docs.devin.ai/desktop/models)",
     "cursor": "https://cursor.com/docs/models-and-pricing"
   },
   "models": [
@@ -66,16 +67,6 @@
       "cached_input": 0.1,
       "output": 5,
       "pricing_source": "anthropic"
-    },
-    {
-      "model_provider": "openai",
-      "model": "gpt-5",
-      "display_name": "GPT-5",
-      "input": null,
-      "cached_input": null,
-      "output": null,
-      "pricing_status": "not_listed_in_source",
-      "pricing_source": "openai"
     },
     {
       "model_provider": "openai",
@@ -219,6 +210,15 @@
       "pricing_source": "cognition"
     },
     {
+      "model_provider": "nvidia",
+      "model": "nemotron-3-ultra",
+      "display_name": "Nemotron 3 Ultra(cognition)",
+      "input": 0.6,
+      "cached_input": null,
+      "output": 2.4,
+      "pricing_source": "cognition_cli"
+    },
+    {
       "model_provider": "cursor",
       "model": "composer-2.5",
       "display_name": "Composer 2.5",
@@ -255,6 +255,16 @@
       "input": 2,
       "cached_input": 0.2,
       "output": 12,
+      "context": "standard",
+      "pricing_source": "cursor"
+    },
+    {
+      "model_provider": "google",
+      "model": "gemini-3.6-flash",
+      "display_name": "Gemini 3.6 Flash(cursor)",
+      "input": 1.5,
+      "cached_input": 0.15,
+      "output": 7.5,
       "context": "standard",
       "pricing_source": "cursor"
     },
@@ -336,9 +346,29 @@
       "alias_for": "gpt-5.6-sol"
     },
     {
+      "model_provider": "openai",
+      "alias": "gpt-5",
+      "alias_for": "gpt-5.6-sol"
+    },
+    {
       "model_provider": "cognition",
       "alias": "swe",
       "alias_for": "swe-1.7"
+    },
+    {
+      "model_provider": "google",
+      "alias": "gemini-3.6-flash-minimal",
+      "alias_for": "gemini-3.6-flash"
+    },
+    {
+      "model_provider": "google",
+      "alias": "gemini-3.6-flash-low",
+      "alias_for": "gemini-3.6-flash"
+    },
+    {
+      "model_provider": "google",
+      "alias": "gemini-3.6-flash-medium",
+      "alias_for": "gemini-3.6-flash"
     }
   ]
 }
