@@ -34,13 +34,19 @@ import {
 // bash 版 delegate-devin.sh と同一契約の swe-* / devin-* モデル向け Devin CLI
 // 子プロセス起動ラッパ。stdout: response_file のパスのみ（本文は親 context に入れない）
 
-// devin-* プレフィックスは剥離して devin CLI に渡す（devin-glm-5.2 → glm-5.2）
-// swe-* は devin CLI がそのまま受理するので剥離しない
-const devinCliModelOf = (originalModel: string): string => {
-  if (originalModel.startsWith('devin-')) {
-    return originalModel.slice('devin-'.length)
+// devin-* プレフィックスは剥離して devin CLI に渡す（devin-glm-5.2 → glm-5.2）。
+// swe-* は devin CLI がそのまま受理するので剥離しない。
+// Devin CLI に effort フラグは無く model variant slug でのみ表現されるため、
+// 検証済みの effort suffix は variant slug へ変換する（devin-kimi-k3@high → kimi-k3-high）
+const devinCliModelOf = (context: WrapperContext): string => {
+  let model = context.baseModel
+  if (model.startsWith('devin-')) {
+    model = model.slice('devin-'.length)
   }
-  return originalModel
+  if (context.effort !== '') {
+    return `${model}-${context.effort}`
+  }
+  return model
 }
 
 const devinExportFileOf = (context: WrapperContext): string =>
@@ -157,7 +163,7 @@ const finalizeDevinRun = (context: WrapperContext, run: DevinRun, wait: WaitResu
         backend: context.backend,
         source: 'devin_json',
       }),
-    effortRequested: '',
+    effortRequested: context.effort,
   })
   recordDevinSessionOutcome(context, run.exportFile, {
     childStatus: wait.childStatus,
@@ -202,7 +208,8 @@ const runDevinChild = async (context: WrapperContext, run: DevinRun): Promise<Cl
 }
 
 const wrapperDevinWithContext = async (context: WrapperContext): Promise<CliResult> => {
-  // effort suffix は devin backend に指定手段がないため、CLI 起動前に fail-closed にする
+  // variant slug へ変換できると確認済みのモデル以外の effort suffix は
+  // CLI 起動前に fail-closed にする
   const effortError = effortFailure(context)
   if (effortError !== null) {
     return effortError
@@ -215,7 +222,7 @@ const wrapperDevinWithContext = async (context: WrapperContext): Promise<CliResu
     return finishWithoutChild(context, 3, 'ERROR: devin CLI が見つかりません。')
   }
   return runDevinChild(context, {
-    model: devinCliModelOf(context.args.originalModel),
+    model: devinCliModelOf(context),
     exportFile: devinExportFileOf(context),
     reportFile: path.join(context.args.runDir, 'report.md'),
   })

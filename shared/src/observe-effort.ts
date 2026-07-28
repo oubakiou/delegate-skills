@@ -29,6 +29,7 @@ const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 const CODEX_EFFORTS = new Set([...CLAUDE_EFFORTS, 'ultra'])
 const CURSOR_GLM_EFFORTS = new Set(['high', 'max'])
 const CURSOR_GROK_EFFORTS = new Set(['low', 'medium', 'high'])
+const DEVIN_KIMI_K3_EFFORTS = new Set(['low', 'high', 'max'])
 
 interface BackendEffortRule {
   allowed: Set<string>
@@ -84,6 +85,26 @@ const validateCursorEffort = (model: string, base: string, effort: string): Effo
   )
 }
 
+// Devin CLI に effort フラグは無く、model variant slug（kimi-k3-high 等）でのみ
+// 表現されるため、variant を持つと確認済みのモデルだけ suffix を許容する
+const validateDevinEffort = (model: string, base: string, effort: string): EffortValidation => {
+  let devinModel = base
+  if (devinModel.startsWith('devin-')) {
+    devinModel = devinModel.slice('devin-'.length)
+  }
+  if (devinModel === 'kimi-k3') {
+    if (DEVIN_KIMI_K3_EFFORTS.has(effort)) {
+      return { ok: true }
+    }
+    return invalid(
+      `ERROR: invalid effort '${effort}' for devin model '${model}'; allowed: low|high|max`
+    )
+  }
+  return invalid(
+    `ERROR: effort suffix is not supported for devin model '${model}'; supported: devin-kimi-k3@(low|high|max)`
+  )
+}
+
 interface EffortContext {
   backend: string
   model: string
@@ -103,6 +124,9 @@ const validateBackendEffort = (context: EffortContext): EffortValidation => {
   }
   if (context.backend === 'cursor') {
     return validateCursorEffort(context.model, context.base, context.effort)
+  }
+  if (context.backend === 'devin') {
+    return validateDevinEffort(context.model, context.base, context.effort)
   }
   return invalid(
     `ERROR: effort suffix is not supported for the ${context.backend} backend (model '${context.model}'); remove '@${context.effort}'`
@@ -367,6 +391,9 @@ if (import.meta.vitest) {
       expect(validateModelEffort('codex', 'gpt-5.5@ultra').ok).toBe(true)
       expect(validateModelEffort('cursor', 'cursor-glm-5.2@max').ok).toBe(true)
       expect(validateModelEffort('cursor', 'cursor-grok-4.5@low').ok).toBe(true)
+      expect(validateModelEffort('devin', 'devin-kimi-k3@low').ok).toBe(true)
+      expect(validateModelEffort('devin', 'devin-kimi-k3@high').ok).toBe(true)
+      expect(validateModelEffort('devin', 'devin-kimi-k3@max').ok).toBe(true)
     })
 
     it('fails closed on invalid, doubled, or unsupported suffixes', () => {
@@ -375,6 +402,8 @@ if (import.meta.vitest) {
       expect(validateModelEffort('cursor', 'cursor-glm-5.2-high@max').ok).toBe(false)
       expect(validateModelEffort('cursor', 'composer-2.5@high').ok).toBe(false)
       expect(validateModelEffort('devin', 'swe-1.7@high').ok).toBe(false)
+      expect(validateModelEffort('devin', 'devin-kimi-k3@medium').ok).toBe(false)
+      expect(validateModelEffort('devin', 'devin-glm-5.2@high').ok).toBe(false)
       expect(validateModelEffort('grok', 'grok-build@low').ok).toBe(false)
     })
   })

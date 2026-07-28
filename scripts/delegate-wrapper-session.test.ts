@@ -2403,6 +2403,25 @@ describe('wrapper effort suffix', () => {
     })
   })
 
+  it('converts the suffix to a Devin model variant slug', () => {
+    const fixture = makeFixture('devin')
+    const result = runWrapper(
+      'delegate-devin.sh',
+      wrapperModelArgs(fixture, 'devin-kimi-k3@high'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+    const modelIndex = log.args.indexOf('--model')
+
+    expect(result.status).toBe(0)
+    expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', 'kimi-k3-high'])
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: 'high',
+    })
+  })
+
   it('fails closed before launching the CLI for unsupported suffixes', () => {
     const devinFixture = makeFixture('devin')
     const devinResult = runWrapper(

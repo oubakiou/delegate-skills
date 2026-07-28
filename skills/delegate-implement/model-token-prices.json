@@ -2,7 +2,7 @@
   "schema_version": 1,
   "currency": "USD",
   "unit": "per_1m_tokens",
-  "retrieved_at": "2026-07-27",
+  "retrieved_at": "2026-07-28",
   "usage": "Reference data for cost analysis and reporting. It is not used as a cost gate.",
   "null_price": "No explicit price row was found in the listed source at retrieved_at.",
   "pricing_sources": {
@@ -216,6 +216,15 @@
       "input": 0.6,
       "cached_input": null,
       "output": 2.4,
+      "pricing_source": "cognition_cli"
+    },
+    {
+      "model_provider": "moonshot",
+      "model": "kimi-k3",
+      "display_name": "Kimi K3(cognition)",
+      "input": 3,
+      "cached_input": null,
+      "output": 15,
       "pricing_source": "cognition_cli"
     },
     {

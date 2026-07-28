@@ -294,6 +294,12 @@ if (import.meta.vitest) {
       const result = augmentCostEstimate(usage({ model: 'devin-ultra-1' }), 'devin', devinTable)
       expect(result.cost_usd_estimated).toBeCloseTo((1000 * 0.6 + 100 * 2.4) / 1_000_000, 12)
       expect(result.pricing_source).toBe('model-token-prices.json:cognition_cli')
+      const suffixed = augmentCostEstimate(
+        usage({ model: 'devin-ultra-1@high' }),
+        'devin',
+        devinTable
+      )
+      expect(suffixed.cost_usd_estimated).toBeCloseTo((1000 * 0.6 + 100 * 2.4) / 1_000_000, 12)
     })
 
     it('leaves estimated or already-costed usage untouched', () => {

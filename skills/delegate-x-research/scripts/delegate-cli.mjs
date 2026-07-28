@@ -2017,6 +2017,11 @@ var CURSOR_GROK_EFFORTS = new Set([
 	"medium",
 	"high"
 ]);
+var DEVIN_KIMI_K3_EFFORTS = new Set([
+	"low",
+	"high",
+	"max"
+]);
 var BACKEND_EFFORT_RULES = {
 	claude: {
 		allowed: CLAUDE_EFFORTS,
@@ -2046,6 +2051,15 @@ var validateCursorEffort = (model, base, effort) => {
 	if (named !== null) return named;
 	return invalid(`ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high)`);
 };
+var validateDevinEffort = (model, base, effort) => {
+	let devinModel = base;
+	if (devinModel.startsWith("devin-")) devinModel = devinModel.slice(6);
+	if (devinModel === "kimi-k3") {
+		if (DEVIN_KIMI_K3_EFFORTS.has(effort)) return { ok: true };
+		return invalid(`ERROR: invalid effort '${effort}' for devin model '${model}'; allowed: low|high|max`);
+	}
+	return invalid(`ERROR: effort suffix is not supported for devin model '${model}'; supported: devin-kimi-k3@(low|high|max)`);
+};
 var validateBackendEffort = (context) => {
 	const rule = BACKEND_EFFORT_RULES[context.backend];
 	if (typeof rule !== "undefined") {
@@ -2053,6 +2067,7 @@ var validateBackendEffort = (context) => {
 		return invalid(`ERROR: invalid effort '${context.effort}' for ${context.backend} backend model '${context.model}'; allowed: ${rule.allowedLabel}`);
 	}
 	if (context.backend === "cursor") return validateCursorEffort(context.model, context.base, context.effort);
+	if (context.backend === "devin") return validateDevinEffort(context.model, context.base, context.effort);
 	return invalid(`ERROR: effort suffix is not supported for the ${context.backend} backend (model '${context.model}'); remove '@${context.effort}'`);
 };
 var validateModelEffort = (backend, model) => {
@@ -5186,9 +5201,11 @@ var runWrapperCursor = async (argv, env, io) => {
 };
 //#endregion
 //#region shared/src/wrapper-devin.ts
-var devinCliModelOf = (originalModel) => {
-	if (originalModel.startsWith("devin-")) return originalModel.slice(6);
-	return originalModel;
+var devinCliModelOf = (context) => {
+	let model = context.baseModel;
+	if (model.startsWith("devin-")) model = model.slice(6);
+	if (context.effort !== "") return `${model}-${context.effort}`;
+	return model;
 };
 var devinExportFileOf = (context) => path.join(context.workDir, "devin-export.json");
 var extractDevinSessionId = (exportFile) => {
@@ -5260,7 +5277,7 @@ var finalizeDevinRun = (context, run, wait) => {
 			backend: context.backend,
 			source: "devin_json"
 		}),
-		effortRequested: ""
+		effortRequested: context.effort
 	});
 	recordDevinSessionOutcome(context, run.exportFile, {
 		childStatus: wait.childStatus,
@@ -5316,7 +5333,7 @@ var wrapperDevinWithContext = async (context) => {
 	if (modeFailure !== null) return modeFailure;
 	if (!commandAvailable("devin", context.env)) return finishWithoutChild(context, 3, "ERROR: devin CLI が見つかりません。");
 	return runDevinChild(context, {
-		model: devinCliModelOf(context.args.originalModel),
+		model: devinCliModelOf(context),
 		exportFile: devinExportFileOf(context),
 		reportFile: path.join(context.args.runDir, "report.md")
 	});
