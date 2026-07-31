@@ -4030,7 +4030,8 @@ var executableIn = (dir, command) => {
 		return false;
 	}
 };
-var commandAvailable = (command, env) => (env.PATH ?? "").split(":").some((dir) => dir !== "" && executableIn(dir, command));
+var executablePaths = (command, env) => (env.PATH ?? "").split(":").filter((dir) => dir !== "" && executableIn(dir, command)).map((dir) => path.resolve(dir, command));
+var commandAvailable = (command, env) => executablePaths(command, env).length > 0;
 var stdinStdio = (stdinFile) => {
 	if (stdinFile === null) return "ignore";
 	return openSync(stdinFile, "r");
@@ -4962,6 +4963,34 @@ var stripCursorPrefix = (baseModel) => {
 	if (baseModel.startsWith("cursor-")) return baseModel.slice(7);
 	return baseModel;
 };
+var cursorAgentVersionPattern = /^\d{4}\.\d{2}\.\d{2}-[0-9a-zA-Z]+$/;
+var cursorAgentVersionIsValid = (candidate, env, timeoutMs) => {
+	const result = spawnSync(candidate, ["--version"], {
+		encoding: "utf8",
+		env: { ...env },
+		killSignal: "SIGKILL",
+		stdio: [
+			"ignore",
+			"pipe",
+			"pipe"
+		],
+		timeout: timeoutMs
+	});
+	return !result.error && result.status === 0 && cursorAgentVersionPattern.test((result.stdout ?? "").trim());
+};
+var cursorAgentCandidates = (env) => {
+	const candidates = executablePaths("agent", env);
+	const home = env.HOME ?? "";
+	if (home !== "") {
+		const fallback = path.resolve(home, ".local", "bin", "agent");
+		if (!candidates.includes(fallback) && executableIn(path.dirname(fallback), "agent")) candidates.push(fallback);
+	}
+	return candidates;
+};
+var resolveCursorAgent = (env, timeoutMs = 1e4) => {
+	for (const candidate of cursorAgentCandidates(env)) if (cursorAgentVersionIsValid(candidate, env, timeoutMs)) return candidate;
+	return null;
+};
 var cursorCliModelOf = (context, model) => {
 	if (context.effort === "") return model;
 	if (model === "glm-5.2") return `glm-5.2[reasoning=${context.effort}]`;
@@ -4998,12 +5027,12 @@ var setupCursorMcp = (context, isolatedConfigDir) => {
 		servers: []
 	};
 };
-var createChatOnce = (context, isolatedConfigDir) => {
+var createChatOnce = (context, isolatedConfigDir, agentPath) => {
 	const attempt = spawnSync("timeout", [
 		"-k",
 		"5",
 		"45",
-		"agent",
+		agentPath,
 		"create-chat"
 	], {
 		encoding: "utf8",
@@ -5025,18 +5054,18 @@ var createChatOnce = (context, isolatedConfigDir) => {
 	const lines = (attempt.stdout ?? "").trimEnd().split("\n");
 	return lines[lines.length - 1].replaceAll("\r", "");
 };
-var createCursorChat = (context, isolatedConfigDir) => {
+var createCursorChat = (context, isolatedConfigDir, agentPath) => {
 	for (let attempt = 0; attempt < 3; attempt += 1) {
-		const chatId = createChatOnce(context, isolatedConfigDir);
+		const chatId = createChatOnce(context, isolatedConfigDir, agentPath);
 		if (chatId !== "") return chatId;
 	}
 	return "";
 };
-var setupCursorChat = (context, isolatedConfigDir) => {
+var setupCursorChat = (context, isolatedConfigDir, agentPath) => {
 	const { sessionMode, resumeArg } = context.args;
 	if (sessionMode === "followup") return resumeArg;
 	if (sessionMode !== "resumable") return "";
-	const chatId = createCursorChat(context, isolatedConfigDir);
+	const chatId = createCursorChat(context, isolatedConfigDir, agentPath);
 	if (chatId === "") {
 		quietly(() => {
 			resumeUnavailable(context.args.observeFile, context.workDir, {
@@ -5129,7 +5158,7 @@ var runCursorChild = async (context, run, mcp) => {
 		});
 	});
 	const worker = spawnWorker({
-		command: "agent",
+		command: run.agentPath,
 		args: cursorCliArgs(run.cursorCliModel, {
 			mcpSource: mcp.source,
 			chatId: run.chatId
@@ -5173,13 +5202,14 @@ var cursorPreflight = (context) => {
 	if (modeFailure !== null) return modeFailure;
 	return models;
 };
-var launchCursor = async (context, models) => {
+var launchCursor = async (context, models, agentPath) => {
 	const isolatedConfigDir = isolateCursorConfig(context);
 	const mcp = setupCursorMcp(context, isolatedConfigDir);
-	const chatId = setupCursorChat(context, isolatedConfigDir);
+	const chatId = setupCursorChat(context, isolatedConfigDir, agentPath);
 	if (typeof chatId !== "string") return chatId;
 	return runCursorChild(context, {
 		...models,
+		agentPath,
 		isolatedConfigDir,
 		chatId,
 		reportFile: path.join(context.args.runDir, "report.md")
@@ -5188,8 +5218,9 @@ var launchCursor = async (context, models) => {
 var wrapperCursorWithContext = async (context) => {
 	const models = cursorPreflight(context);
 	if ("exitCode" in models) return models;
-	if (!commandAvailable("agent", context.env)) return finishWithoutChild(context, 3, "ERROR: agent CLI が見つかりません。");
-	return launchCursor(context, models);
+	const agentPath = resolveCursorAgent(context.env);
+	if (agentPath === null) return finishWithoutChild(context, 3, "ERROR: Cursor agent CLI が見つからない(PATH 上の `agent` は別 CLI の可能性があります)。");
+	return launchCursor(context, models, agentPath);
 };
 var runWrapperCursor = async (argv, env, io) => {
 	const args = parseWrapperArgs(argv, "delegate-cursor.sh");

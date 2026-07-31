@@ -23,6 +23,7 @@ const codexAuthSecret = 'root-auth-secret'
 
 interface FakeCliLog {
   args: string[]
+  executablePath: string | null
   authPresent: boolean | null
   command: string | null
   cwd: string
@@ -124,6 +125,7 @@ const readLog = (filePath: string): FakeCliLog => {
   }
   return {
     args: record.args.map(String),
+    executablePath: stringOrNullValue(record.executablePath),
     authPresent: booleanOrNullValue(record.authPresent),
     command: stringOrNullValue(record.command),
     cwd: stringOrNullValue(record.cwd) ?? '',
@@ -148,6 +150,7 @@ const readLogs = (filePath: string): FakeCliLog[] => {
     }
     return {
       args: record.args.map(String),
+      executablePath: stringOrNullValue(record.executablePath),
       authPresent: booleanOrNullValue(record.authPresent),
       command: stringOrNullValue(record.command),
       cwd: stringOrNullValue(record.cwd) ?? '',
@@ -398,12 +401,16 @@ if (exportIndex !== -1 && process.env.FAKE_DEVIN_NO_SESSION !== '1') {
 fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
 `
 
-const cursorFakeScript = (): string => `#!/usr/bin/env node
+const cursorFakeScript = (version = '2026.07.16-899851b'): string => `#!/usr/bin/env node
 import fs from 'node:fs'
 const args = process.argv.slice(2)
+if (args[0] === '--version') {
+  console.log(${JSON.stringify(version)})
+  process.exit(0)
+}
 let prompt = ''
 try { prompt = fs.readFileSync(0, 'utf8') } catch {}
-const entry = {args, prompt, command: 'agent', cwd: process.cwd(), env: {CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}
+const entry = {args, executablePath: process.argv[1], prompt, command: 'agent', cwd: process.cwd(), env: {CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, TMPDIR: process.env.TMPDIR}}
 let logs = []
 try {
   logs = JSON.parse(fs.readFileSync(process.env.FAKE_CLI_LOG, 'utf8'))
@@ -453,6 +460,14 @@ const fakeScript = (name: Backend): string => {
   return cursorFakeScript()
 }
 
+const writeCursorFakeCli = (binDir: string, version = '2026.07.16-899851b'): string => {
+  mkdirSync(binDir, { recursive: true })
+  const scriptPath = path.join(binDir, 'agent')
+  writeFileSync(scriptPath, cursorFakeScript(version))
+  chmodSync(scriptPath, 0o755)
+  return scriptPath
+}
+
 const cliName = (backend: Backend): string => {
   if (backend === 'cursor') {
     return 'agent'
@@ -461,6 +476,10 @@ const cliName = (backend: Backend): string => {
 }
 
 const writeFakeCli = (binDir: string, backend: Backend): void => {
+  if (backend === 'cursor') {
+    writeCursorFakeCli(binDir)
+    return
+  }
   const scriptPath = path.join(binDir, cliName(backend))
   writeFileSync(scriptPath, fakeScript(backend))
   chmodSync(scriptPath, 0o755)
@@ -2113,6 +2132,45 @@ describe('delegate-devin.sh session modes', () => {
       observe,
       result,
     })
+  })
+})
+
+describe('delegate-cursor.sh agent resolution', () => {
+  it('selects a later valid Cursor agent when PATH starts with another CLI', () => {
+    const fixture = makeFixture('cursor')
+    const fixtureBinDir = path.join(fixture.workDir, 'bin')
+    writeCursorFakeCli(fixtureBinDir, 'grok 0.2.73 (9ff14c43bb) [stable]')
+    const validBinDir = path.join(fixture.workDir, 'valid-cursor-bin')
+    const validAgent = writeCursorFakeCli(validBinDir)
+    const result = runCursor(fixture, ['resumable', '', ''], {
+      ...fixture.env,
+      PATH: `${fixtureBinDir}:${validBinDir}:${fixture.env.PATH ?? ''}`,
+    })
+    const logs = readLogs(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(logs).toHaveLength(2)
+    expect(logs.every((log) => log.executablePath === validAgent)).toBe(true)
+  })
+
+  it('fails closed when every agent candidate is another CLI', () => {
+    const fixture = makeFixture('cursor')
+    const fixtureBinDir = path.join(fixture.workDir, 'bin')
+    writeCursorFakeCli(fixtureBinDir, 'grok 0.2.73 (9ff14c43bb) [stable]')
+    const pathWithoutOtherAgents = (fixture.env.PATH ?? '')
+      .split(':')
+      .filter((dir) => !existsSync(path.join(dir, 'agent')))
+      .join(':')
+    const result = runCursor(fixture, [], {
+      ...fixture.env,
+      PATH: `${fixtureBinDir}:${pathWithoutOtherAgents}`,
+    })
+
+    expect(result.status).toBe(3)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(readFileSync(path.join(fixture.runDir, 'worker-stderr.capture'), 'utf8')).toContain(
+      'Cursor agent CLI が見つからない(PATH 上の `agent` は別 CLI の可能性'
+    )
   })
 })
 

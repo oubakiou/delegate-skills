@@ -13,7 +13,7 @@ import { positiveIntOrZero, processTreeJson } from './wrapper-report.ts'
 // だけを heartbeat_interval ごとに実行する。観測系の失敗で dispatch 本体を殺さない
 // よう、observe 更新と JSON 読みは fail-soft にする。
 
-const executableIn = (dir: string, command: string): boolean => {
+export const executableIn = (dir: string, command: string): boolean => {
   try {
     const file = path.join(dir, command)
     accessSync(file, constants.X_OK)
@@ -23,9 +23,15 @@ const executableIn = (dir: string, command: string): boolean => {
   }
 }
 
+export const executablePaths = (command: string, env: Env): string[] =>
+  (env.PATH ?? '')
+    .split(':')
+    .filter((dir) => dir !== '' && executableIn(dir, command))
+    .map((dir) => path.resolve(dir, command))
+
 // bash の command -v 相当（PATH 走査のみ。組み込み・関数は対象外）
 export const commandAvailable = (command: string, env: Env): boolean =>
-  (env.PATH ?? '').split(':').some((dir) => dir !== '' && executableIn(dir, command))
+  executablePaths(command, env).length > 0
 
 export interface WorkerSpawnInput {
   command: string

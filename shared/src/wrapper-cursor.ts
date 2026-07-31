@@ -29,7 +29,8 @@ import {
 } from './wrapper-common.ts'
 import { reportModeForBackend, requestPromptStep } from './wrapper-report.ts'
 import {
-  commandAvailable,
+  executableIn,
+  executablePaths,
   spawnWorker,
   waitWithHeartbeat,
   type WaitResult,
@@ -44,6 +45,46 @@ const stripCursorPrefix = (baseModel: string): string => {
     return baseModel.slice('cursor-'.length)
   }
   return baseModel
+}
+
+const cursorAgentVersionPattern = /^\d{4}\.\d{2}\.\d{2}-[0-9a-zA-Z]+$/
+
+// 候補は未検証のバイナリなので、SIGTERM を無視されても timeout で確実に戻れるよう
+// SIGKILL で打ち切る。timeout 到達（error あり）は stdout が有効形式でも不合格にする
+const cursorAgentVersionIsValid = (candidate: string, env: Env, timeoutMs: number): boolean => {
+  const result = spawnSync(candidate, ['--version'], {
+    encoding: 'utf8',
+    env: { ...env },
+    killSignal: 'SIGKILL',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
+  })
+  return (
+    !result.error &&
+    result.status === 0 &&
+    cursorAgentVersionPattern.test((result.stdout ?? '').trim())
+  )
+}
+
+const cursorAgentCandidates = (env: Env): string[] => {
+  const candidates = executablePaths('agent', env)
+  const home = env.HOME ?? ''
+  if (home !== '') {
+    const fallback = path.resolve(home, '.local', 'bin', 'agent')
+    if (!candidates.includes(fallback) && executableIn(path.dirname(fallback), 'agent')) {
+      candidates.push(fallback)
+    }
+  }
+  return candidates
+}
+
+const resolveCursorAgent = (env: Env, timeoutMs = 10_000): string | null => {
+  for (const candidate of cursorAgentCandidates(env)) {
+    if (cursorAgentVersionIsValid(candidate, env, timeoutMs)) {
+      return candidate
+    }
+  }
+  return null
 }
 
 // 検証済みの effort を bracket parameter override へ変換する。パラメータ名はモデル別
@@ -115,8 +156,12 @@ const setupCursorMcp = (context: WrapperContext, isolatedConfigDir: string): Cur
 // cursor-agent の create-chat は起動途中で racy に停止し、stdin を /dev/null に
 // 固定していても無応答の孤児プロセスとして残り得る。正常応答は 2〜5 秒で返るため、
 // timeout で打ち切って最大 3 回まで再試行する
-const createChatOnce = (context: WrapperContext, isolatedConfigDir: string): string => {
-  const attempt = spawnSync('timeout', ['-k', '5', '45', 'agent', 'create-chat'], {
+const createChatOnce = (
+  context: WrapperContext,
+  isolatedConfigDir: string,
+  agentPath: string
+): string => {
+  const attempt = spawnSync('timeout', ['-k', '5', '45', agentPath, 'create-chat'], {
     encoding: 'utf8',
     env: {
       ...context.env,
@@ -136,9 +181,13 @@ const createChatOnce = (context: WrapperContext, isolatedConfigDir: string): str
   return lines[lines.length - 1].replaceAll('\r', '')
 }
 
-const createCursorChat = (context: WrapperContext, isolatedConfigDir: string): string => {
+const createCursorChat = (
+  context: WrapperContext,
+  isolatedConfigDir: string,
+  agentPath: string
+): string => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const chatId = createChatOnce(context, isolatedConfigDir)
+    const chatId = createChatOnce(context, isolatedConfigDir, agentPath)
     if (chatId !== '') {
       return chatId
     }
@@ -148,7 +197,8 @@ const createCursorChat = (context: WrapperContext, isolatedConfigDir: string): s
 
 const setupCursorChat = (
   context: WrapperContext,
-  isolatedConfigDir: string
+  isolatedConfigDir: string,
+  agentPath: string
 ): string | CliResult => {
   const { sessionMode, resumeArg } = context.args
   if (sessionMode === 'followup') {
@@ -157,7 +207,7 @@ const setupCursorChat = (
   if (sessionMode !== 'resumable') {
     return ''
   }
-  const chatId = createCursorChat(context, isolatedConfigDir)
+  const chatId = createCursorChat(context, isolatedConfigDir, agentPath)
   if (chatId === '') {
     quietly(() => {
       resumeUnavailable(context.args.observeFile, context.workDir, {
@@ -234,6 +284,7 @@ const recordCursorSessionOutcome = (
 }
 
 interface CursorRun {
+  agentPath: string
   cursorModel: string
   cursorCliModel: string
   isolatedConfigDir: string
@@ -296,7 +347,7 @@ const runCursorChild = async (
     })
   })
   const worker = spawnWorker({
-    command: 'agent',
+    command: run.agentPath,
     args: cursorCliArgs(run.cursorCliModel, { mcpSource: mcp.source, chatId: run.chatId }),
     cwd: context.repoRoot,
     env: {
@@ -351,10 +402,14 @@ const cursorPreflight = (context: WrapperContext): CursorModels | CliResult => {
   return models
 }
 
-const launchCursor = async (context: WrapperContext, models: CursorModels): Promise<CliResult> => {
+const launchCursor = async (
+  context: WrapperContext,
+  models: CursorModels,
+  agentPath: string
+): Promise<CliResult> => {
   const isolatedConfigDir = isolateCursorConfig(context)
   const mcp = setupCursorMcp(context, isolatedConfigDir)
-  const chatId = setupCursorChat(context, isolatedConfigDir)
+  const chatId = setupCursorChat(context, isolatedConfigDir, agentPath)
   if (typeof chatId !== 'string') {
     return chatId
   }
@@ -362,6 +417,7 @@ const launchCursor = async (context: WrapperContext, models: CursorModels): Prom
     context,
     {
       ...models,
+      agentPath,
       isolatedConfigDir,
       chatId,
       reportFile: path.join(context.args.runDir, 'report.md'),
@@ -375,10 +431,15 @@ const wrapperCursorWithContext = async (context: WrapperContext): Promise<CliRes
   if ('exitCode' in models) {
     return models
   }
-  if (!commandAvailable('agent', context.env)) {
-    return finishWithoutChild(context, 3, 'ERROR: agent CLI が見つかりません。')
+  const agentPath = resolveCursorAgent(context.env)
+  if (agentPath === null) {
+    return finishWithoutChild(
+      context,
+      3,
+      'ERROR: Cursor agent CLI が見つからない(PATH 上の `agent` は別 CLI の可能性があります)。'
+    )
   }
-  return launchCursor(context, models)
+  return launchCursor(context, models, agentPath)
 }
 
 export const runWrapperCursor = async (
@@ -392,4 +453,87 @@ export const runWrapperCursor = async (
   }
   const context = makeWrapperContext(args, { env, scriptsDir: io.scriptsDir })
   return wrapperCursorWithContext(context)
+}
+
+if (import.meta.vitest) {
+  const { describe, it, expect } = import.meta.vitest
+  const {
+    chmodSync,
+    mkdirSync: mkdirTestDir,
+    mkdtempSync,
+    rmSync,
+    writeFileSync: writeTestFile,
+  } = await import('node:fs')
+
+  const makeResolverTestDir = (): string => {
+    mkdirTestDir('.temp', { recursive: true })
+    return mkdtempSync(path.join('.temp', 'wrapper-cursor-resolver-test-'))
+  }
+
+  const writeAgentScript = (dir: string, script: string): string => {
+    mkdirTestDir(dir, { recursive: true })
+    const agent = path.join(dir, 'agent')
+    writeTestFile(agent, script)
+    chmodSync(agent, 0o755)
+    return agent
+  }
+
+  const writeAgent = (dir: string, version: string): string =>
+    writeAgentScript(dir, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`)
+
+  describe('resolveCursorAgent', () => {
+    it('skips a different CLI and returns the first valid Cursor agent path', () => {
+      const dir = makeResolverTestDir()
+      try {
+        const wrong = writeAgent(path.join(dir, 'wrong'), 'grok 0.2.73 (9ff14c43bb) [stable]')
+        const valid = writeAgent(path.join(dir, 'valid'), '2026.07.16-899851b')
+        expect(
+          resolveCursorAgent({
+            HOME: path.join(dir, 'home'),
+            PATH: `${path.dirname(wrong)}:${path.dirname(valid)}`,
+          })
+        ).toBe(path.resolve(valid))
+      } finally {
+        rmSync(dir, { force: true, recursive: true })
+      }
+    })
+
+    it('uses the known local install path when PATH has no valid candidate', () => {
+      const dir = makeResolverTestDir()
+      try {
+        const home = path.join(dir, 'home')
+        const valid = writeAgent(path.join(home, '.local', 'bin'), '2026.07.16-899851b')
+        expect(resolveCursorAgent({ HOME: home, PATH: path.join(dir, 'empty') })).toBe(
+          path.resolve(valid)
+        )
+      } finally {
+        rmSync(dir, { force: true, recursive: true })
+      }
+    })
+
+    it('rejects candidates whose version output is not a Cursor version', () => {
+      const dir = makeResolverTestDir()
+      try {
+        const invalid = writeAgent(path.join(dir, 'invalid'), 'agent version 1.0')
+        expect(resolveCursorAgent({ PATH: path.dirname(invalid) })).toBeNull()
+      } finally {
+        rmSync(dir, { force: true, recursive: true })
+      }
+    })
+
+    it('rejects a SIGTERM-ignoring candidate within the timeout even if stdout looks valid', () => {
+      const dir = makeResolverTestDir()
+      try {
+        const agent = writeAgentScript(
+          path.join(dir, 'stubborn'),
+          `#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' '2026.07.16-899851b'\nsleep 60\n`
+        )
+        const startedAt = Date.now()
+        expect(resolveCursorAgent({ PATH: path.dirname(agent) }, 500)).toBeNull()
+        expect(Date.now() - startedAt).toBeLessThan(10_000)
+      } finally {
+        rmSync(dir, { force: true, recursive: true })
+      }
+    })
+  })
 }
