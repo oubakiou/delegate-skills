@@ -1,8 +1,8 @@
 # devcontainer ディスククリーニング定型化 設計・実装計画
 
-[![MKDN](https://img.shields.io/badge/MKDN-review-red?style=for-the-badge)](https://mkdn.review/?url=https%3A%2F%2Fraw.githubusercontent.com%2Foubakiou%2Fdelegate-skills%2Frefs%2Fheads%2Fmain%2Fdocs%2Ffeature%2Fdevcontainer-disk-cleanup.md)
+[![MKDN](https://img.shields.io/badge/MKDN-review-red?style=for-the-badge)](https://mkdn.review/?url=https%3A%2F%2Fraw.githubusercontent.com%2Foubakiou%2Fdelegate-skills%2Frefs%2Fheads%2Fmain%2Fdocs%2Farchive%2Fdevcontainer-disk-cleanup.archive.md)
 
-[development.md のセットアップ節](../design/development.md#セットアップ)に対応し、devcontainer のコンテナディスクが再生成可能なキャッシュで満杯になり全ツールが停止する事象（ENOSPC）に対して、再蓄積を予防する定型スクリプトの設計判断と実装手順をまとめる。完了後は development.md に永続情報を移し、本ファイルは archive する。
+[development.md のセットアップ節](../design/development.md#セットアップ)に対応し、devcontainer のコンテナディスクが再生成可能なキャッシュで満杯になり全ツールが停止する事象（ENOSPC）に対して、再蓄積を予防する定型スクリプトの設計判断と実装手順をまとめる。永続情報は development.md へ移し、本ファイルは archive 済み。テンプレートへの還元（§4 Step 6）だけを follow-up として残す。
 
 2026-07-21 の障害時には約 11.6GB を回収できたが、これは当時のキャッシュ量である。2026-08-08 の現環境で列挙できた候補は最大でも約 1.78GB であり、全量を回収しても `/` は 90% 台に残る見込みである。本スクリプトは現在の逼迫を単独で解消する手段ではなく、安全に回収できるキャッシュの再蓄積を予防する手段と位置づける。
 
@@ -10,11 +10,11 @@
 
 | 要件                                                                 | 開始時の状態                                                                                                     | 完了条件                                                                                                                                                                                                      | 最終状態 | 状態   |
 | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------ |
-| [MUST] 再生成可能キャッシュを冪等に回収するスクリプトを提供する      | 手動調査 + 個別 `rm` / `npm cache clean` の非定型作業（2026-07 の障害対応で実施）                                | `scripts/clean-devcontainer-disk.sh` が固定 allowlist 内で非使用を証明できる entry だけを列挙・削除し、before / after・候補量・回収量・未回収量を filesystem ごとに報告する。連続実行しても安全である         | 未実装   | 未着手 |
-| [MUST] 使用中または判定不能なリソースを誤削除しない fail-safe を持つ | 使用中リソースの特定は手動（`ps` 目視）                                                                          | process listing の成功・該当なしと取得失敗を区別し、使用中または非使用を証明できない category / entry は skip する。共有 `/vscode` の server bin 世代は自動削除しない                                         | 未実装   | 未着手 |
-| [MUST] 使用率と絶対空き容量を併用した毎起動時の自動実行経路を持つ    | 掃除は障害発生後の手動対応のみ。`.devcontainer/devcontainer.json` は `postCreateCommand`（初回のみ）しか持たない | `postStartCommand` と `local_setup.sh` が同じ non-blocking wrapper から `--threshold 90` で呼ぶ。`/`・`/vscode`・`$HOME`・workspace の filesystem identity と容量を実行時に測り、掃除後も条件超過なら警告する | 未実装   | 未着手 |
-| [SHOULD] コンテナ内で解決できない場合の診断手順をユーザーに案内する  | コンテナ側とホスト側の使用量を混同しやすい                                                                       | スクリプト出力が現在の観測結果を示し、host では `docker system df` で内訳を確認してから対象を限定するよう案内する。削除操作は危険性と適用条件を併記する                                                       | 未実装   | 未着手 |
-| [SHOULD] 削除せず対象だけ確認できる dry-run と手動確認情報を提供する | なし                                                                                                             | `--dry-run` が自動削除候補・skip・手動確認が必要な `/vscode/vscode-server/bin` 世代と各推定量を表示し、ファイルシステムを変更しない                                                                           | 未実装   | 未着手 |
+| [MUST] 再生成可能キャッシュを冪等に回収するスクリプトを提供する      | 手動調査 + 個別 `rm` / `npm cache clean` の非定型作業（2026-07 の障害対応で実施）                                | `scripts/clean-devcontainer-disk.sh` が固定 allowlist 内で非使用を証明できる entry だけを列挙・削除し、before / after・候補量・回収量・未回収量を filesystem ごとに報告する。連続実行しても安全である         | 実装済み | 完了   |
+| [MUST] 使用中または判定不能なリソースを誤削除しない fail-safe を持つ | 使用中リソースの特定は手動（`ps` 目視）                                                                          | process listing の成功・該当なしと取得失敗を区別し、使用中または非使用を証明できない category / entry は skip する。共有 `/vscode` の server bin 世代は自動削除しない                                         | 実装済み | 完了   |
+| [MUST] 使用率と絶対空き容量を併用した毎起動時の自動実行経路を持つ    | 掃除は障害発生後の手動対応のみ。`.devcontainer/devcontainer.json` は `postCreateCommand`（初回のみ）しか持たない | `postStartCommand` と `local_setup.sh` が同じ non-blocking wrapper から `--threshold 90` で呼ぶ。`/`・`/vscode`・`$HOME`・workspace の filesystem identity と容量を実行時に測り、掃除後も条件超過なら警告する | 実装済み | 完了   |
+| [SHOULD] コンテナ内で解決できない場合の診断手順をユーザーに案内する  | コンテナ側とホスト側の使用量を混同しやすい                                                                       | スクリプト出力が現在の観測結果を示し、host では `docker system df` で内訳を確認してから対象を限定するよう案内する。削除操作は危険性と適用条件を併記する                                                       | 実装済み | 完了   |
+| [SHOULD] 削除せず対象だけ確認できる dry-run と手動確認情報を提供する | なし                                                                                                             | `--dry-run` が自動削除候補・skip・手動確認が必要な `/vscode/vscode-server/bin` 世代と各推定量を表示し、ファイルシステムを変更しない                                                                           | 実装済み | 完了   |
 | [SHOULD] 確立した運用を由来テンプレートへ還元する                    | 本リポジトリ固有の計画のみ                                                                                       | 本リポジトリの実装完了後、別 follow-up でテンプレート側の構成差を確認して移植可否を判断する。本計画の完了条件にはしない                                                                                       | 未実装   | 未着手 |
 
 スコープ外:
@@ -126,7 +126,7 @@ fi
 
 ## 4. 実装ステップ
 
-### Step 1: (未着手) スクリプト実装
+### Step 1: (完了) スクリプト実装
 
 - `scripts/clean-devcontainer-disk.sh` に §3 の観測 / entry 列挙 / fail-safe / category 単位の削除 / 報告を実装する
 - CLI 引数なしの無条件実行、`--dry-run`、`--threshold <pct>`、`--min-free-bytes <bytes>` と固定終了コードを実装する
@@ -134,7 +134,7 @@ fi
 
 成果物: 冪等な掃除スクリプト + dry-run
 
-### Step 2: (未着手) 毎起動実行の統合
+### Step 2: (完了) 毎起動実行の統合
 
 - `local_setup.sh` の `npm ci` / `npm install` より前に §3.3 の wrapper を追加する
 - `.devcontainer/devcontainer.json` に同じ wrapper 契約の `postStartCommand` を追加する
@@ -142,7 +142,7 @@ fi
 
 成果物: 初回作成と毎起動の自動予防経路
 
-### Step 3: (未着手) テストと実機検証
+### Step 3: (完了) テストと実機検証
 
 - `scripts/clean-devcontainer-disk.test.ts` に §6 の Vitest 契約テストを実装する
 - 実 devcontainer で dry-run → 実実行 → 再実行（冪等性）を確認し、観測値と skip / partial failure の記録を残す
@@ -150,14 +150,14 @@ fi
 
 成果物: shell 契約テスト + 実機検証記録
 
-### Step 4: (未着手) development.md 反映
+### Step 4: (完了) development.md 反映
 
 - development.md のセットアップ節に手動コマンド、startup 契約、ENOSPC 時の filesystem identity / `df` 確認、本スクリプト、host 側診断の順を追記する
 - host 側は `docker system df` で内訳を確認してから対象を限定し、prune / volume / Docker Desktop reclaim を別手順として説明する
 
 成果物: development.md 更新
 
-### Step 5: (未着手) archive 化
+### Step 5: (完了) archive 化
 
 - §7 の受け入れ基準を満たし、development.md へ永続情報を移した後、本ドキュメントを `docs/archive/devcontainer-disk-cleanup.archive.md` に移す
 
@@ -236,14 +236,26 @@ fi
 
 ### 手動確認
 
-- [ ] 実 devcontainer の dry-run で §2.2 の path と filesystem identity が一致し、server bin は手動候補にしかならない
-- [ ] 実実行後に before / after、候補量、回収量、skip 量、未回収量が category / filesystem ごとに表示される
-- [ ] 実行中の IDE・拡張・cursor-agent・codex app-server に影響がない
-- [ ] 直後の再実行が安全な no-op になり、掃除後も閾値超過なら警告が残る
-- [ ] `sudo -n` 不可を模擬しても HOME 側 category が継続する
-- [ ] コンテナ再起動で `postStartCommand` が実行され、非 0 を模擬しても起動をブロックしない
-- [ ] host 側案内が固定容量や一律 prune を示さず、`docker system df` から始まる
-- [ ] `npx vp check` と `npm test -- scripts/clean-devcontainer-disk.test.ts` が通る
+- [x] 実 devcontainer の dry-run で §2.2 の path と filesystem identity が一致し、server bin は手動候補にしかならない
+- [x] 実実行後に before / after、候補量、回収量、skip 量、未回収量が category / filesystem ごとに表示される
+- [x] 実行中の IDE・拡張・cursor-agent・codex app-server に影響がない
+- [x] 直後の再実行が安全な no-op になり、掃除後も閾値超過なら警告が残る
+- [x] `sudo -n` 不可を模擬しても HOME 側 category が継続する（契約テストで固定）
+- [ ] コンテナ再起動で `postStartCommand` が実行され、非 0 を模擬しても起動をブロックしない（wrapper 本体の非ブロッキング挙動は契約テストで固定済み。実際の container 再起動での発火は未確認）
+- [x] host 側案内が固定容量や一律 prune を示さず、`docker system df` から始まる
+- [x] `npx vp check` と `npm test -- scripts/clean-devcontainer-disk.test.ts` が通る
+
+### 2026-08-08 実機実行の記録
+
+| 観測対象                               | 実行前           | 実行後           |
+| -------------------------------------- | ---------------- | ---------------- |
+| `/` 使用率                             | 96%              | 94%              |
+| `/` 空き容量                           | 3.2GiB           | 4.3GiB           |
+| `~/.vscode-server/extensionsCache`     | 9 entries / 622M | 2 entries / 185M |
+| `~/.npm/_cacache`                      | 3 entries / 220M | 0 entries        |
+| `~/.local/share/cursor-agent/versions` | 3 entries / 681M | 1 entry / 243M   |
+
+回収量は 1092.2MiB（home extensionsCache 437.1MiB + npm `_cacache` 219.1MiB + cursor 旧世代 436.0MiB）。process が参照する `openai.chatgpt-26.727.40816-linux-arm64`（184.5MiB）、active な `~/.codex/.tmp`（64.5MiB）、共有 volume 上の 351.3MiB はいずれも skip された。直後の再実行は削除ゼロの exit 0 で、拡張本体 14 件・cursor-agent の最新世代・`~/.local/bin/agent` の解決先はすべて保持された。掃除後も閾値超過のため警告が出力された。
 
 ## 7. 受け入れ基準
 
