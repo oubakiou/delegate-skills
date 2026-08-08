@@ -78,6 +78,7 @@ delegate-skills/
     check-metrics-baseline.sh      # fixture ベースラインのドリフト検知
     check-no-jq-md2idx.sh          # 配布 tree に jq / md2idx 参照が残っていないかの静的検査
     test-execution-capability.ts   # Vitest 起動前の子プロセス capability preflight
+    clean-devcontainer-disk.sh     # コンテナディスクの再生成可能キャッシュ回収
   docs/
     design/
       spec.md
@@ -97,11 +98,34 @@ devcontainer 前提。初回はリポジトリ root で `local_setup.sh` を実�
 
 主な処理:
 
+- コンテナディスクの掃除（`scripts/clean-devcontainer-disk.sh --threshold 90`。満杯だと後続の `npm ci` 自体が書き込めないため最初に実行する）
 - `npm ci`（`package-lock.json` があればロック厳守、無ければ `npm install`）
 - `claude` / `codex` / `vp` / `typescript-language-server` を `/usr/local/bin` にシンボリックリンク
 - `.claude/settings.local.json` / `CLAUDE.local.md` を example から生成（無ければ）
 - 既定 skill の `gh skill install`
 - `git config core.hooksPath .githooks`（pre-commit hook を有効化）
+
+## コンテナディスクの掃除
+
+VS Code server / npm / agent のキャッシュはコンテナディスク上で再蓄積し、放置すると ENOSPC で Bash ツールを含む全書き込みが停止する。`scripts/clean-devcontainer-disk.sh` が固定 allowlist 内の再生成可能キャッシュだけを冪等に回収する。
+
+| コマンド                                                 | 用途                                                                  |
+| -------------------------------------------------------- | --------------------------------------------------------------------- |
+| `bash scripts/clean-devcontainer-disk.sh --dry-run`      | 削除せず候補・skip 理由・回収見込みだけを表示する                     |
+| `bash scripts/clean-devcontainer-disk.sh`                | 閾値を見ずに無条件で回収する（手動実行）                              |
+| `bash scripts/clean-devcontainer-disk.sh --threshold 90` | 使用率 90% 以上、または空き容量が既定下限 5GiB 未満のときだけ回収する |
+| `npm test -- scripts/clean-devcontainer-disk.test.ts`    | 契約テスト                                                            |
+
+`local_setup.sh`（初回）と `postStartCommand`（毎起動）は `--threshold 90` で呼ぶ。掃除の非 0 終了と script 不在は警告に変換され、setup と container 起動をブロックしない。終了コードは 0 が正常系（no-op / safety skip を含む）、1 が operational failure、2 が引数エラー。
+
+使用中リソースは削除しない。process listing が取得できない場合や、共有 `/vscode` volume 上のように他コンテナの liveness を証明できない場合は、category ごと skip して理由を報告する。`/vscode/vscode-server/bin` の世代は手動確認候補として表示するだけで自動削除しない。
+
+### ENOSPC 時の診断順
+
+1. `df -PhT / /workspaces/delegate-skills` でコンテナ側（overlay）と repository 側（host mount）を区別する。repository が host mount なら `.temp/` はコンテナディスクを圧迫していない
+2. `bash scripts/clean-devcontainer-disk.sh --dry-run` で回収見込みと skip 理由を確認し、必要なら引数なしで実行する
+3. 掃除後も閾値を超える場合はスクリプトが警告を出す。手動確認候補（`/vscode/vscode-server/bin` の世代、共有 volume 上の entry）は、その volume を使う全 container の停止を確認したうえで手動で削除する
+4. コンテナ側で解消しない場合は host で `docker system df` を実行し、image / container / local volume / build cache の内訳を確認する。内訳で実際に大きい種別だけを対象にし、`docker system prune`・named volume の個別削除・Docker Desktop の仮想ディスク reclaim はそれぞれ削除対象と危険性を確認したうえで別手順として実行する
 
 ## ツールチェーン
 
