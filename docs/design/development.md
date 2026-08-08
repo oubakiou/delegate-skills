@@ -120,6 +120,26 @@ VS Code server / npm / agent のキャッシュはコンテナディスク上で
 
 使用中リソースは削除しない。process listing が取得できない場合や、共有 `/vscode` volume 上のように他コンテナの liveness を証明できない場合は、category ごと skip して理由を報告する。`/vscode/vscode-server/bin` の世代は手動確認候補として表示するだけで自動削除しない。
 
+### ディスク不足時の手動実行
+
+`df -Ph /` の空きが少ないとき、書き込みエラーが出たとき、起動時掃除が「掃除後も閾値を超過している」と警告したときは、閾値を待たずに手動で回収する。
+
+```sh
+# 1. 何が消えるか、どれだけ回収できるかを先に確認する（ファイルシステムは変更しない）
+bash scripts/clean-devcontainer-disk.sh --dry-run
+
+# 2. 閾値を見ずに回収する
+bash scripts/clean-devcontainer-disk.sh
+```
+
+出力の `candidate` が回収見込み、`skip` は安全に削除できないと判定した分、`manual-candidate` / `manual-only` は自動削除しない手動確認候補を示す。末尾の集計表で category ごとの回収量・skip 量・未回収量を確認する。
+
+削除されるのは再生成可能なキャッシュだけで、消えても次回の利用時に再取得される（VS Code 拡張のダウンロードキャッシュ、npm の `_cacache`、cursor-agent の旧世代）。拡張本体、cursor-agent の最新世代、使用中のプロセスが参照している entry は削除しない。連続実行しても安全で、2 回目以降は候補なしの no-op になる。
+
+スクリプト自身は一時ファイルを作らないため、使用率 100% でも実行できる。ただし `npm cache clean --force` は npm 側が書き込めず失敗し得るので、その場合は検証済みの `_cacache` 直接削除へフォールバックし、npm 経路の失敗として exit 1 を返す（回収自体は行われる）。
+
+回収量はキャッシュの溜まり具合に依存する。2026-08-08 の実行では 96% → 94%（空き 3.2GiB → 4.3GiB）で約 1.07GiB を回収したが、これは保証値ではない。掃除後も閾値を超える場合は次の診断順に進む。
+
 ### ENOSPC 時の診断順
 
 1. `df -PhT / /workspaces/delegate-skills` でコンテナ側（overlay）と repository 側（host mount）を区別する。repository が host mount なら `.temp/` はコンテナディスクを圧迫していない
