@@ -17,6 +17,8 @@
   "remoteUser": "vscode",
   "runArgs": ["--name", "${localEnv:USER}-delegate-skills"],
   "postCreateCommand": "./local_setup.sh",
+  // 掃除の失敗・script 不在で container 起動をブロックしない
+  "postStartCommand": "bash -lc 'cleanup_status=0; bash scripts/clean-devcontainer-disk.sh --threshold 90 || cleanup_status=$?; if [ \"$cleanup_status\" -ne 0 ]; then printf \"warning: devcontainer disk cleanup failed (exit %s); continuing startup\\n\" \"$cleanup_status\" >&2; fi'",
   "customizations": {
     "vscode": {
       "extensions": [
