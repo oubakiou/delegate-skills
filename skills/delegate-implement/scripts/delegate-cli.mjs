@@ -1,4 +1,4 @@
-import { accessSync, appendFileSync, closeSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants, copyFileSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import path from "node:path";
 import os, { constants as constants$1 } from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -1558,6 +1558,19 @@ var failedResponseWritten = (observeFile, runDir) => {
 		ts: utcTimestamp()
 	});
 };
+var recordChildFailure = (observeFile, runDir, input) => {
+	const { failure } = input;
+	if (failure.kind === "unknown") return;
+	updateObserve(observeFile, runDir, (doc) => {
+		doc.error = {
+			kind: failure.kind,
+			retryable: failure.retryable,
+			backend: input.backend,
+			model: failure.model,
+			detected_at: utcTimestamp()
+		};
+	});
+};
 var stallTimeout = (input) => {
 	const now = utcTimestamp();
 	const stdoutBytes = captureBytes(input.stdoutCapture);
@@ -1960,18 +1973,48 @@ var validateFollowup = (expectation) => {
 	if (shapeFailure !== null) return shapeFailure;
 	return validateAgainstWorktree(previous, expectation);
 };
-var writeFailedResponse = (input, env = process.env) => {
-	const base = path.basename(input.responseFile, ".json");
-	const reportFile = path.join(input.runDir, `${base}_failed_${randomToken(5)}.md`);
-	const report = [
+var availableLine = (candidates, truncated) => {
+	const parts = [...candidates];
+	if (truncated) parts.push("…");
+	return `Available: ${parts.join(", ")}`;
+};
+var classifiedReportLines = (failure) => {
+	if (failure.kind === "model_catalog_unavailable") return [
+		"# Summary",
+		`Child CLI failed: backend could not resolve model '${failure.model}'. The backend returned no model catalog, so this is likely transient and may succeed on retry.`,
+		"",
+		"# Error",
+		"Cause: model_catalog_unavailable",
+		`Model: ${failure.model}`,
+		"Retryable: yes"
+	];
+	if (failure.kind === "model_not_found") return [
+		"# Summary",
+		`Child CLI failed: the backend does not expose model '${failure.model}'. This is not transient; pick a model the backend lists.`,
+		"",
+		"# Error",
+		"Cause: model_not_found",
+		`Model: ${failure.model}`,
+		"Retryable: no",
+		availableLine(failure.candidates, failure.candidatesTruncated)
+	];
+	return [
 		"# Summary",
 		"Child CLI failed or did not write a response.",
 		"",
-		"# Error",
-		`See observe JSON: ${input.observeFile}`,
-		`Exit code: ${input.exitCode}`,
-		""
-	].join("\n");
+		"# Error"
+	];
+};
+var failedReportLines = (input) => [
+	...classifiedReportLines(input.failure),
+	`See observe JSON: ${input.observeFile}`,
+	`Exit code: ${input.exitCode}`,
+	""
+];
+var writeFailedResponse = (input, env = process.env) => {
+	const base = path.basename(input.responseFile, ".json");
+	const reportFile = path.join(input.runDir, `${base}_failed_${randomToken(5)}.md`);
+	const report = failedReportLines(input).join("\n");
 	writeFileSync(reportFile, report);
 	if (runBuildResponse([
 		"failed",
@@ -3436,6 +3479,72 @@ read-only 制約: リポジトリのファイル編集・git 書き込み・push
 	return "";
 };
 //#endregion
+//#region shared/src/failure-classify.ts
+var SLUG_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+var MAX_CANDIDATES = 8;
+var signatures = { devin: [{
+	unknownModelLine: /^(?:Error: )?Unknown model: '(?<model>[^']*)'$/,
+	availableMarker: "Available:"
+}] };
+var unknown = { kind: "unknown" };
+var collectCandidates = (lines) => {
+	const candidates = [];
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (!SLUG_PATTERN.test(trimmed)) break;
+		candidates.push(trimmed);
+	}
+	return candidates;
+};
+var modelOfLine = (signature, line) => {
+	const match = signature.unknownModelLine.exec(line);
+	if (match === null || typeof match.groups === "undefined") return null;
+	const { model } = match.groups;
+	if (!SLUG_PATTERN.test(model)) return null;
+	return model;
+};
+var blockAfter = (signature, lines, start) => {
+	const rest = lines.slice(start);
+	const nextIndex = rest.findIndex((line) => signature.unknownModelLine.test(line));
+	if (nextIndex === -1) return rest;
+	return rest.slice(0, nextIndex);
+};
+var resultFromCandidates = (model, candidates) => {
+	if (candidates.length === 0) return {
+		kind: "model_catalog_unavailable",
+		retryable: true,
+		model
+	};
+	return {
+		kind: "model_not_found",
+		retryable: false,
+		model,
+		candidates: candidates.slice(0, MAX_CANDIDATES),
+		candidatesTruncated: candidates.length > MAX_CANDIDATES
+	};
+};
+var classifyBlock = (signature, block, model) => {
+	const markerIndex = block.indexOf(signature.availableMarker);
+	if (markerIndex === -1) return unknown;
+	return resultFromCandidates(model, collectCandidates(block.slice(markerIndex + 1)));
+};
+var classifyWithSignature = (signature, stderrTail) => {
+	const lines = stderrTail.split("\n").map((line) => line.trimEnd());
+	const modelIndex = lines.findIndex((line) => signature.unknownModelLine.test(line));
+	if (modelIndex === -1) return unknown;
+	const model = modelOfLine(signature, lines[modelIndex]);
+	if (model === null) return unknown;
+	return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), model);
+};
+var classifyChildFailure = (input) => {
+	const backendSignatures = signatures[input.backend] ?? [];
+	for (const signature of backendSignatures) {
+		const result = classifyWithSignature(signature, input.stderrTail);
+		if (result.kind !== "unknown") return result;
+	}
+	return unknown;
+};
+//#endregion
 //#region shared/src/wrapper-report.ts
 var reportModeForBackend = (backend) => {
 	if (backend === "claude" || backend === "codex") return "structured";
@@ -3686,6 +3795,23 @@ var quietly = (operation) => {
 		operation();
 	} catch {}
 };
+var STDERR_TAIL_MAX_BYTES = 8192;
+var readTailBytes = (filePath, maxBytes) => {
+	try {
+		const fd = openSync(filePath, "r");
+		try {
+			const { size } = fstatSync(fd);
+			const length = Math.min(size, maxBytes);
+			const buffer = Buffer.alloc(length);
+			const bytesRead = readSync(fd, buffer, 0, length, size - length);
+			return buffer.toString("utf8", 0, bytesRead);
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		return "";
+	}
+};
 var argOrDefault$1 = (value, fallback) => {
 	if (typeof value === "string" && value !== "") return value;
 	return fallback;
@@ -3771,7 +3897,8 @@ var finishWithoutChild = (context, exitCode, message) => {
 			runDir: context.workDir,
 			backend: context.backend,
 			responseFile: context.args.responseFile,
-			exitCode
+			exitCode,
+			failure: { kind: "unknown" }
 		}, context.env);
 	});
 	heartbeat(context.args.observeFile, context.workDir, {
@@ -3887,6 +4014,16 @@ var completeResponse = (context, config, wait) => {
 var failedResponseOutcome = (context, childStatus) => {
 	let responseStatus = childStatus;
 	if (responseStatus === 0) responseStatus = 1;
+	const failure = classifyChildFailure({
+		backend: context.backend,
+		stderrTail: readTailBytes(context.stderrCapture, STDERR_TAIL_MAX_BYTES)
+	});
+	quietly(() => {
+		recordChildFailure(context.args.observeFile, context.workDir, {
+			backend: context.backend,
+			failure
+		});
+	});
 	let stderrTail = "";
 	if (!(() => {
 		try {
@@ -3895,7 +4032,8 @@ var failedResponseOutcome = (context, childStatus) => {
 				runDir: context.workDir,
 				backend: context.backend,
 				responseFile: context.args.responseFile,
-				exitCode: responseStatus
+				exitCode: responseStatus,
+				failure
 			}, context.env);
 		} catch {
 			return false;
@@ -5459,7 +5597,8 @@ var finishDedicated = (context, lifecycle, failure) => {
 			runDir: context.workDir,
 			backend: context.backend,
 			responseFile: context.args.responseFile,
-			exitCode: failure.exitCode
+			exitCode: failure.exitCode,
+			failure: { kind: "unknown" }
 		}, context.env);
 	});
 	if (hasFileContent(context.args.responseFile)) writeCompanionFromResponse(context.args.responseFile);

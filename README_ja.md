@@ -166,6 +166,7 @@ delegate-review でこのブランチの差分をレビューして
 ローカルでの再現調査や外部 watchdog からの監視には `DELEGATE_WORK_DIR=.temp/delegate/work` を設定し、request / response / observe JSON / run ごとの scratch file をリポジトリ内の ignore 済みディレクトリに集約する。
 `DELEGATE_RUN_RETENTION_DAYS` を設定すると、その work directory 内の古い run ごとの scratch directory を削除する。監査・デバッグ用の request / response / observe JSON は削除しない。
 完走した run は observe JSON に usage と timing を記録する。backend が usage を公開する場合は `measured`、それ以外は request / response だけに基づく推定値となるため、実測値とは比較しないこと。`DELEGATE_METRICS_FILE` を設定すると JSONL telemetry を出力し、`scripts/summarize-metrics.ts` で集計できる。各 field の契約は [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。
+子 CLI が既知のモデル解決失敗 signature（現時点では Devin のみ）で失敗した run では、observe JSON の `error` に分類（一過性か恒久的か）が記録され、親は `read-json.sh .error.kind` で読める。signature に合致しない失敗では `error` は現れない。
 
 ## モデルと推論強度
 

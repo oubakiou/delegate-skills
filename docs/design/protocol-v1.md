@@ -46,6 +46,7 @@ protocol v1 の request / response schema は、session reuse の有無で変え
 - `lineage`: `lineage_id` と、follow-up では前回 observe JSON への `followup_of`
 - `backend_session`: backend CLI へ渡す resume metadata。`backend` / `model` / `resume_id` / `resume_source` / `persistence` / `home_dir` を持つ
 - `run_context`: `repo_root` / `worktree_root` / `git_head` を必須にした stale-context 判定情報。`git_branch` / `dirty` は補助情報
+- `error`: 子 CLI の失敗分類がついた run だけに入る。`kind` / `retryable` / `backend` / `model` / `detected_at` を持ち、親は `read-json.sh .error.kind` で読める。分類がつかない run ではキー自体が現れない
 
 `responder_session_id` は response を書いた worker / wrapper の追跡 ID であり、backend resume handle ではない。follow-up 可否は `backend_session.persistence == "resumable"` と `backend_session.resume_id`、および `run_context` の検証結果で判断する。
 

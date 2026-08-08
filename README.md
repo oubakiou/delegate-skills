@@ -166,6 +166,7 @@ Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 For reproducible local debugging and external watchdogs, set `DELEGATE_WORK_DIR=.temp/delegate/work` so request, response, observe JSON, and per-run scratch files stay under a repo-local ignored directory.
 Set `DELEGATE_RUN_RETENTION_DAYS` to prune old per-run scratch directories in that work directory; request, response, and observe JSON files are kept for audit/debugging.
 Completed runs record usage and timing in observe JSON. Usage is marked `measured` when the backend exposes it; otherwise, a request/response-only estimate is recorded and must not be compared with measured usage. Set `DELEGATE_METRICS_FILE` for JSONL telemetry and use `scripts/summarize-metrics.ts` to aggregate it. See [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for the field-level contract.
+When a child CLI fails with a recognized model-resolution error signature (currently Devin only), the run's observe JSON records the classification (transient vs permanent) in `error`, and the parent can read it with `read-json.sh .error.kind`. Unrecognized failures leave `error` absent.
 
 ## Models and reasoning effort
 

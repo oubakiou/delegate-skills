@@ -161,6 +161,8 @@ export const finishDedicated = (
         backend: context.backend,
         responseFile: context.args.responseFile,
         exitCode: failure.exitCode,
+        // child CLI の stderr が存在しない経路なので分類は行わず unknown 固定
+        failure: { kind: 'unknown' },
       },
       context.env
     )
@@ -185,7 +187,7 @@ export const finishDedicated = (
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync, readFileSync } = await import('node:fs')
+  const { mkdirSync, readdirSync, readFileSync } = await import('node:fs')
 
   const makeDedicatedTestContext = (): WrapperContext => {
     mkdirSync('.temp', { recursive: true })
@@ -213,6 +215,14 @@ if (import.meta.vitest) {
     })
   })
 
+  const readFailedReport = (context: WrapperContext): string => {
+    const reportName = readdirSync(context.workDir).find((name) => name.includes('_failed_'))
+    if (typeof reportName === 'undefined') {
+      throw new Error('failed report was not written')
+    }
+    return readFileSync(path.join(context.workDir, reportName), 'utf8')
+  }
+
   describe('finishDedicated', () => {
     it('records the full dispatch lifecycle with a failed response present', () => {
       const context = makeDedicatedTestContext()
@@ -229,6 +239,17 @@ if (import.meta.vitest) {
         state: { phase: 'ended', exit_code: 3, response_present: true },
       })
       expect(JSON.stringify(observe)).toContain('dispatch_end')
+      expect(readFailedReport(context)).toBe(
+        [
+          '# Summary',
+          'Child CLI failed or did not write a response.',
+          '',
+          '# Error',
+          `See observe JSON: ${context.args.observeFile}`,
+          'Exit code: 3',
+          '',
+        ].join('\n')
+      )
     })
   })
 }

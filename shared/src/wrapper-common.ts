@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { backendFromModel } from './backend.ts'
 import type { Env } from './build-request.ts'
 import type { CliResult } from './cli-result.ts'
+import { classifyChildFailure } from './failure-classify.ts'
 import { getPath, hasFileContent, readFileOrEmpty, stringOf } from './jq-compat.ts'
 import { splitModelEffort, validateModelEffort, type EffectiveEffort } from './observe-effort.ts'
 import { writeFailedResponse } from './observe-followup.ts'
@@ -11,6 +12,7 @@ import {
   heartbeat,
   importStreams,
   initObserve,
+  recordChildFailure,
   recordEffort,
   recordTiming,
   recordUsage,
@@ -43,6 +45,27 @@ export const quietly = (operation: () => void): void => {
     operation()
   } catch {
     // bash 版の || true と同じく観測系の失敗で wrapper 本体を止めない
+  }
+}
+
+export const STDERR_TAIL_MAX_BYTES = 8192
+
+// 巨大ログやディスク逼迫時でも分類のための追加読み込み量を一定に保つため、
+// ファイル末尾 maxBytes だけを読む。readFileOrEmpty() は全量読みなので流用しない
+export const readTailBytes = (filePath: string, maxBytes: number): string => {
+  try {
+    const fd = openSync(filePath, 'r')
+    try {
+      const { size } = fstatSync(fd)
+      const length = Math.min(size, maxBytes)
+      const buffer = Buffer.alloc(length)
+      const bytesRead = readSync(fd, buffer, 0, length, size - length)
+      return buffer.toString('utf8', 0, bytesRead)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return ''
   }
 }
 
@@ -180,6 +203,8 @@ export const finishWithoutChild = (
         backend: context.backend,
         responseFile: context.args.responseFile,
         exitCode,
+        // child CLI の stderr が存在しない経路なので分類は行わず unknown 固定
+        failure: { kind: 'unknown' },
       },
       context.env
     )
@@ -365,6 +390,18 @@ const failedResponseOutcome = (context: WrapperContext, childStatus: number): Re
   if (responseStatus === 0) {
     responseStatus = 1
   }
+  const failure = classifyChildFailure({
+    backend: context.backend,
+    stderrTail: readTailBytes(context.stderrCapture, STDERR_TAIL_MAX_BYTES),
+  })
+  // response 生成が失敗しても分類が observe に残るよう、writeFailedResponse より先に
+  // fail-soft で記録する
+  quietly(() => {
+    recordChildFailure(context.args.observeFile, context.workDir, {
+      backend: context.backend,
+      failure,
+    })
+  })
   let stderrTail = ''
   const written = ((): boolean => {
     try {
@@ -375,6 +412,7 @@ const failedResponseOutcome = (context: WrapperContext, childStatus: number): Re
           backend: context.backend,
           responseFile: context.args.responseFile,
           exitCode: responseStatus,
+          failure,
         },
         context.env
       )
@@ -558,9 +596,9 @@ export const wrapperResult = (context: WrapperContext, outcome: ResponseOutcome)
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { readFileSync } = await import('node:fs')
+  const { readdirSync, readFileSync } = await import('node:fs')
 
-  const makeCommonTestContext = (): WrapperContext => {
+  const makeCommonTestContext = (backend?: string): WrapperContext => {
     mkdirSync('.temp', { recursive: true })
     const dir = `.temp/wrapper-common-test-${Math.random().toString(36).slice(2)}`
     mkdirSync(dir)
@@ -575,8 +613,42 @@ if (import.meta.vitest) {
       resumeArg: '',
       sessionHome: '',
     }
-    return makeWrapperContext(args, { env: {}, scriptsDir: dir })
+    return makeWrapperContext(args, { env: {}, scriptsDir: dir, backend })
   }
+
+  const readFailedReport = (context: WrapperContext): string => {
+    const reportName = readdirSync(context.workDir).find((name) => name.includes('_failed_'))
+    if (typeof reportName === 'undefined') {
+      throw new Error('failed report was not written')
+    }
+    return readFileSync(path.join(context.workDir, reportName), 'utf8')
+  }
+
+  const tailTestDir = '.temp'
+  const writeTempLog = (content: string): string => {
+    mkdirSync(tailTestDir, { recursive: true })
+    const file = `${tailTestDir}/read-tail-test-${Math.random().toString(36).slice(2)}.log`
+    writeFileSync(file, content)
+    return file
+  }
+
+  describe('readTailBytes', () => {
+    it('returns the whole file when it is smaller than the limit', () => {
+      expect(readTailBytes(writeTempLog('abc'), 8)).toBe('abc')
+    })
+
+    it('returns the whole file when it is exactly the limit', () => {
+      expect(readTailBytes(writeTempLog('abcdefgh'), 8)).toBe('abcdefgh')
+    })
+
+    it('returns only the tail when the file exceeds the limit', () => {
+      expect(readTailBytes(writeTempLog('0123456789'), 4)).toBe('6789')
+    })
+
+    it('returns an empty string for a missing file', () => {
+      expect(readTailBytes('.temp/read-tail-test-missing.log', 8)).toBe('')
+    })
+  })
 
   describe('envOrDefault', () => {
     it('falls back on unset and empty values like the bash :- expansion', () => {
@@ -615,6 +687,17 @@ if (import.meta.vitest) {
       expect(observe).toMatchObject({
         streams: { stderr: { content: 'ERROR: claude CLI が見つかりません。\n' } },
       })
+      expect(readFailedReport(context)).toBe(
+        [
+          '# Summary',
+          'Child CLI failed or did not write a response.',
+          '',
+          '# Error',
+          `See observe JSON: ${context.args.observeFile}`,
+          'Exit code: 3',
+          '',
+        ].join('\n')
+      )
     })
   })
 
@@ -625,6 +708,56 @@ if (import.meta.vitest) {
       expect(outcome.responseStatus).toBe(1)
       expect(outcome.responseAllowsResume).toBe(false)
       expect(hasFileContent(context.args.responseFile)).toBe(true)
+    })
+
+    it('reflects the classified child stderr tail in the failed response', () => {
+      const context = makeCommonTestContext('devin')
+      writeFileSync(
+        context.stderrCapture,
+        "Unknown model: 'kimi-k3-max'\nAvailable:\ngpt-5\nclaude-opus\n"
+      )
+      const outcome = finalizeResponse(context, 1)
+      expect(outcome.responseStatus).toBe(1)
+      expect(readFailedReport(context)).toBe(
+        [
+          '# Summary',
+          "Child CLI failed: the backend does not expose model 'kimi-k3-max'. This is not transient; pick a model the backend lists.",
+          '',
+          '# Error',
+          'Cause: model_not_found',
+          'Model: kimi-k3-max',
+          'Retryable: no',
+          'Available: gpt-5, claude-opus',
+          `See observe JSON: ${context.args.observeFile}`,
+          'Exit code: 1',
+          '',
+        ].join('\n')
+      )
+    })
+
+    it('keeps the classified error in observe JSON when failed response generation fails', () => {
+      const context = makeCommonTestContext('devin')
+      writeFileSync(
+        context.stderrCapture,
+        "Unknown model: 'kimi-k3-max'\nAvailable:\ngpt-5\nclaude-opus\n"
+      )
+      // response 生成だけを失敗させるため、response_file の親パスを通常ファイルにしておく
+      // （mkdir recursive は既存の通常ファイルで失敗する）。分類の observe 記録が先行することを検証する
+      const blocker = path.join(context.workDir, 'blocked')
+      writeFileSync(blocker, '')
+      context.args.responseFile = path.join(blocker, 'x_res.json')
+      const outcome = finalizeResponse(context, 1)
+      expect(outcome.responseStatus).toBe(1)
+      expect(hasFileContent(context.args.responseFile)).toBe(false)
+      const observe: unknown = JSON.parse(readFileSync(context.args.observeFile, 'utf8'))
+      expect(observe).toMatchObject({
+        error: {
+          kind: 'model_not_found',
+          retryable: false,
+          backend: 'devin',
+          model: 'kimi-k3-max',
+        },
+      })
     })
 
     it('derives companion markdown and resume permission from a worker response', () => {

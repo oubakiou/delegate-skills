@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { realpathSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { runBuildResponse } from './build-response.ts'
+import type { ChildFailure } from './failure-classify.ts'
 import { getPath, hasFileContent, isRecord, readFileOrEmpty } from './jq-compat.ts'
 import { failedResponseWritten, type Env } from './observe-store.ts'
 import { randomToken } from './protocol.ts'
@@ -191,7 +192,50 @@ export interface FailedResponseInput {
   backend: string
   responseFile: string
   exitCode: number
+  failure: ChildFailure
 }
+
+const availableLine = (candidates: readonly string[], truncated: boolean): string => {
+  const parts = [...candidates]
+  if (truncated) {
+    parts.push('…')
+  }
+  return `Available: ${parts.join(', ')}`
+}
+
+const classifiedReportLines = (failure: ChildFailure): string[] => {
+  if (failure.kind === 'model_catalog_unavailable') {
+    return [
+      '# Summary',
+      `Child CLI failed: backend could not resolve model '${failure.model}'. The backend returned no model catalog, so this is likely transient and may succeed on retry.`,
+      '',
+      '# Error',
+      'Cause: model_catalog_unavailable',
+      `Model: ${failure.model}`,
+      'Retryable: yes',
+    ]
+  }
+  if (failure.kind === 'model_not_found') {
+    return [
+      '# Summary',
+      `Child CLI failed: the backend does not expose model '${failure.model}'. This is not transient; pick a model the backend lists.`,
+      '',
+      '# Error',
+      'Cause: model_not_found',
+      `Model: ${failure.model}`,
+      'Retryable: no',
+      availableLine(failure.candidates, failure.candidatesTruncated),
+    ]
+  }
+  return ['# Summary', 'Child CLI failed or did not write a response.', '', '# Error']
+}
+
+const failedReportLines = (input: FailedResponseInput): string[] => [
+  ...classifiedReportLines(input.failure),
+  `See observe JSON: ${input.observeFile}`,
+  `Exit code: ${input.exitCode}`,
+  '',
+]
 
 // 子 CLI が response を書けなかった場合の fail-closed な失敗レスポンス生成
 export const writeFailedResponse = (
@@ -200,15 +244,7 @@ export const writeFailedResponse = (
 ): boolean => {
   const base = path.basename(input.responseFile, '.json')
   const reportFile = path.join(input.runDir, `${base}_failed_${randomToken(5)}.md`)
-  const report = [
-    '# Summary',
-    'Child CLI failed or did not write a response.',
-    '',
-    '# Error',
-    `See observe JSON: ${input.observeFile}`,
-    `Exit code: ${input.exitCode}`,
-    '',
-  ].join('\n')
+  const report = failedReportLines(input).join('\n')
   writeFileSync(reportFile, report)
   const result = runBuildResponse(
     ['failed', `wrapper:${input.backend}:${base}`, input.responseFile],
@@ -220,4 +256,123 @@ export const writeFailedResponse = (
   }
   failedResponseWritten(input.observeFile, input.runDir)
   return true
+}
+
+if (import.meta.vitest) {
+  const { describe, it, expect } = import.meta.vitest
+  const { mkdirSync, readdirSync, readFileSync } = await import('node:fs')
+  const { initObserve } = await import('./observe-store.ts')
+
+  const makeFailedResponseFixture = (): {
+    runDir: string
+    observeFile: string
+    responseFile: string
+  } => {
+    mkdirSync('.temp', { recursive: true })
+    const runDir = `.temp/observe-followup-test-${Math.random().toString(36).slice(2)}`
+    mkdirSync(runDir)
+    const observeFile = path.join(runDir, 'delegate_chore_x_observe.json')
+    const responseFile = path.join(runDir, 'delegate_chore_x_res.json')
+    initObserve({
+      observeFile,
+      runDir,
+      taskType: 'chore',
+      model: 'kimi-k3-max',
+      backend: 'devin',
+      requestFile: path.join(runDir, 'delegate_chore_x_req.json'),
+      responseFile,
+      requesterSessionId: '',
+    })
+    return { runDir, observeFile, responseFile }
+  }
+
+  const writeFailedReport = (failure: ChildFailure): { report: string; observeFile: string } => {
+    const fixture = makeFailedResponseFixture()
+    const written = writeFailedResponse({ ...fixture, backend: 'devin', exitCode: 1, failure }, {})
+    expect(written).toBe(true)
+    const reportName = readdirSync(fixture.runDir).find((name) => name.includes('_failed_'))
+    if (typeof reportName === 'undefined') {
+      throw new Error('failed report was not written')
+    }
+    return {
+      report: readFileSync(path.join(fixture.runDir, reportName), 'utf8'),
+      observeFile: fixture.observeFile,
+    }
+  }
+
+  describe('writeFailedResponse report body', () => {
+    it('keeps the legacy wording byte-identical for unknown failures', () => {
+      const { report, observeFile } = writeFailedReport({ kind: 'unknown' })
+      expect(report).toBe(
+        [
+          '# Summary',
+          'Child CLI failed or did not write a response.',
+          '',
+          '# Error',
+          `See observe JSON: ${observeFile}`,
+          'Exit code: 1',
+          '',
+        ].join('\n')
+      )
+    })
+
+    it('marks model_catalog_unavailable as retryable without an Available line', () => {
+      const { report, observeFile } = writeFailedReport({
+        kind: 'model_catalog_unavailable',
+        retryable: true,
+        model: 'kimi-k3-max',
+      })
+      expect(report).toBe(
+        [
+          '# Summary',
+          "Child CLI failed: backend could not resolve model 'kimi-k3-max'. The backend returned no model catalog, so this is likely transient and may succeed on retry.",
+          '',
+          '# Error',
+          'Cause: model_catalog_unavailable',
+          'Model: kimi-k3-max',
+          'Retryable: yes',
+          `See observe JSON: ${observeFile}`,
+          'Exit code: 1',
+          '',
+        ].join('\n')
+      )
+    })
+
+    it('lists candidates for model_not_found', () => {
+      const { report, observeFile } = writeFailedReport({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'kimi-k3-max',
+        candidates: ['gpt-5', 'claude-opus'],
+        candidatesTruncated: false,
+      })
+      expect(report).toBe(
+        [
+          '# Summary',
+          "Child CLI failed: the backend does not expose model 'kimi-k3-max'. This is not transient; pick a model the backend lists.",
+          '',
+          '# Error',
+          'Cause: model_not_found',
+          'Model: kimi-k3-max',
+          'Retryable: no',
+          'Available: gpt-5, claude-opus',
+          `See observe JSON: ${observeFile}`,
+          'Exit code: 1',
+          '',
+        ].join('\n')
+      )
+    })
+
+    it('appends an ellipsis to the Available line when candidates are truncated', () => {
+      const candidates = ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7']
+      const { report } = writeFailedReport({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'kimi-k3-max',
+        candidates,
+        candidatesTruncated: true,
+      })
+      expect(report).toContain(`Available: ${candidates.join(', ')}, …\n`)
+    })
+  })
 }

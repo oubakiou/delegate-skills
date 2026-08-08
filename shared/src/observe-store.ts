@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { ChildFailure } from './failure-classify.ts'
 import { getPath, isRecord, jqCoalesce } from './jq-compat.ts'
 import { withObserveLock } from './observe-lock.ts'
 import {
@@ -594,6 +595,29 @@ export const failedResponseWritten = (observeFile: string, runDir: string): void
   appendObserveEvent(observeFile, runDir, { kind: 'failed_response_written', ts: utcTimestamp() })
 }
 
+// 未分類 (unknown) ではキー自体を作らない: read-json は欠落キーと明示 null を
+// どちらも "null" として返すため、null 初期化しても読み手から区別できない。
+// candidates は response の Available: 行が既に持つため observe 肥大を避けて載せない
+export const recordChildFailure = (
+  observeFile: string,
+  runDir: string,
+  input: { backend: string; failure: ChildFailure }
+): void => {
+  const { failure } = input
+  if (failure.kind === 'unknown') {
+    return
+  }
+  updateObserve(observeFile, runDir, (doc) => {
+    doc.error = {
+      kind: failure.kind,
+      retryable: failure.retryable,
+      backend: input.backend,
+      model: failure.model,
+      detected_at: utcTimestamp(),
+    }
+  })
+}
+
 export interface StallTimeoutInput {
   observeFile: string
   runDir: string
@@ -789,6 +813,7 @@ const observeEventKinds = (doc: Record<string, unknown>): unknown[] => {
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { mkdirSync, utimesSync } = await import('node:fs')
+  const { runReadJson } = await import('./read-json.ts')
 
   const initFixture = (): { observeFile: string; runDir: string } => {
     const dir = `.temp/observe-store-test-${randomToken(8)}`
@@ -847,6 +872,60 @@ if (import.meta.vitest) {
       const kinds = observeEventKinds(observeDocOf(run.observeFile))
       expect(kinds).toContain('response_missing')
       expect(kinds).toContain('failed_response_written')
+    })
+  })
+
+  describe('recordChildFailure', () => {
+    it('leaves the error key absent on a freshly initialized observe JSON', () => {
+      const run = initFixture()
+      expect('error' in observeDocOf(run.observeFile)).toBe(false)
+      expect(runReadJson(['.error.kind', run.observeFile], Buffer.alloc(0)).stdout).toBe('null\n')
+    })
+
+    it('records model_catalog_unavailable as a top-level error object', () => {
+      const run = initFixture()
+      recordChildFailure(run.observeFile, run.runDir, {
+        backend: 'devin',
+        failure: { kind: 'model_catalog_unavailable', retryable: true, model: 'kimi-k3-max' },
+      })
+      const doc = observeDocOf(run.observeFile)
+      expect(doc.error).toMatchObject({
+        kind: 'model_catalog_unavailable',
+        retryable: true,
+        backend: 'devin',
+        model: 'kimi-k3-max',
+      })
+      expect(typeof getPath(doc, ['error', 'detected_at'])).toBe('string')
+      expect(runReadJson(['.error.kind', run.observeFile], Buffer.alloc(0)).stdout).toBe(
+        'model_catalog_unavailable\n'
+      )
+    })
+
+    it('records model_not_found without candidates fields', () => {
+      const run = initFixture()
+      recordChildFailure(run.observeFile, run.runDir, {
+        backend: 'devin',
+        failure: {
+          kind: 'model_not_found',
+          retryable: false,
+          model: 'kimi-k3-max',
+          candidates: ['gpt-5', 'claude-opus'],
+          candidatesTruncated: true,
+        },
+      })
+      const doc = observeDocOf(run.observeFile)
+      expect(doc.error).toMatchObject({ kind: 'model_not_found', retryable: false })
+      expect(doc.error).not.toHaveProperty('candidates')
+      expect(doc.error).not.toHaveProperty('candidatesTruncated')
+    })
+
+    it('does not create the error key for an unknown classification', () => {
+      const run = initFixture()
+      recordChildFailure(run.observeFile, run.runDir, {
+        backend: 'devin',
+        failure: { kind: 'unknown' },
+      })
+      expect('error' in observeDocOf(run.observeFile)).toBe(false)
     })
   })
 

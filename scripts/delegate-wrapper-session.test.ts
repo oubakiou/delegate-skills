@@ -261,6 +261,22 @@ const readResponseStatus = (filePath: string): string => {
   return value.status
 }
 
+// 分類が unknown のとき error キー自体を作らない契約を検証するため、
+// 欠落 (null) とオブジェクトを区別して返す
+const readObserveError = (filePath: string): Record<string, unknown> | null => {
+  const value = readUnknownJson(filePath)
+  if (!isRecord(value)) {
+    throw new Error('invalid observe JSON')
+  }
+  if (!('error' in value)) {
+    return null
+  }
+  if (!isRecord(value.error)) {
+    throw new Error('invalid observe error')
+  }
+  return value.error
+}
+
 const countMetricKind = (filePath: string, kind: string): number =>
   readFileSync(filePath, 'utf8')
     .trimEnd()
@@ -347,6 +363,11 @@ if (process.env.FAKE_CODEX_EXIT_WITHOUT_RESPONSE === '1') {
   logRun()
   process.exit(9)
 }
+if (process.env.FAKE_CODEX_UNKNOWN_MODEL === '1') {
+  logRun()
+  process.stderr.write("Error: Unknown model: 'kimi-k3-max'\\nAvailable:\\n")
+  process.exit(9)
+}
 const status = process.env.FAKE_CODEX_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
 const lastMsgIndex = args.indexOf('--output-last-message')
 if (lastMsgIndex !== -1 && process.env.FAKE_CODEX_NO_LAST_MSG !== '1') {
@@ -382,6 +403,16 @@ if (promptFileIndex !== -1) {
 }
 if (process.env.FAKE_DEVIN_EXIT_WITHOUT_RESPONSE === '1') {
   fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
+  process.exit(9)
+}
+if (process.env.FAKE_DEVIN_UNKNOWN_MODEL === 'empty') {
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
+  process.stderr.write("Error: Unknown model: 'kimi-k3-max'\\nAvailable:\\n")
+  process.exit(9)
+}
+if (process.env.FAKE_DEVIN_UNKNOWN_MODEL === 'listed') {
+  fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, command: 'devin', cwd: process.cwd(), env: {TMPDIR: process.env.TMPDIR}}))
+  process.stderr.write("Error: Unknown model: 'kimi-k3-max'\\nAvailable:\\nswe-1.7\\ndevin-glm-5.2\\n")
   process.exit(9)
 }
 const reportMatches = [...prompt.matchAll(/"([^"]+report\\.md)"/g)].map((match) => match[1])
@@ -2729,6 +2760,98 @@ describe('wrapper report collection', () => {
     expect(response.status).toBe('completed')
     expect(response.responder_session_id).toMatch(/^cursor:composer-2\.5:/)
     expect(structuredParseFrom(fixture.observeFile)).toBeNull()
+  })
+})
+
+const expectCatalogUnavailableBody = (body: string): void => {
+  expect(body).toContain("model 'kimi-k3-max'")
+  expect(body).toContain('transient')
+  expect(body).toContain('retry')
+  expect(body).toContain('Cause: model_catalog_unavailable')
+  expect(body).toContain('Model: kimi-k3-max')
+  expect(body).toContain('Retryable: yes')
+}
+
+const expectModelNotFoundBody = (body: string): void => {
+  expect(body).toContain('Cause: model_not_found')
+  expect(body).toContain('Model: kimi-k3-max')
+  expect(body).toContain('Retryable: no')
+  expect(body).toContain('Available: swe-1.7, devin-glm-5.2')
+}
+
+const expectDevinError = (
+  error: Record<string, unknown> | null,
+  kind: string,
+  retryable: boolean
+): void => {
+  expect(error).toMatchObject({ kind, retryable, backend: 'devin', model: 'kimi-k3-max' })
+}
+
+const expectDetectedAt = (error: Record<string, unknown> | null): void => {
+  if (error === null) {
+    throw new Error('missing observe error')
+  }
+  expect(typeof error.detected_at).toBe('string')
+  expect(error.detected_at).not.toBe('')
+}
+
+describe('child failure classification', () => {
+  it('classifies an empty model catalog as retryable model_catalog_unavailable', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, [], {
+      ...fixture.env,
+      FAKE_DEVIN_UNKNOWN_MODEL: 'empty',
+    })
+    const response = protocolResponse(fixture.responseFile)
+    const error = readObserveError(fixture.observeFile)
+
+    expect(result.status).toBe(9)
+    expect(response.status).toBe('failed')
+    expectCatalogUnavailableBody(response.sections.join('\n'))
+    expectDevinError(error, 'model_catalog_unavailable', true)
+    expectDetectedAt(error)
+  })
+
+  it('classifies a listed model catalog as non-retryable model_not_found', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, [], {
+      ...fixture.env,
+      FAKE_DEVIN_UNKNOWN_MODEL: 'listed',
+    })
+    const response = protocolResponse(fixture.responseFile)
+    const error = readObserveError(fixture.observeFile)
+
+    expect(result.status).toBe(9)
+    expect(response.status).toBe('failed')
+    expectModelNotFoundBody(response.sections.join('\n'))
+    expectDevinError(error, 'model_not_found', false)
+    expect(error).not.toHaveProperty('candidates')
+  })
+
+  it('keeps the unknown wording and no error key for unsigned devin failures', () => {
+    const fixture = makeFixture('devin')
+    const result = runDevin(fixture, [], {
+      ...fixture.env,
+      FAKE_DEVIN_EXIT_WITHOUT_RESPONSE: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(9)
+    expect(response.sections.join('\n')).toContain('Child CLI failed or did not write a response.')
+    expect(readObserveError(fixture.observeFile)).toBeNull()
+  })
+
+  it('does not classify the same stderr signature for codex (backend-scoped table)', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_UNKNOWN_MODEL: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(9)
+    expect(response.sections.join('\n')).toContain('Child CLI failed or did not write a response.')
+    expect(readObserveError(fixture.observeFile)).toBeNull()
   })
 })
 
