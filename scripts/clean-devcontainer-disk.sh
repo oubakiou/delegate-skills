@@ -290,6 +290,9 @@ dry_run=0
 threshold_pct=""
 min_free_bytes=""
 test_root=""
+# 空文字を「未指定」と同一視すると test mode のつもりで production の /vscode を
+# 対象にしてしまうため、指定の有無を値と別に持つ
+test_root_given=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -319,6 +322,7 @@ while [ $# -gt 0 ]; do
         exit 2
       }
       test_root="$2"
+      test_root_given=1
       shift 2
       ;;
     *)
@@ -370,7 +374,11 @@ VSCODE_ROOT="/vscode"
 # test mode では .temp/ 配下と検証済みの canonical test root
 VSCODE_BASE="/"
 CANON_TEMP=""
-if [ -n "$test_root" ]; then
+if [ "$test_root_given" = "1" ]; then
+  if [ -z "$test_root" ]; then
+    printf 'error: --test-root に空文字は指定できません\n' >&2
+    exit 2
+  fi
   if [ ! -d "$test_root" ]; then
     printf 'error: --test-root は既存 directory を指定してください: %s\n' "$(disp "$test_root")" >&2
     exit 2
