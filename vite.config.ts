@@ -38,6 +38,11 @@ export default {
     // 契約テストは子プロセスの stdout / exit code を検証するため、sandbox が spawn を
     // 壊す環境では worker 作成前に全体を止め、製品回帰として誤報しない。
     globalSetup: ['./scripts/test-execution-capability.ts'],
+    // 契約テストは 1 ケースにつき bash / node / fake CLI の子プロセスを起動する。
+    // 全ファイル並列実行時はホストの負荷でこの spawn が数秒単位で遅延し、vitest 既定の
+    // 5s では実測 7.5s の遅延に耐えられない。ハングの検出は全体の実行時間 (20s 前後) を
+    // 大きく上回る値で担保する。
+    testTimeout: 30_000,
     // exclude を指定すると既定 (node_modules / .git のみ) を置換するため再掲する。
     // .temp/ は使い捨ての作業領域で、紛れ込んだテストファイルを対象にしない。
     exclude: ['**/node_modules/**', '**/.git/**', '**/.temp/**'],
