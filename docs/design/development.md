@@ -257,12 +257,27 @@ backend の CLI 出力を observe JSON へ正規化する処理は `shared/src/o
 `DELEGATE_<TYPE>_MODEL` で指定できるモデルを追加（または価格改定を反映）する際の作業一覧。
 
 1. **価格表の正本を更新**: `shared/model-token-prices.json` の `models` にエントリを追加する。`pricing_source` は `pricing_sources` に定義済みの key を使い、未定義の source なら先に追加する。無料プレビュー等は `pricing_status` で明示し、価格が見つからない場合は `null` + `pricing_status: "not_listed_in_source"` とする。既定エイリアス（例: `swe` → 最新版）の付け替えが必要なら alias エントリも更新する。`retrieved_at` を確認日に更新する
-2. **effort suffix の許容値セットを更新**: 追加モデルが `@effort` suffix に対応する場合、`shared/src/observe-effort.ts` の `validateModelEffort` の backend / モデル別許容値を更新する。Cursor モデルは bracket override のパラメータ名（`effort` / `reasoning` 等）と許容値がモデル別なので、**実 CLI で受理を確認してから**検証ヘルパと `shared/src/wrapper-cursor.ts` の bracket 変換の両方へ追加する。未確認のモデルは追加せず fail-closed（exit 6）のままにする。検証ヘルパ・wrapper 変換・README の Effort handling 節・テスト（`observe-effort.ts` の in-source suffix 検証、`scripts/delegate-wrapper-session.test.ts` の argv assert）は同一コミットで更新する
+2. **effort suffix の許容値セットを更新**: 追加モデルが `@effort` suffix に対応する場合、`shared/src/observe-effort.ts` の `validateModelEffort` の backend / モデル別許容値を更新する。Cursor モデルは effort の渡し方（bracket override のパラメータ名か catalog slug か）と許容値がモデル別なので、**実 CLI で受理を確認してから**検証ヘルパと `shared/src/wrapper-cursor.ts` の `cursorCliModelOf` 変換テーブルの両方へ追加する。未確認のモデルは追加せず fail-closed（exit 6）のままにする。検証ヘルパ・wrapper 変換・README の Effort handling 節・テスト（`observe-effort.ts` の in-source suffix 検証、`scripts/delegate-wrapper-session.test.ts` の argv assert）は同一コミットで更新する
 3. **skill コピーへ同期**: `npm run sync-shared`。`skills/*/model-token-prices.json` を直接編集しない
 4. **README 更新（英日両方）**: `README.md` と `README_ja.md` の Documented model names 表と Effort handling 節（suffix 対応状況・既定挙動表）に追加する。両言語の記載が対応していることを確認する
 5. **価格チャート再生成**: `docs/assets/model-token-prices.svg`（全 priced モデル）と `docs/assets/model-token-prices-low-cost.svg`（input ≤ \$1 または output ≤ \$5 per 1M tokens のみ）を更新後の JSON から再生成する（dataviz-svg skill / Vega-Lite）。low-cost 側の掲載可否は閾値で機械的に判定する
 6. **テスト追加**: 価格解決やコスト推定の挙動が変わる場合（新 provider、prefix 解決、alias 変更等）は `shared/src/observe-cost.ts` の in-source test にケースを追加する
 7. **検証**: `npm run sync-shared:check` / `vp check` / `npm test`
+
+### Cursor catalog drift の確認
+
+Cursor は catalog 側の model 名と effort の渡し方を予告なく変える。`shared/src/wrapper-cursor.ts` の `cursorCliModelOf` は「実 CLI で受理を確認できた変換だけを持つ」テーブルなので、変えたつもりがなくても陳腐化する。Cursor 関連のモデルを追加・変更するとき、および Cursor backend の委譲が `Cannot use this model` で失敗したときは次を確認する。
+
+```sh
+agent --list-models
+```
+
+- **catalog に無い名前が受理されることがある**ため、この一覧を allowlist として使ってはいけない（例: `grok-4.5` は一覧に無いが受理される）。あくまで変換テーブルとの突合材料として読む
+- **catalog 名自体が `cursor-` で始まる場合がある**（例: `cursor-grok-4.5-medium`）。delegate 側の `cursor-` は backend selector で 1 回だけなので、この種のモデルでは剥離後の base model と CLI へ渡す名前が一致しない。`cursorCliModelOf` はその写像を持つ場所であって、単なる prefix 剥離ではない
+- **effort の渡し方はモデル別**。bracket override（`glm-5.2[reasoning=high]`）が通るモデルと、catalog slug（`cursor-grok-4.5-medium`）しか通らないモデルがある。同じモデルでも CLI のバージョンで変わり得るため、両方を実 CLI で試して確認する
+- 実効値は run 後の隔離 cli-config（`selectedModel` / `modelParameters`）で確認できる。`CURSOR_CONFIG_DIR` を一時ディレクトリへ向けて 1 回 run し、期待した effort が記録されるかを見る。既定値を確認したいときは別の値を seed してから run し、上書きされるかで判定する
+
+drift は実行時にも検知できる。Cursor の model 解決失敗は `shared/src/failure-classify.ts` の signature で分類され、observe JSON の `error.kind`（`read-json.sh .error.kind`）に出る。`error.model` は**子 CLI が拒否した backend 側の文字列**で、delegate の指定子（`run.model` / `usage.model`）とは別物である点に注意する。
 
 ## git hooks（pre-commit）
 
