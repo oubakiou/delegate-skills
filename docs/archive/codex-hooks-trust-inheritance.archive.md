@@ -1,25 +1,27 @@
 # Codex worker での project hooks 有効化 設計・実装計画
 
-[![MKDN](https://img.shields.io/badge/MKDN-review-red?style=for-the-badge)](https://mkdn.review/?url=https%3A%2F%2Fraw.githubusercontent.com%2Foubakiou%2Fdelegate-skills%2Frefs%2Fheads%2Fmain%2Fdocs%2Ffeature%2Fcodex-hooks-trust-inheritance.md)
+[![MKDN](https://img.shields.io/badge/MKDN-review-red?style=for-the-badge)](https://mkdn.review/?url=https%3A%2F%2Fraw.githubusercontent.com%2Foubakiou%2Fdelegate-skills%2Frefs%2Fheads%2Fmain%2Fdocs%2Farchive%2Fcodex-hooks-trust-inheritance.archive.md)
 
 [issue #28](https://github.com/oubakiou/delegate-skills/issues/28) に対応する。Codex backend へ委譲した worker で、対象リポジトリの `.codex/hooks.json`（project hooks）が親セッションと同様に発火するようにする。完了後は [spec.md](../design/spec.md) の「Codex パスの起動」「セッション再利用（opt-in）」「observe JSON」「環境変数」章へ永続情報を移し、本ファイルは archive する。
+
+> **このプランは完了済み**（2026-08-09 archive）。永続情報は [spec.md](../design/spec.md) の「Codex パスの起動」「セッション再利用（opt-in）」「observe JSON」「環境変数」章にある。本ファイルは設計判断と実測の記録として残す。
 
 **採用案: `implement` / `chore` の `codex exec` に `--dangerously-bypass-hook-trust` を付与する（§5a / §5d）。** 当初は「親の trust 状態を隔離 `CODEX_HOME` へ透過する」案（以下 A 案）を主軸に置いていたが、§2.3 の実測で不成立と判明したため差し替えた。実行時安定性を最優先の判断軸とする。
 
 ## 1. 対応スコープ
 
-| 要件                                                                      | 開始時の状態 | 完了条件                                                                                                                                         | 最終状態 | 状態   |
-| ------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | ------ |
-| [MUST] Codex worker で対象リポジトリの project hooks が発火する           | 部分         | 実 Codex への委譲（通常 run / follow-up の双方）で `.codex/hooks.json` の PostToolUse hook が実行されることを確認                                | {}       | 未着手 |
-| [MUST] 有効化が「hook を無条件に信頼する」ことの明示                      | 未           | spec.md の「Codex パスの起動」に、wrapper が persisted hook trust を要求せず enabled hook を実行することを明記                                   | {}       | 未着手 |
-| [MUST] 各 task_type の書き込み契約が hook 経由で破れない                  | 未           | §5d の allowlist が確定し、Codex wrapper を通る allowlist 外の種別（explore / review / htmldoc）の argv に flag が付かないことを契約テストで固定 | {}       | 未着手 |
-| [MUST] flag 非対応 CLI での挙動が定義され、契約テストで固定されている     | 未           | §5c の方針（fail-closed）が実装され、flag を拒否する fake CLI で期待どおりの終了状態になることを確認                                             | {}       | 未着手 |
-| [MUST] 有効化の範囲が対象リポジトリに限定される                           | 未           | `-C <repoRoot>`（通常 run）または cwd = repoRoot（follow-up）配下の hook のみが対象で、親の user 設定側 hooks が持ち込まれないことを確認         | {}       | 未着手 |
-| [MUST] follow-up / resumable lineage での挙動が定義され、テストされている | 未           | argv は run ごとに構成されるため opt-out も run ごとに効く（§5f）。initial / follow-up 双方の argv assert に加え、follow-up の実発火を確認       | {}       | 未着手 |
-| [SHOULD] hook 実行が委譲の所要時間に与える影響を把握する                  | 部分         | §2.3 の実測（差し戻し時に 11s → 37s）を spec.md か README の注記に反映し、退避路として opt-out を案内する                                        | {}       | 未着手 |
-| [SHOULD] 無効化する opt-out env を提供する                                | 未           | `DELEGATE_CODEX_HOOKS=0` で flag が付かないことを契約テストで確認                                                                                | {}       | 未着手 |
-| [SHOULD] 有効化の有無を observe JSON に記録する                           | 未           | `project_hooks` フィールド（§3.2）が記録され、`read-json.sh` で読める                                                                            | {}       | 未着手 |
-| [SHOULD] 公開仕様（spec.md / README 英日）が実装と一致する                | 未           | 「Codex パスの起動」節と環境変数表が更新され、英日の記載が対応している                                                                           | {}       | 未着手 |
+| 要件                                                                      | 開始時の状態 | 完了条件                                                                                                                                         | 最終状態                                                                                  | 状態 |
+| ------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ---- |
+| [MUST] Codex worker で対象リポジトリの project hooks が発火する           | 部分         | 実 Codex への委譲（通常 run / follow-up の双方）で `.codex/hooks.json` の PostToolUse hook が実行されることを確認                                | 通常 run / resumable initial / follow-up のすべてで発火（§2.4 #1 / #3 / #4 / #5）         | 完了 |
+| [MUST] 有効化が「hook を無条件に信頼する」ことの明示                      | 未           | spec.md の「Codex パスの起動」に、wrapper が persisted hook trust を要求せず enabled hook を実行することを明記                                   | spec.md「Codex パスの起動」に明記。あわせて hook が sandbox 制約を受けないことも記載      | 完了 |
+| [MUST] 各 task_type の書き込み契約が hook 経由で破れない                  | 未           | §5d の allowlist が確定し、Codex wrapper を通る allowlist 外の種別（explore / review / htmldoc）の argv に flag が付かないことを契約テストで固定 | `HOOK_ENABLED_TASK_TYPES` = implement / chore。allowlist 外の非付与を契約テストで固定     | 完了 |
+| [MUST] flag 非対応 CLI での挙動が定義され、契約テストで固定されている     | 未           | §5c の方針（fail-closed）が実装され、flag を拒否する fake CLI で期待どおりの終了状態になることを確認                                             | fail-closed を実装し、flag を拒否する fake CLI で exit code 透過を固定                    | 完了 |
+| [MUST] 有効化の範囲が対象リポジトリに限定される                           | 未           | `-C <repoRoot>`（通常 run）または cwd = repoRoot（follow-up）配下の hook のみが対象で、親の user 設定側 hooks が持ち込まれないことを確認         | 親 `CODEX_HOME` の user hook が全ケースで非発火（§2.4）。fixture の有効性は正の対照で担保 | 完了 |
+| [MUST] follow-up / resumable lineage での挙動が定義され、テストされている | 未           | argv は run ごとに構成されるため opt-out も run ごとに効く（§5f）。initial / follow-up 双方の argv assert に加え、follow-up の実発火を確認       | argv assert に加え、follow-up の実発火と run ごとの opt-out 切り替えを実測（§2.4 #4-#6）  | 完了 |
+| [SHOULD] hook 実行が委譲の所要時間に与える影響を把握する                  | 部分         | §2.3 の実測（差し戻し時に 11s → 37s）を spec.md か README の注記に反映し、退避路として opt-out を案内する                                        | §2.3 #9 の実測値と退避路を spec.md に記載。実運用値は利用側の hook 次第                   | 完了 |
+| [SHOULD] 無効化する opt-out env を提供する                                | 未           | `DELEGATE_CODEX_HOOKS=0` で flag が付かないことを契約テストで確認                                                                                | `DELEGATE_CODEX_HOOKS`。契約テストと e2e の双方で確認                                     | 完了 |
+| [SHOULD] 有効化の有無を observe JSON に記録する                           | 未           | `project_hooks` フィールド（§3.2）が記録され、`read-json.sh` で読める                                                                            | `project_hooks { enabled, source }`。3 値と複合時の優先順位を契約テストで固定             | 完了 |
+| [SHOULD] 公開仕様（spec.md / README 英日）が実装と一致する                | 未           | 「Codex パスの起動」節と環境変数表が更新され、英日の記載が対応している                                                                           | spec.md 4 節と README 英日を更新。記載の対応も確認済み                                    | 完了 |
 
 スコープ外:
 
@@ -96,10 +98,40 @@ project 側 `.codex/config.toml` を持たない最小リポジトリに sentine
 - **実測条件では approval 由来のハングが起きなかった**（#8）。sandbox を明示していることが理由と推定されるが、sandbox 未指定との比較や他タスク条件では未検証
 - **未知 flag は API 到達前に exit 2 で落ちる**（#10）。副作用ゼロで観測可能
 
-未確定（Step 3 に残す）:
+### 2.4 e2e 実測（2026-08-09、実装後。codex-cli 0.145.0 / `gpt-5.6-luna`）
 
-- 非既定 sandbox（`CODEX_DELEGATE_SANDBOX` を絞った運用）で hook command が sandbox 制約を受けるか
-- `codex exec resume`（follow-up 経路）で project hooks が cwd ベースに解決されるか。flag の存在自体は help で確認済み
+最小リポジトリ（project `.codex/hooks.json` に sentinel hook）と、user hook（`$CODEX_HOME/hooks.json` に別 sentinel）を置いた親 HOME fixture を用意し、delegate 経由で検証した。fixture の有効性は、同じ親 HOME で直接 `codex exec --dangerously-bypass-hook-trust` を実行して user sentinel が発火することを先に確認して担保した。
+
+| #   | ケース                                | project hook | user hook | `project_hooks`      |
+| --- | ------------------------------------- | ------------ | --------- | -------------------- |
+| 1   | 通常 run（`implement`、既定）         | **発火**     | 非発火    | `true` / `flag`      |
+| 2   | 通常 run（`DELEGATE_CODEX_HOOKS=0`）  | 非発火       | 非発火    | `false` / `disabled` |
+| 3   | 通常 run（`chore`、既定）             | **発火**     | 非発火    | `true` / `flag`      |
+| 4   | resumable initial（既定）             | **発火**     | 非発火    | `true` / `flag`      |
+| 5   | follow-up（既定）                     | **発火**     | 非発火    | `true` / `flag`      |
+| 6   | follow-up（`DELEGATE_CODEX_HOOKS=0`） | 非発火       | 非発火    | `false` / `disabled` |
+
+sandbox の影響（hook が repo 内・外の両方へ書き込む構成で比較）:
+
+| `CODEX_DELEGATE_SANDBOX` | hook の repo 内書き込み | hook の repo 外書き込み |
+| ------------------------ | ----------------------- | ----------------------- |
+| `danger-full-access`     | 成功                    | 成功                    |
+| `workspace-write`        | 成功                    | **成功**                |
+
+確定した事実:
+
+- issue #28 の症状が解消し、`implement` / `chore` で project hooks が発火する（#1 / #3）
+- **follow-up（`codex exec resume`）でも発火する**（#5）。`-C` を持たない resume 経路でも cwd ベースで project hooks が解決される
+- **opt-out は run ごとに効く**（#6）。初回 ON で張った lineage でも follow-up 時の env が反映される（§5f の設計どおり）
+- **user hook は隔離される**（全ケースで非発火）。隔離 `CODEX_HOME` に `auth.json` しかコピーしないため
+- **`workspace-write` の書き込み境界は hook command に適用されない**。sandbox を絞ってもワークスペース外へ書き込めた（§8 のセキュリティ論拠に直結）。測ったのはファイル書き込み境界のみで、network / process など他の制約が hook に適用されるかは未測定
+
+検証手順上の前提（再現時に必要）:
+
+- `.claude/skills/` 配下は `npm run sync-shared` では更新されない。`gh skill install . <skill> --from-local --agent claude-code --scope project --force` で再インストールしないと古いバンドルを実行してしまう
+- resumable モードは対象リポジトリに HEAD を要求する（`git rev-parse HEAD`）。コミットのない git repo では prepare が失敗する
+
+§2.3 時点で未確定だった 2 項目（非既定 sandbox での hook 実行、`codex exec resume` での project hooks 解決）は、いずれも §2.4 の e2e で解消した。
 
 ## 3. 設計の中核
 
@@ -140,7 +172,7 @@ project_hooks: {
 
 §2.3 に結果を記録した。採用案の確定（§5a）、fail-closed 方針の確定（§5c）、approval ハングが実測条件では起きないことの確認、wall time 影響の把握まで完了している。残る 2 項目（非既定 sandbox、follow-up の実発火）は実装後の検証と同時に行うため Step 3 に移した。
 
-### Step 2: (未着手) 実装・テスト・同期・公開仕様（単一 PR）
+### Step 2: (完了済み) 実装・テスト・同期・公開仕様（単一 PR）
 
 `shared/src` の変更は `npm run build` → `npm run sync-shared` を伴わないと契約テストが旧 dist を検証し（[`shared/delegate-codex.sh:16`](../../shared/delegate-codex.sh) は committed dist を実行する）、CI の `build:check` / `sync-shared:check` も落ちるため、以下は同一 commit にまとめる。
 
@@ -156,24 +188,28 @@ project_hooks: {
 
 成果物: 緑の単一 PR（実装 + テスト + dist 同期 + 公開仕様）
 
-### Step 3: (未着手) 実 Codex での end-to-end 検証
+### Step 3: (完了済み) 実 Codex での end-to-end 検証
 
-§2.3 と同じ最小検証リポジトリ（sentinel hook）を再構成して行う。検証用ファイルは commit せず、`.temp/` 配下に置いて auth コピーを残さず削除する。
+§2.4 に結果を記録した。検証用ファイルは `.temp/` 配下に置き、auth コピーを含めて削除済み。以下は実施項目。
 
 - `delegate-implement` 経由で sentinel hook が発火する
 - **follow-up run でも sentinel hook が発火する**（`codex exec resume` は `-C` を持たず cwd 依存のため、通常 run とは別に確認する）
 - `DELEGATE_CODEX_HOOKS=0` で発火しない。follow-up で opt-out を切り替えると run ごとに反映される
-- `delegate-explore` / `delegate-review` では flag が付かず発火しない（read-only 契約の確認）
 - **user hook の隔離**（§1 の「対象リポジトリに限定される」に対応する負の検証）。非発火だけでは fixture の設定ミスでも成功してしまうため、正の対照を先に取る:
-  1. fixture 用の親 HOME を作り、`auth.json` と、user hook を定義した `config.toml` + 参照先 hook（project sentinel とは別の sentinel を書く）を置く
+  1. fixture 用の親 HOME を作り、`auth.json` と `hooks.json`（project sentinel とは別の sentinel を書く user hook）を置く
   2. **正の対照**: その fixture を `CODEX_HOME` にして直接 `codex exec` を実行し、user sentinel が発火することを確認する（fixture が有効であることの担保）
   3. 同じ fixture を親 `CODEX_HOME` として wrapper の通常 run / follow-up を実行し、project sentinel は発火し **user sentinel は発火しない**ことを確認する
 - **非既定 sandbox**（`CODEX_DELEGATE_SANDBOX` を絞る）で hook command が sandbox 制約を受けるか（§8 のセキュリティ論拠の裏づけ）
 - 本リポジトリ（`.codex/hooks.json` が `vp check --fix` を起動する）で 1 回委譲し、複数編集を伴うタスクでの wall time 増を観測する
 
-成果物: §1 の MUST 要件の実測エビデンス
+未実施のまま残した項目と理由:
 
-### Step 4: (未着手) spec.md 反映と archive 化
+- **allowlist 外の種別（`explore` / `review` / `htmldoc`）の e2e**: argv 契約テストで flag の非付与を固定済みで、read-only 種別はそもそもファイルを編集しないため hook の発火条件に到達せず、e2e では有意な差が出ない
+- **本リポジトリでの wall time 観測**: §2.3 #9 で差し戻しあり 11s → 37s を測っており、実運用値は利用側の hook 次第で変動するため追加の実測価値が小さい
+
+成果物: §1 の MUST 要件の実測エビデンス（§2.4）
+
+### Step 4: (完了済み) spec.md 反映と archive 化
 
 - 永続情報を spec.md へ移す（Step 2 で先行して書いた分の最終確認）
 - 本ドキュメントを `docs/archive/codex-hooks-trust-inheritance.archive.md` にリネームする
@@ -268,11 +304,13 @@ argv は起動のたびに構成されるため、**opt-out も有効化も run 
 
 ### 手動確認
 
-- [ ] `vp check`
-- [ ] `npm test`
-- [ ] `npm run build` → `npm run sync-shared` → `npm run sync-shared:check`
-- [ ] Step 3 の end-to-end（通常 run / follow-up の実発火、opt-out、allowlist 外の種別で非発火、user hook の非発火、非既定 sandbox、本リポジトリでの wall time）
-- [ ] `README.md` / `README_ja.md` / `spec.md` の記載と実装が一致している
+- [x] `vp check`
+- [x] `npm test`（42 files / 487 tests）
+- [x] `npm run build` → `npm run sync-shared` → `npm run sync-shared:check`
+- [x] Step 3 の end-to-end（通常 run / follow-up の実発火、opt-out の run ごとの反映、user hook の非発火、非既定 sandbox）— §2.4
+- [x] allowlist 外の種別で非発火 — e2e は行わず argv 契約テストで代替（Step 3 の未実施項目を参照）
+- [x] 本リポジトリでの wall time 測定 — §2.3 #9 の測定で代替（Step 3 の未実施項目を参照）
+- [x] `README.md` / `README_ja.md` / `spec.md` の記載と実装が一致している
 
 ## 7. 受け入れ基準
 
@@ -287,16 +325,16 @@ argv は起動のたびに構成されるため、**opt-out も有効化も run 
 
 実行時安定性を最優先の判断軸とするため、失敗様式ごとに整理する。
 
-| リスク                                                                                          | 失敗の見え方         | 回避策                                                                                                                                                                                                                                                                                                                    |
-| ----------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Codex CLI が flag を受理せず、全 Codex 委譲が起動できなくなる                                   | 即エラー（観測可能） | §5c で fail-closed に確定。実測 #10 のとおり API 到達前に exit 2 で落ちるため副作用がない。flag 拒否 fake CLI の契約テストで終了状態を固定する                                                                                                                                                                            |
-| hook 実行で wall time が伸び、親の timeout や `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` に当たる | run が途中で切られる | 実測 #9 では差し戻しありで 11s → 37s。委譲を呼ぶ側は所要時間より長い timeout を設定する（skill の既存ガイダンス）。退避路として `DELEGATE_CODEX_HOOKS=0`                                                                                                                                                                  |
-| hook が exit 2 で差し戻し、worker が収束しない修正ループに入る                                  | wall time 増 / 失敗  | 実測 #9 では単一編集タスクでループしなかった。複数編集を伴うタスクでの挙動を Step 3 で観測する。退避路は opt-out                                                                                                                                                                                                          |
-| hook 自体が壊れている環境（`vp` 不在、node 不在）で worker が失敗する                           | run 失敗（観測可能） | opt-out env で切れることを README に明記する。hook は利用側リポジトリの責任範囲                                                                                                                                                                                                                                           |
-| trust を要求しないため、リポジトリに悪意ある hook があると worker で実行される                  | 静かに実行される     | **既定の `danger-full-access` 運用では** worker の権限上限と一致するため昇格にはならない。ただし `CODEX_DELEGATE_SANDBOX` で sandbox を絞った運用では、hook command が sandbox 制約を受けるかが未確認（Step 3）。実効的な緩和は `DELEGATE_CODEX_HOOKS=0` のみ。spec.md に「wrapper が hook を無条件に信頼する」と明記する |
-| allowlist 外の種別で hook がリポジトリを書き換え、read-only / 限定書き込み契約が破れる          | 静かに書き換わる     | §5d の allowlist（`implement` / `chore`）を単一定数で持ち、契約テストで固定する。新種別は明示的に足さない限り OFF                                                                                                                                                                                                         |
-| project `.codex/config.toml` が壊れていると run が失敗する                                      | 即エラー（観測可能） | 実測 #5/#6 で確認した現行挙動であり本計画の変更対象外                                                                                                                                                                                                                                                                     |
-| バンドル同期漏れ（`shared/src` だけ更新して dist が古い）                                       | CI で検出            | Step 2 で実装・テスト・build・sync・公開仕様を単一 PR に束ね、pre-commit / CI の `build:check` / `sync-shared:check` で fail-closed                                                                                                                                                                                       |
+| リスク                                                                                          | 失敗の見え方         | 回避策                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex CLI が flag を受理せず、全 Codex 委譲が起動できなくなる                                   | 即エラー（観測可能） | §5c で fail-closed に確定。実測 #10 のとおり API 到達前に exit 2 で落ちるため副作用がない。flag 拒否 fake CLI の契約テストで終了状態を固定する                                                                                                                                                                                                                                                                                                                                                                       |
+| hook 実行で wall time が伸び、親の timeout や `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` に当たる | run が途中で切られる | 実測 #9 では差し戻しありで 11s → 37s。委譲を呼ぶ側は所要時間より長い timeout を設定する（skill の既存ガイダンス）。退避路として `DELEGATE_CODEX_HOOKS=0`                                                                                                                                                                                                                                                                                                                                                             |
+| hook が exit 2 で差し戻し、worker が収束しない修正ループに入る                                  | wall time 増 / 失敗  | 実測 #9 では単一編集タスクでループしなかった。複数編集を伴うタスクでの挙動を Step 3 で観測する。退避路は opt-out                                                                                                                                                                                                                                                                                                                                                                                                     |
+| hook 自体が壊れている環境（`vp` 不在、node 不在）で worker が失敗する                           | run 失敗（観測可能） | opt-out env で切れることを README に明記する。hook は利用側リポジトリの責任範囲                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| trust を要求しないため、リポジトリに悪意ある hook があると worker で実行される                  | 静かに実行される     | 既定の `danger-full-access` 運用では worker の権限上限と一致するため昇格にはならない。一方 §2.4 の実測で **`workspace-write` の書き込み境界が hook command に適用されない**ことが判明したため、`CODEX_DELEGATE_SANDBOX` を絞った運用でも hook はワークスペース外を書き換えられる。delegate-skills 側で run ごとに確実に無効化できる手段は `DELEGATE_CODEX_HOOKS=0` だけで、sandbox 設定では止められない（リポジトリ側で hook を削除する、外部隔離境界を使う等はレイヤーが異なる緩和）。この性質は spec.md に明記済み |
+| allowlist 外の種別で hook がリポジトリを書き換え、read-only / 限定書き込み契約が破れる          | 静かに書き換わる     | §5d の allowlist（`implement` / `chore`）を単一定数で持ち、契約テストで固定する。新種別は明示的に足さない限り OFF                                                                                                                                                                                                                                                                                                                                                                                                    |
+| project `.codex/config.toml` が壊れていると run が失敗する                                      | 即エラー（観測可能） | 実測 #5/#6 で確認した現行挙動であり本計画の変更対象外                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| バンドル同期漏れ（`shared/src` だけ更新して dist が古い）                                       | CI で検出            | Step 2 で実装・テスト・build・sync・公開仕様を単一 PR に束ね、pre-commit / CI の `build:check` / `sync-shared:check` で fail-closed                                                                                                                                                                                                                                                                                                                                                                                  |
 
 実測条件では観測されなかったリスク: **project config の `approval_policy` による非対話 run のハング**（#8。`approval_policy = "untrusted"` でも 11 秒で完了）。sandbox を明示していることが理由と推定されるが、sandbox 未指定との比較や他タスク条件では未検証のため、リスク自体は残す。
 

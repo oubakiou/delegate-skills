@@ -124,6 +124,8 @@ Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフ�
 - 親の user スコープ MCP 設定を `codex mcp list --json` で抽出し、隔離 `CODEX_HOME/config.toml` に `mcp_servers` のみを書き出す。worker は生成済み config だけを読むため `--ignore-user-config` は付けない。follow-up は初回 run の隔離 `CODEX_HOME/config.toml` を再利用し、初回と同じ MCP サーバー集合を保つ。親設定に MCP サーバーが無ければ config を作らず `mcp_config.source: "none"` とする
 - `--skip-git-repo-check --ephemeral`
 - `--dangerously-bypass-hook-trust`（`DELEGATE_CODEX_HOOKS` が opt-out（`0` / `false` / `no`）されておらず、かつ task_type が `implement` / `chore` の場合だけ `--skip-git-repo-check` の直後に付与する。worker は persisted hook trust を要求せず、対象リポジトリで enabled な project hook を親セッションで trust していないものも含めて無条件に信頼して実行する。read-only 種別（`explore` / `review`）と限定書き込み種別（`htmldoc`）では PostToolUse hook が prompt 制約を迂回してリポジトリを書き換え得るため付与せず、`delegate-imagegen` も対象外（argv 不変）。flag 非対応の Codex CLI では API 到達前に unknown argument の exit 2 で失敗する fail-closed とし、fallback や再試行は行わない）
+- sandbox の書き込み境界は hook command に適用されない。`CODEX_DELEGATE_SANDBOX` を `workspace-write` に絞っても hook はワークスペース外へ書き込める（実測。ファイル書き込み境界のみを確認しており、network / process など他の制約は未測定）。delegate-skills 側で run ごとに確実に hook を無効化できるのは `DELEGATE_CODEX_HOOKS=0` だけで、sandbox 設定では止められない
+- hook の実行時間は worker の wall time に加算される。formatter を差し戻す hook では実測で 11s → 37s まで伸びた。hook が収束しない、または hook 自体が壊れている環境では `DELEGATE_CODEX_HOOKS=0` で切り離す
 - `--ignore-rules` は**付けない**（AGENTS.md を読ませ規約遵守させる）
 - `--sandbox danger-full-access`
 - `-C "$REPO_ROOT"`（隔離 cwd ではなく対象リポジトリ root で実作業）
