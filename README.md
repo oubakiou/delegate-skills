@@ -196,14 +196,14 @@ DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 | ---------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
 | Claude                                   | `low`, `medium`, `high`, `xhigh`, `max`          | Passed as `--effort`                                             |
 | Codex                                    | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Passed as reasoning config                                       |
-| `cursor-glm-5.2`                         | `high`, `max`                                    | Model-specific Cursor mapping                                    |
-| `cursor-grok-4.5`                        | `low`, `medium`, `high`                          | Model-specific Cursor mapping                                    |
+| `cursor-glm-5.2`                         | `high`, `max`                                    | Converted to the bracket override `glm-5.2[reasoning=<effort>]`  |
+| `cursor-grok-4.5`                        | `low`, `medium`, `high`                          | Converted to the catalog slug `cursor-grok-4.5-<effort>`         |
 | `devin-kimi-k3`                          | `low`, `high`, `max`                             | Converted to the Devin model variant slug (`kimi-k3-high`, etc.) |
 | Other Devin models, imagegen, X research | Not supported                                    | No effort suffix                                                 |
 
 Invalid values and unsupported combinations stop before dispatch. Do not combine a Cursor model slug that already encodes the effort with an `@...` suffix.
 
-Without a suffix, delegate-skills does not set an effort override and the target CLI default applies. The documented exceptions are `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-mini` (catalog default `medium`) and Cursor model slugs that already encode the effort (`-high` / `-max`, and the `cursor-gemini-3.6-flash-*` variants).
+Without a suffix, delegate-skills does not set an effort override and the target CLI default applies. The documented exceptions are `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-mini` (catalog default `medium`), `cursor-grok-4.5` (catalog default `medium`), and Cursor model slugs that already encode the effort (`-high` / `-max`, and the `cursor-gemini-3.6-flash-*` variants).
 
 Requested and effective values are recorded in observe JSON when the backend exposes them. See [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for details. Codex `max` / `ultra` support was verified with Codex CLI v0.144.1 and `gpt-5.6-sol`; older CLIs may reject those values.
 

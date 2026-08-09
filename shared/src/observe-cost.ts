@@ -223,7 +223,33 @@ const makeTestUsage = (extra: Record<string, unknown>): Record<string, unknown> 
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  const { fileURLToPath } = await import('node:url')
   const usage = makeTestUsage
+
+  // 実単価表のキー到達を固定するため fixture ではなく同梱の model-token-prices.json を読む
+  const loadRealPriceTable = (): PriceTable => {
+    const pricesFile = resolvePricesFile(path.dirname(fileURLToPath(import.meta.url)))
+    if (pricesFile === null) {
+      throw new Error('model-token-prices.json was not found')
+    }
+    const table = loadPriceTable(pricesFile)
+    if (table === null) {
+      throw new Error('model-token-prices.json could not be loaded')
+    }
+    return table
+  }
+
+  const pricedRatesOf = (table: PriceTable, model: string): { input: number; output: number } => {
+    const entry = table.models.find(
+      (candidate) =>
+        isRecord(candidate) && candidate.model === model && candidate.pricing_source === 'cursor'
+    )
+    if (!isRecord(entry) || !isNumber(entry.input) || !isNumber(entry.output)) {
+      throw new Error(`the real price table has no priced ${model} entry`)
+    }
+    return { input: entry.input, output: entry.output }
+  }
+
   const table: PriceTable = {
     models: [
       { model: 'gpt-x', pricing_source: 'openai', input: 2, cached_input: 0.5, output: 10 },
@@ -309,6 +335,21 @@ if (import.meta.vitest) {
       expect(augmentCostEstimate(usage({ cost_usd: 0.4 }), 'codex', table)).not.toHaveProperty(
         'cost_usd_estimated'
       )
+    })
+
+    it('matches cursor-grok-4.5@medium against the real grok-4.5 price entry', () => {
+      const realTable = loadRealPriceTable()
+      const grok = pricedRatesOf(realTable, 'grok-4.5')
+      const result = augmentCostEstimate(
+        usage({ model: 'cursor-grok-4.5@medium' }),
+        'cursor',
+        realTable
+      )
+      expect(result.cost_usd_estimated).toBeCloseTo(
+        (1000 * grok.input + 100 * grok.output) / 1_000_000,
+        12
+      )
+      expect(result.pricing_source).toBe('model-token-prices.json:cursor')
     })
   })
 }

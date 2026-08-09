@@ -73,11 +73,11 @@ resolve-model.sh <種別env名> <skill固有デフォルト>
 出力: Claude エイリアス(sonnet|haiku|opus|fable) / gpt-* / swe-* / devin-* / composer-* / cursor-* モデルID
 ```
 
-env に入れる値は Claude エイリアス（claude -p の --model 引数対応）、`gpt-*` モデルID（Codex へ渡す）、`swe-*` モデルID（Devin CLI へそのまま渡す）、`devin-*` モデルID（Devin CLI へ渡す際にプレフィックスを剥離）、`composer-*` モデルID（agent CLI へそのまま渡す）、`cursor-*` モデルID（agent CLI へ渡す際にプレフィックスを剥離）の6系統に限定する。
+env に入れる値は Claude エイリアス（claude -p の --model 引数対応）、`gpt-*` モデルID（Codex へ渡す）、`swe-*` モデルID（Devin CLI へそのまま渡す）、`devin-*` モデルID（Devin CLI へ渡す際にプレフィックスを剥離）、`composer-*` モデルID（agent CLI へそのまま渡す）、`cursor-*` モデルID（agent CLI へ渡す際に backend selector のプレフィックスを 1 回剥がす。CLI へ渡す model 名はモデル別の変換テーブルで決まり、base model と一致しない場合がある）の6系統に限定する。
 
 `prepare.sh` / `prepare-imagegen.sh` は解決した `model` に加え、解決元を `model_source: "env" | "default"` として stdout JSON と observe JSON の `run.model_source` に記録する。種別 env が未設定または空文字の場合は `default`、非空の場合は `env` とする。
 
-モデル指定子の正規形は、reasoning effort suffix を含む解決済み文字列である。`DELEGATE_<TYPE>_MODEL=<model>@<effort>` のように指定された場合、suffix 込みの文字列が `resolve-model.sh` → `prepare.sh` stdout JSON → request JSON → `dispatch.sh` → observe JSON の `run.model` / `usage.model` / `backend_session.model` まで流れる。CLI argv を組む直前に各 wrapper 冒頭で共有ヘルパ `delegate_observe_split_model_effort` が `{base_model, effort}` へ分解し、`ORIGINAL_MODEL` は observe 記録・follow-up 検証用の suffix 込み指定子、`MODEL` は target CLI に渡す base model として扱う。follow-up は前回 observe の suffix 込み指定子を継承するため、同じ effort flag で再起動される。
+モデル指定子の正規形は、reasoning effort suffix を含む解決済み文字列である。`DELEGATE_<TYPE>_MODEL=<model>@<effort>` のように指定された場合、suffix 込みの文字列が `resolve-model.sh` → `prepare.sh` stdout JSON → request JSON → `dispatch.sh` → observe JSON の `run.model` / `usage.model` / `backend_session.model` まで流れる。CLI argv を組む直前に各 wrapper 冒頭で共有ヘルパ `delegate_observe_split_model_effort` が `{base_model, effort}` へ分解し、`ORIGINAL_MODEL` は observe 記録・follow-up 検証用の suffix 込み指定子、`MODEL` は base model として扱う。target CLI に渡す最終的な model 名は base model と effort から backend 固有の変換で組み立てる。cursor はモデル別の変換テーブルで決めるため base model と一致しない場合がある（例: `cursor-grok-4.5@medium` → `cursor-grok-4.5-medium`）。follow-up は前回 observe の suffix 込み指定子を継承するため、同じ effort flag で再起動される。
 
 effort suffix は opt-in で、`@` が無い場合の起動 argv は backend 既定のまま変えない。不正な suffix、backend 非対応の suffix、Cursor の slug（`-high` / `-max`）と `@` の二重指定は `prepare.sh` が dispatch 前に exit 6 で fail-closed し、wrapper 直接起動でも同じ共有検証で CLI 起動前に停止する。
 
@@ -93,7 +93,7 @@ effort suffix は opt-in で、`@` が無い場合の起動 argv は backend 既
 | review    | `--dangerously-skip-permissions` + `--allowedTools "Read,Bash"`                                          | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       |
 | htmldoc   | `--dangerously-skip-permissions` + constraints                                                           | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       |
 
-Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフィックス剥離後の値。Cursor パスの `<model>` は `composer-*` はそのまま、`cursor-*` はプレフィックス剥離後の値。
+Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフィックス剥離後の値。Cursor パスの `<model>` は `composer-*` はそのまま、`cursor-*` はプレフィックス剥離後の base model からモデル別の変換テーブルで組み立てた値（effort 未指定時は剥離後の値そのもの）。
 
 `delegate-imagegen` は同じモデル解決を使うが、画像生成 capability bridge のため `gpt*` → `delegate-imagegen-codex.sh` のみを許可し、非 `gpt*` では fail-closed する。
 
@@ -300,7 +300,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `usage.measurement`: `measured | estimated`。CLI の構造化出力や Codex session JSONL から実測できた場合は `measured`、取得不能時の chars/4 fallback は `estimated`
 - `usage.cached_input_tokens`: 実測でキャッシュ読みトークンの内訳が取れた場合に入る（取れない backend では null）
 - `usage.cost_usd_estimated` / `usage.cost_estimate_basis` / `usage.pricing_source`: 実測トークンはあるが CLI が費用を報告しない（`cost_usd` が null の）場合に、同梱の `model-token-prices.json` から換算した概算を**実測 `cost_usd` とは別フィールドで**併記する（下流の集計が精度を区別できるようにするため）。`cached_input_tokens` が取れた場合は cached 単価を適用し `cost_estimate_basis: "cached_input_rate_applied"`、取れない場合は非キャッシュ単価による上限寄り概算で `"uncached_input_rate_upper_bound"` になる。単価表に該当モデルが無い・単価が null の場合はフィールドごと省略する（null は埋めない）
-- `usage.estimation_basis`: `estimated` のときだけ入る。`protocol_payload_only` は request/response のプロトコルペイロード分だけを数えた値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まない**下限値**を意味する。実測近似ではないため、実測 backend とのモデル間比較には使わないこと（usage を出さない cursor backend は常にこの推定になる）
+- `usage.estimation_basis`: `estimated` のときだけ入る。`protocol_payload_only` は request/response のプロトコルペイロード分だけを数えた値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まない**下限値**を意味する。実測近似ではないため、実測 backend とのモデル間比較には使わないこと（cursor backend は stream-json 出力から measured usage を記録するのが既定で、構造化 usage を取得できなかった run のみこの推定に落ちる）
 - `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `chars_4` など、usage の由来
 - `mcp_config.source`: `shared | injected | none`。`shared` は親の user スコープ MCP 設定を実行環境の共有設定として自然継承したこと、`injected` は wrapper が親設定から worker 用 config を run dir / session home 配下に生成して注入したこと、`none` は親設定に利用可能な MCP サーバーが無く生成物も注入フラグも無いことを示す
 - `mcp_config.servers`: wrapper が注入した MCP サーバー名の配列。`shared`（実設定の自然継承）では wrapper が構成を所有しないため列挙せず空配列にする。`none` も空配列。定義本体・command・env・認証情報は observe JSON に記録しない

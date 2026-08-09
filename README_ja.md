@@ -196,14 +196,14 @@ DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 | -------------------------------------- | ------------------------------------------------ | ------------------------------------------------------ |
 | Claude                                 | `low`, `medium`, `high`, `xhigh`, `max`          | `--effort` として渡す                                  |
 | Codex                                  | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | reasoning config として渡す                            |
-| `cursor-glm-5.2`                       | `high`, `max`                                    | Cursor 固有の変換                                      |
-| `cursor-grok-4.5`                      | `low`, `medium`, `high`                          | Cursor 固有の変換                                      |
+| `cursor-glm-5.2`                       | `high`, `max`                                    | bracket override `glm-5.2[reasoning=<effort>]` へ変換  |
+| `cursor-grok-4.5`                      | `low`, `medium`, `high`                          | catalog slug `cursor-grok-4.5-<effort>` へ変換         |
 | `devin-kimi-k3`                        | `low`, `high`, `max`                             | Devin の model variant slug（`kimi-k3-high` 等）へ変換 |
 | 上記以外の Devin、imagegen、X research | 非対応                                           | effort suffix なし                                     |
 
 不正な値や非対応の組み合わせは dispatch 前に停止する。effort を model slug 自体に含む Cursor モデルと `@...` suffix は併用できない。
 
-suffix を付けない場合、delegate-skills は effort を明示せず、実行先 CLI の既定値を使う。例外は、catalog 既定が `medium` の `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` と、model slug 自体に effort を含む Cursor モデル（`-high` / `-max`、および `cursor-gemini-3.6-flash-*` 変種）である。
+suffix を付けない場合、delegate-skills は effort を明示せず、実行先 CLI の既定値を使う。例外は、catalog 既定が `medium` の `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` と `cursor-grok-4.5`、および model slug 自体に effort を含む Cursor モデル（`-high` / `-max`、および `cursor-gemini-3.6-flash-*` 変種）である。
 
 backend が公開する場合、指定値と実効値を observe JSON へ記録する。詳細は [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。Codex の `max` / `ultra` は Codex CLI v0.144.1 と `gpt-5.6-sol` で確認済みで、古い CLI では拒否される場合がある。
 

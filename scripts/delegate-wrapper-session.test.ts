@@ -2796,6 +2796,31 @@ describe('wrapper effort suffix', () => {
   })
 })
 
+describe('wrapper cursor grok effort slug', () => {
+  it('converts the grok suffix to a Cursor catalog slug', () => {
+    const fixture = makeFixture('cursor')
+    const result = runWrapper(
+      'delegate-cursor.sh',
+      wrapperModelArgs(fixture, 'cursor-grok-4.5@medium'),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+    const modelIndex = log.args.indexOf('--model')
+
+    expect(result.status).toBe(0)
+    expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual([
+      '--model',
+      'cursor-grok-4.5-medium',
+    ])
+    expect(log.args.some((arg) => arg.includes('grok-4.5[effort='))).toBe(false)
+    expect(observe.run_effort).toEqual({
+      effective: { source: 'not_exposed', value: null },
+      requested: 'medium',
+    })
+  })
+})
+
 // Step 4: wrapper 側 report 回収（構造化最終応答 / report.md）の分岐と fail-closed
 const protocolResponse = (
   filePath: string

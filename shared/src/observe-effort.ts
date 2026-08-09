@@ -375,6 +375,7 @@ export const effortFromCursorConfig = (model: string, cliConfig: string): Effect
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs')
   describe('splitModelEffort', () => {
     it('splits at the first @ and maps an empty effort to null', () => {
       expect(splitModelEffort('gpt-5.5@high')).toEqual({ base_model: 'gpt-5.5', effort: 'high' })
@@ -412,6 +413,41 @@ if (import.meta.vitest) {
     it('prefers the model slug over cli-config parameters', () => {
       const result = effortFromCursorConfig('glm-5.2-max', '/nonexistent-config.json')
       expect(result).toEqual({ value: 'max', source: 'measured' })
+    })
+
+    it('reads the effort recorded under the base model after a catalog slug run', () => {
+      mkdirSync('.temp', { recursive: true })
+      const dir = mkdtempSync(path.join('.temp', 'observe-effort-test-'))
+      try {
+        // catalog slug（cursor-grok-4.5-low）で run した後の cli-config の実測形状。
+        // CLI 側が base 名（grok-4.5）へ正規化して記録する
+        const cliConfig = path.join(dir, 'cli-config.json')
+        writeFileSync(
+          cliConfig,
+          JSON.stringify({
+            selectedModel: {
+              modelId: 'grok-4.5',
+              parameters: [
+                { id: 'effort', value: 'low' },
+                { id: 'fast', value: 'false' },
+              ],
+            },
+            modelParameters: {
+              'grok-4.5': [
+                { id: 'effort', value: 'low' },
+                { id: 'fast', value: 'false' },
+              ],
+            },
+          })
+        )
+        expect(effortFromCursorConfig('grok-4.5', cliConfig)).toEqual({
+          value: 'low',
+          source: 'measured',
+          fast: false,
+        })
+      } finally {
+        rmSync(dir, { force: true, recursive: true })
+      }
     })
   })
 }

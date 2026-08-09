@@ -87,8 +87,11 @@ const resolveCursorAgent = (env: Env, timeoutMs = 10_000): string | null => {
   return null
 }
 
-// 検証済みの effort を bracket parameter override へ変換する。パラメータ名はモデル別
-// （PoC 実測。docs/archive/delegate-effort-suffix.archive.md §2）
+// 検証済みの effort を CLI model 名へ変換するモデル別テーブル。方式が分かれるのは
+// Cursor catalog 側が parameterized model かどうかに従うため:
+// glm-5.2 は parameterized で bracket override（glm-5.2[reasoning=<v>]）を受理し、
+// grok-4.5 は bracket を受理せず catalog の effort 別 slug（cursor-grok-4.5-<v>）のみ
+// 通る。CLI model 名は base model と一致しない場合がある
 const cursorCliModelOf = (context: WrapperContext, model: string): string | CliResult => {
   if (context.effort === '') {
     return model
@@ -97,7 +100,7 @@ const cursorCliModelOf = (context: WrapperContext, model: string): string | CliR
     return `glm-5.2[reasoning=${context.effort}]`
   }
   if (model === 'grok-4.5') {
-    return `grok-4.5[effort=${context.effort}]`
+    return `cursor-grok-4.5-${context.effort}`
   }
   return finishWithoutChild(
     context,
@@ -534,6 +537,52 @@ if (import.meta.vitest) {
       } finally {
         rmSync(dir, { force: true, recursive: true })
       }
+    })
+  })
+
+  describe('cursorCliModelOf', () => {
+    // 実フローと同じく stripCursorPrefix 済みの base model を渡して変換結果だけを見る
+    const cliModelFor = (originalModel: string): string | CliResult => {
+      const dir = makeResolverTestDir()
+      const args = parseWrapperArgs(
+        [
+          originalModel,
+          'implement',
+          path.join(dir, 'delegate_implement_x_req.json'),
+          path.join(dir, 'delegate_implement_x_res.json'),
+          dir,
+          path.join(dir, 'delegate_implement_x_observe.json'),
+        ],
+        'delegate-cursor.sh'
+      )
+      if ('exitCode' in args) {
+        throw new Error('unexpected wrapper args failure')
+      }
+      const context = makeWrapperContext(args, { env: {}, scriptsDir: dir })
+      try {
+        return cursorCliModelOf(context, stripCursorPrefix(context.baseModel))
+      } finally {
+        rmSync(dir, { force: true, recursive: true })
+      }
+    }
+
+    it('maps the grok effort suffix to the catalog slug', () => {
+      for (const effort of ['low', 'medium', 'high']) {
+        expect(cliModelFor(`cursor-grok-4.5@${effort}`)).toBe(`cursor-grok-4.5-${effort}`)
+      }
+    })
+
+    it('keeps the glm bracket override and passes an effort-less grok through', () => {
+      expect(cliModelFor('cursor-glm-5.2@high')).toBe('glm-5.2[reasoning=high]')
+      expect(cliModelFor('cursor-grok-4.5')).toBe('grok-4.5')
+    })
+
+    it('fails closed with exit 6 for a base model missing from the mapping table', () => {
+      const result = cliModelFor('composer-2.5@high')
+      if (typeof result === 'string') {
+        throw new Error('expected a fail-closed result')
+      }
+      expect(result.exitCode).toBe(6)
     })
   })
 }

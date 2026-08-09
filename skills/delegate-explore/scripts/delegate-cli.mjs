@@ -5169,7 +5169,7 @@ var resolveCursorAgent = (env, timeoutMs = 1e4) => {
 var cursorCliModelOf = (context, model) => {
 	if (context.effort === "") return model;
 	if (model === "glm-5.2") return `glm-5.2[reasoning=${context.effort}]`;
-	if (model === "grok-4.5") return `grok-4.5[effort=${context.effort}]`;
+	if (model === "grok-4.5") return `cursor-grok-4.5-${context.effort}`;
 	return finishWithoutChild(context, 6, `ERROR: no bracket override mapping for cursor model '${context.args.originalModel}'`);
 };
 var realCursorConfigDirOf = (env) => {
