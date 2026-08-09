@@ -314,7 +314,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `lineage`: opt-in の resumable / follow-up run だけに入る。`lineage_id` と、follow-up では前回 `observe_file` への `followup_of` を持つ
 - `backend_session`: opt-in の resumable / follow-up run だけに入る backend resume metadata。`backend` / `model` / `resume_id` / `resume_source` / `persistence` / `home_dir` を持ち、`persistence: "resumable"` のときだけ follow-up 対象になる
 - `run_context`: opt-in の resumable / follow-up run だけに入る stale-context 判定情報。`repo_root` / `worktree_root` / `git_head` は必須、`git_branch` / `dirty` は補助情報
-- `error`: 子 CLI の失敗分類がついた run だけに入る optional field。分類がつかない run では**キー自体が現れない**。`kind` は `model_catalog_unavailable`（backend がモデルカタログを返せずモデル解決に失敗。一過性の可能性があり `retryable: true`）または `model_not_found`（backend が当該モデルを公開していない。恒久的で `retryable: false`）。ほかに `backend` / `model` / `detected_at`（分類時刻）を持つ。failed response 生成より先に書かれるため、response 生成に失敗した run でも残る
+- `error`: 子 CLI の失敗分類がついた run だけに入る optional field。分類がつかない run では**キー自体が現れない**。`kind` は `model_catalog_unavailable`（backend がモデルカタログを返せずモデル解決に失敗。一過性の可能性があり `retryable: true`）または `model_not_found`（backend が当該モデルを公開していない。恒久的で `retryable: false`）。ほかに `backend` / `model` / `detected_at`（分類時刻）を持つ。`model` は子 CLI が拒否した backend 側の model 文字列であり、delegate の model 指定子とは限らない（cursor では bracket や catalog slug を含み得る）。delegate 側の指定子は同じ observe の `run.model` / `usage.model` から取れる。failed response 生成より先に書かれるため、response 生成に失敗した run でも残る
 - `schema_version`: `1` 固定。observe JSON への additive な optional field 追加（`error` 等）では bump しない。読み手は未知キーを無視し、欠落キーと `null` を区別しないこと（`read-json.sh` は両者を `null` として返す）
 
 observe JSON の更新は `shared/src/observe-{store,lock,followup,…}.ts` に集約し、observe file basename 派生の lock を `run_dir` 配下に置く。lock は **symlink lock**（`ln -s` / `fs.symlinkSync` の atomic 作成で target に保持者 `<pid> <token>` を埋め込む）に統一する（Node に `flock` が無く bash=flock / TS=symlink の混在では相互排他が破れるため）。更新は temporary file に書いてから `mv` する atomic replace とする。
@@ -390,11 +390,11 @@ response_file の組み立ては wrapper 側の責務とする。worker は md2i
 - `responder_session_id: wrapper:<backend>:<response basename>`
 - report は Summary / Error の短い section に留め、stderr の全文は埋め込まず observe JSON path と短い要約だけを載せる
 - response 生成が失敗する段階では failed response 生成に固執せず、observe event と stderr 保存を優先して既存の stderr exit に fallback する
-- report の Summary / `# Error` は、child の stderr capture 末尾（既定 8 KiB。上限を超える分は読まない）を backend 別 signature で分類した結果で分岐する。転記するのは文字種・長さ（`[A-Za-z0-9._-]{1,64}`）を検証済みの model slug と候補名だけで、stderr の生テキストは 1 文字も載せない（`# Logs` section は設けない）
+- report の Summary / `# Error` は、child の stderr capture 末尾（既定 8 KiB。上限を超える分は読まない）を backend 別 signature で分類した結果で分岐する。転記するのは signature ごとの anchored な allowlist で文字種・長さを検証済みの model 名（cursor では bracket を含み得る）と、候補名（`[A-Za-z0-9._-]{1,64}` の slug）だけで、stderr の生テキストは 1 文字も載せない（`# Logs` section は設けない）
   - `unknown`（signature 非合致、または child stderr を持たない preflight 失敗経路）: Summary は `Child CLI failed or did not write a response.` の 1 文、`# Error` は `See observe JSON:` / `Exit code:` のみ
-  - `model_catalog_unavailable`（backend がモデルカタログを返せずモデル解決に失敗。一過性の可能性）: Summary がその旨 1 文、`# Error` に `Cause: model_catalog_unavailable` / `Model: <slug>` / `Retryable: yes`
-  - `model_not_found`（backend が当該モデルを公開していない。恒久的）: Summary がその旨 1 文、`# Error` に `Cause: model_not_found` / `Model: <slug>` / `Retryable: no` / `Available: <候補 slug を ", " 区切りで最大 8 件。超過時は末尾に ", …">`
-- signature は実 CLI で観測できた backend にのみ登録する（現時点では Devin のみ）。判定は行単位の完全一致で行い、marker 行に suffix が付く・候補が marker と同一行に並ぶ・別のエラーブロックにまたがるといった未観測の書式はすべて `unknown` に倒す。未確認の書式を推測で受理すると、恒久的な非対応を「一過性・再実行可」と誤断定し得るため
+  - `model_catalog_unavailable`（backend がモデルカタログを返せずモデル解決に失敗。一過性の可能性）: Summary がその旨 1 文、`# Error` に `Cause: model_catalog_unavailable` / `Model: <model 名>` / `Retryable: yes`
+  - `model_not_found`（backend が当該モデルを公開していない。恒久的）: Summary がその旨 1 文、`# Error` に `Cause: model_not_found` / `Model: <model 名>` / `Retryable: no` / `Available: <候補 slug を ", " 区切りで最大 8 件。超過時は末尾に ", …">`
+- signature は実 CLI で観測できた backend にのみ登録する（現時点では Devin と Cursor）。候補の列挙書式は signature ごとに固定で、Devin は marker 行の次行以降の改行区切り、Cursor は model 行と同一行のカンマ区切りだけを受理する。判定は行単位の完全一致で行い、marker 行に suffix が付く・候補が観測済みの位置と異なる場所に並ぶ・別のエラーブロックにまたがるといった未観測の書式はすべて `unknown` に倒す。未確認の書式を推測で受理すると、恒久的な非対応を「一過性・再実行可」と誤断定し得るため
 
 ### md2idx（トークン圧縮の核）
 

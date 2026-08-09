@@ -15,25 +15,58 @@ export type ChildFailure =
 // response (Markdown) へ転記される経路を塞ぐため
 const SLUG_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
 
+// Cursor は `grok-4.5[effort=medium]` のように bracket 込みの model 名を拒否する。
+// 抽出値は Markdown へ転記されるため、bracket 内も含めて文字種と長さを閉じる
+const CURSOR_MODEL_PATTERN = /^[A-Za-z0-9._-]{1,64}(?:\[[A-Za-z0-9._,=-]{1,64}\])?$/
+
 const MAX_CANDIDATES = 8
 
-interface FailureSignature {
+interface FailureSignatureBase {
   // 行全体に anchor する。部分一致だと他ツールの診断行や別のエラーブロックを
   // 拾って、無関係な失敗をモデル解決失敗と誤断定する
   unknownModelLine: RegExp
+  // 拒否された model 名の allowlist。拒否名の文字種は backend ごとに異なる
+  // （Cursor は bracket 込みで拒否する）ため signature 単位で持つ
+  modelPattern: RegExp
+}
+
+// Devin レイアウト: `Unknown model:` 行の後に marker 行があり、次行以降が 1 行 1 候補
+interface BlockCandidatesSignature extends FailureSignatureBase {
+  candidatesLayout: 'block'
   // 候補列挙の marker は完全一致で判定する。startsWith だと `Available:not-a-marker` や
   // 同一行に候補が続く `Available: a, b` を「候補 0 件 = カタログ空」と誤断定する
   availableMarker: string
 }
 
-// `Unknown model:` + `Available:` の文言は Devin CLI でのみ実観測済み。
-// 未確認 backend に共通適用すると別種の失敗を誤分類するため、
-// claude / codex / cursor / imagegen / xresearch は実観測が取れるまで登録しない
+// Cursor レイアウト: 1 行完結で、候補は model 行の marker 以降に `, ` 区切りで並ぶ。
+// unknownModelLine が候補部分を candidates group で capture する
+interface InlineCandidatesSignature extends FailureSignatureBase {
+  candidatesLayout: 'inline'
+}
+
+type FailureSignature = BlockCandidatesSignature | InlineCandidatesSignature
+
+// `Unknown model:` + `Available:`（Devin）と `Cannot use this model:` +
+// `Available models:`（Cursor）の文言は各 CLI で実観測済み。未確認 backend に
+// 共通適用すると別種の失敗を誤分類するため、claude / codex / imagegen / xresearch は
+// 実観測が取れるまで登録しない
 const signatures: Record<string, readonly FailureSignature[]> = {
   devin: [
     {
       unknownModelLine: /^(?:Error: )?Unknown model: '(?<model>[^']*)'$/,
+      modelPattern: SLUG_PATTERN,
+      candidatesLayout: 'block',
       availableMarker: 'Available:',
+    },
+  ],
+  cursor: [
+    {
+      // 空カタログ（`Available models:` で行末）と未観測の書式（`Available models:auto` 等）を
+      // 区別するため、候補部は 1 スペース + 1 文字以上がある場合だけ capture する
+      unknownModelLine:
+        /^Cannot use this model: (?<model>\S+)\. Available models:(?: (?<candidates>.+))?$/,
+      modelPattern: CURSOR_MODEL_PATTERN,
+      candidatesLayout: 'inline',
     },
   ],
 }
@@ -52,22 +85,44 @@ const collectCandidates = (lines: readonly string[]): string[] => {
   return candidates
 }
 
-const modelOfLine = (signature: FailureSignature, line: string): string | null => {
+// 候補側に bracket は現れないため、各要素は SLUG_PATTERN で濾す。
+// 不適合な要素が出た時点で打ち切る作法は block レイアウトと同じ
+const collectInlineCandidates = (candidatesText: string | undefined): string[] => {
+  if (typeof candidatesText === 'undefined') {
+    return []
+  }
+  const candidates: string[] = []
+  for (const entry of candidatesText.split(', ')) {
+    if (!SLUG_PATTERN.test(entry)) {
+      break
+    }
+    candidates.push(entry)
+  }
+  return candidates
+}
+
+interface ParsedModelLine {
+  model: string
+  // inline レイアウトでのみ capture される。block レイアウトでは undefined
+  candidatesText?: string
+}
+
+const parseModelLine = (signature: FailureSignature, line: string): ParsedModelLine | null => {
   const match = signature.unknownModelLine.exec(line)
   if (match === null || typeof match.groups === 'undefined') {
     return null
   }
-  const { model } = match.groups
-  if (!SLUG_PATTERN.test(model)) {
+  const { model, candidates } = match.groups
+  if (!signature.modelPattern.test(model)) {
     return null
   }
-  return model
+  return { model, candidatesText: candidates }
 }
 
 // 次の Unknown model 行までを 1 エラーブロックとして扱う。ブロックを越えて marker を
 // 探すと、別の失敗の候補列挙を今回の model に結び付けてしまう
 const blockAfter = (
-  signature: FailureSignature,
+  signature: BlockCandidatesSignature,
   lines: readonly string[],
   start: number
 ): readonly string[] => {
@@ -96,7 +151,7 @@ const resultFromCandidates = (model: string, candidates: readonly string[]): Chi
 // 「候補列挙が観測できなかった」を「カタログ空 = retryable」と誤断定しないため、
 // 同一ブロック内に marker 行が無ければ unknown に落とす
 const classifyBlock = (
-  signature: FailureSignature,
+  signature: BlockCandidatesSignature,
   block: readonly string[],
   model: string
 ): ChildFailure => {
@@ -113,11 +168,14 @@ const classifyWithSignature = (signature: FailureSignature, stderrTail: string):
   if (modelIndex === -1) {
     return unknown
   }
-  const model = modelOfLine(signature, lines[modelIndex])
-  if (model === null) {
+  const parsed = parseModelLine(signature, lines[modelIndex])
+  if (parsed === null) {
     return unknown
   }
-  return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), model)
+  if (signature.candidatesLayout === 'inline') {
+    return resultFromCandidates(parsed.model, collectInlineCandidates(parsed.candidatesText))
+  }
+  return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), parsed.model)
 }
 
 export const classifyChildFailure = (input: {
@@ -140,6 +198,12 @@ if (import.meta.vitest) {
   const devinBackend = 'devin'
   const devinInput = (stderrTail: string): { backend: string; stderrTail: string } => ({
     backend: devinBackend,
+    stderrTail,
+  })
+
+  const cursorBackend = 'cursor'
+  const cursorInput = (stderrTail: string): { backend: string; stderrTail: string } => ({
+    backend: cursorBackend,
     stderrTail,
   })
 
@@ -217,6 +281,83 @@ if (import.meta.vitest) {
         candidates: ['gpt-5'],
         candidatesTruncated: false,
       })
+    })
+  })
+
+  describe('cursor one-line layout', () => {
+    it('classifies the observed one-line comma-separated stderr as model_not_found with truncation', () => {
+      const listed = listedModels(9)
+      expect(
+        classifyChildFailure(
+          cursorInput(
+            `Cannot use this model: grok-4.5[effort=medium]. Available models: ${listed.join(', ')}`
+          )
+        )
+      ).toEqual({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'grok-4.5[effort=medium]',
+        candidates: listed.slice(0, 8),
+        candidatesTruncated: true,
+      })
+    })
+
+    it('classifies a rejected model name containing brackets', () => {
+      expect(
+        classifyChildFailure(
+          cursorInput(
+            'Cannot use this model: grok-4.5[effort=medium]. Available models: auto, glm-5.2-max'
+          )
+        )
+      ).toEqual({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'grok-4.5[effort=medium]',
+        candidates: ['auto', 'glm-5.2-max'],
+        candidatesTruncated: false,
+      })
+    })
+
+    it('classifies an empty candidate list as model_catalog_unavailable', () => {
+      expect(
+        classifyChildFailure(cursorInput('Cannot use this model: grok-4.5. Available models: '))
+      ).toEqual({ kind: 'model_catalog_unavailable', retryable: true, model: 'grok-4.5' })
+    })
+
+    it('stops inline candidate collection at the first non-candidate entry', () => {
+      expect(
+        classifyChildFailure(
+          cursorInput(
+            'Cannot use this model: grok-4.5. Available models: auto, * see docs, glm-5.2-max'
+          )
+        )
+      ).toEqual({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'grok-4.5',
+        candidates: ['auto'],
+        candidatesTruncated: false,
+      })
+    })
+
+    it('returns unknown when the model name contains markdown control characters', () => {
+      const tails = [
+        'Cannot use this model: grok-4.5`x`. Available models: auto',
+        'Cannot use this model: grok-4.5|x. Available models: auto',
+        'Cannot use this model: grok 4.5. Available models: auto',
+        'Cannot use this model: grok-4.5\n[effort=medium]. Available models: auto',
+      ]
+      for (const stderrTail of tails) {
+        expect(classifyChildFailure(cursorInput(stderrTail))).toEqual({ kind: 'unknown' })
+      }
+    })
+
+    it('returns unknown when the tail is cut off before the model line completes', () => {
+      expect(
+        classifyChildFailure(
+          cursorInput('partial prefix\nCannot use this model: grok-4.5[effort=medi')
+        )
+      ).toEqual({ kind: 'unknown' })
     })
   })
 

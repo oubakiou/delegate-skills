@@ -3526,11 +3526,21 @@ read-only 制約: リポジトリのファイル編集・git 書き込み・push
 //#endregion
 //#region shared/src/failure-classify.ts
 var SLUG_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+var CURSOR_MODEL_PATTERN = /^[A-Za-z0-9._-]{1,64}(?:\[[A-Za-z0-9._,=-]{1,64}\])?$/;
 var MAX_CANDIDATES = 8;
-var signatures = { devin: [{
-	unknownModelLine: /^(?:Error: )?Unknown model: '(?<model>[^']*)'$/,
-	availableMarker: "Available:"
-}] };
+var signatures = {
+	devin: [{
+		unknownModelLine: /^(?:Error: )?Unknown model: '(?<model>[^']*)'$/,
+		modelPattern: SLUG_PATTERN,
+		candidatesLayout: "block",
+		availableMarker: "Available:"
+	}],
+	cursor: [{
+		unknownModelLine: /^Cannot use this model: (?<model>\S+)\. Available models:(?: (?<candidates>.+))?$/,
+		modelPattern: CURSOR_MODEL_PATTERN,
+		candidatesLayout: "inline"
+	}]
+};
 var unknown = { kind: "unknown" };
 var collectCandidates = (lines) => {
 	const candidates = [];
@@ -3541,12 +3551,24 @@ var collectCandidates = (lines) => {
 	}
 	return candidates;
 };
-var modelOfLine = (signature, line) => {
+var collectInlineCandidates = (candidatesText) => {
+	if (typeof candidatesText === "undefined") return [];
+	const candidates = [];
+	for (const entry of candidatesText.split(", ")) {
+		if (!SLUG_PATTERN.test(entry)) break;
+		candidates.push(entry);
+	}
+	return candidates;
+};
+var parseModelLine = (signature, line) => {
 	const match = signature.unknownModelLine.exec(line);
 	if (match === null || typeof match.groups === "undefined") return null;
-	const { model } = match.groups;
-	if (!SLUG_PATTERN.test(model)) return null;
-	return model;
+	const { model, candidates } = match.groups;
+	if (!signature.modelPattern.test(model)) return null;
+	return {
+		model,
+		candidatesText: candidates
+	};
 };
 var blockAfter = (signature, lines, start) => {
 	const rest = lines.slice(start);
@@ -3577,9 +3599,10 @@ var classifyWithSignature = (signature, stderrTail) => {
 	const lines = stderrTail.split("\n").map((line) => line.trimEnd());
 	const modelIndex = lines.findIndex((line) => signature.unknownModelLine.test(line));
 	if (modelIndex === -1) return unknown;
-	const model = modelOfLine(signature, lines[modelIndex]);
-	if (model === null) return unknown;
-	return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), model);
+	const parsed = parseModelLine(signature, lines[modelIndex]);
+	if (parsed === null) return unknown;
+	if (signature.candidatesLayout === "inline") return resultFromCandidates(parsed.model, collectInlineCandidates(parsed.candidatesText));
+	return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), parsed.model);
 };
 var classifyChildFailure = (input) => {
 	const backendSignatures = signatures[input.backend] ?? [];
