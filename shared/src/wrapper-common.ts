@@ -48,6 +48,11 @@ export const quietly = (operation: () => void): void => {
   }
 }
 
+// project hooks（PostToolUse の formatter 等）は worker の prompt 制約を迂回して
+// リポジトリを書き換え得るため、hook を有効化する task_type は無制限編集を許可する
+// 種別のみの明示 allowlist とする。新種別はここに足さない限り hook が効かない既定
+export const HOOK_ENABLED_TASK_TYPES: ReadonlySet<string> = new Set(['implement', 'chore'])
+
 export const STDERR_TAIL_MAX_BYTES = 8192
 
 // 巨大ログやディスク逼迫時でも分類のための追加読み込み量を一定に保つため、
@@ -647,6 +652,18 @@ if (import.meta.vitest) {
 
     it('returns an empty string for a missing file', () => {
       expect(readTailBytes('.temp/read-tail-test-missing.log', 8)).toBe('')
+    })
+  })
+
+  describe('HOOK_ENABLED_TASK_TYPES', () => {
+    it('includes only implement and chore, with unknown task types excluded', () => {
+      expect(HOOK_ENABLED_TASK_TYPES.has('implement')).toBe(true)
+      expect(HOOK_ENABLED_TASK_TYPES.has('chore')).toBe(true)
+      expect(HOOK_ENABLED_TASK_TYPES.has('explore')).toBe(false)
+      expect(HOOK_ENABLED_TASK_TYPES.has('review')).toBe(false)
+      expect(HOOK_ENABLED_TASK_TYPES.has('htmldoc')).toBe(false)
+      expect(HOOK_ENABLED_TASK_TYPES.has('x-research')).toBe(false)
+      expect(HOOK_ENABLED_TASK_TYPES.has('future-unknown-type')).toBe(false)
     })
   })
 

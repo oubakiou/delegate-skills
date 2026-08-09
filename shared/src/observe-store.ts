@@ -226,6 +226,16 @@ export const updateMcpConfig = (
   })
 }
 
+export const updateProjectHooks = (
+  observeFile: string,
+  runDir: string,
+  hooks: { enabled: boolean; source: 'flag' | 'disabled' | 'task_type_excluded' }
+): void => {
+  updateObserve(observeFile, runDir, (doc) => {
+    doc.project_hooks = { enabled: hooks.enabled, source: hooks.source }
+  })
+}
+
 export const updateLineage = (
   observeFile: string,
   runDir: string,

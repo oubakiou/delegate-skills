@@ -123,6 +123,7 @@ Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフ�
 - 正常終了時（response 生成済みかつ protocol status が failed でない場合）に隔離 codex-home のキャッシュ類（`.tmp` / `tmp` / `cache` / `models_cache.json` / `plugins` / `shell_snapshots`）を prune する（`DELEGATE_CODEX_HOME_PRUNE=0` で無効化）。`auth.json` は同じ directory の一意な owned staging file へ `COPYFILE_EXCL` 相当で書き、hard-link publish により stale destination を置換せず、partial-copy failure は staging file を削除して child 起動前に fail-closed する。lifecycle lease は staging 開始前に登録し、owned staging / published artifact だけを追跡して cleanup 完了後に signal handler を解除する。lifecycle は stage → spawn/wait → auth cleanup → response/session/dispatch finalize の順で各1回とし、stage / cleanup 中または spawn / child exit と競合する SIGINT / SIGTERM でも lease が cleanup する。cleanup failure または同期 operation exception は resumable success metadata を残さない exactly-once の sanitized failed terminal state と非 0 exit に変える。cleanup は cache prune と分離し、child error、response 欠落、child signal、wrapper termination を含む全終了経路で行う。follow-up home は所有 user、非 symlink、`delegate_*` run、隣接 previous observe の backend / model / resume id / persistence / home_dir 一致を起動前に検証し、root requester home と無関係な外部 home を拒否する。sessions JSONL と `config.toml` は follow-up と診断のため常に残す
 - 親の user スコープ MCP 設定を `codex mcp list --json` で抽出し、隔離 `CODEX_HOME/config.toml` に `mcp_servers` のみを書き出す。worker は生成済み config だけを読むため `--ignore-user-config` は付けない。follow-up は初回 run の隔離 `CODEX_HOME/config.toml` を再利用し、初回と同じ MCP サーバー集合を保つ。親設定に MCP サーバーが無ければ config を作らず `mcp_config.source: "none"` とする
 - `--skip-git-repo-check --ephemeral`
+- `--dangerously-bypass-hook-trust`（`DELEGATE_CODEX_HOOKS` が opt-out（`0` / `false` / `no`）されておらず、かつ task_type が `implement` / `chore` の場合だけ `--skip-git-repo-check` の直後に付与する。worker は persisted hook trust を要求せず、対象リポジトリで enabled な project hook を親セッションで trust していないものも含めて無条件に信頼して実行する。read-only 種別（`explore` / `review`）と限定書き込み種別（`htmldoc`）では PostToolUse hook が prompt 制約を迂回してリポジトリを書き換え得るため付与せず、`delegate-imagegen` も対象外（argv 不変）。flag 非対応の Codex CLI では API 到達前に unknown argument の exit 2 で失敗する fail-closed とし、fallback や再試行は行わない）
 - `--ignore-rules` は**付けない**（AGENTS.md を読ませ規約遵守させる）
 - `--sandbox danger-full-access`
 - `-C "$REPO_ROOT"`（隔離 cwd ではなく対象リポジトリ root で実作業）
@@ -301,6 +302,8 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `chars_4` など、usage の由来
 - `mcp_config.source`: `shared | injected | none`。`shared` は親の user スコープ MCP 設定を実行環境の共有設定として自然継承したこと、`injected` は wrapper が親設定から worker 用 config を run dir / session home 配下に生成して注入したこと、`none` は親設定に利用可能な MCP サーバーが無く生成物も注入フラグも無いことを示す
 - `mcp_config.servers`: wrapper が注入した MCP サーバー名の配列。`shared`（実設定の自然継承）では wrapper が構成を所有しないため列挙せず空配列にする。`none` も空配列。定義本体・command・env・認証情報は observe JSON に記録しない
+- `project_hooks.enabled`: Codex パスで `--dangerously-bypass-hook-trust` を付与して project hooks を有効化したか
+- `project_hooks.source`: `flag | disabled | task_type_excluded`。`flag` は flag 付与による有効化、`disabled` は `DELEGATE_CODEX_HOOKS` による opt-out、`task_type_excluded` は task_type が有効化 allowlist（`implement` / `chore`）外であることを示す。opt-out と allowlist 外が重なった場合は運用者の明示設定を優先して `disabled` とする。Codex パスの wrapper のみが記録し、他 backend ではキー自体が現れない
 - `events[].kind == "usage_parse_failed"`: 実測 usage が取れず推定 fallback に落ちたことを示す。usage 観測は補助情報のため、この event 自体では delegate 本体を失敗にしない
 - `timing`: 完了 run の所要時間テレメトリ。`total_ms` / `time_to_first_useful_event_ms` / `report_ready_at_ms` は monotonic clock 由来の経過 ms とし、backend stream から取れる `model_turns` / `tool_calls` と `measurement_source` を併記する。Claude / Codex の構造化最終応答方式では `structured_output_parse` に parse 成否（`true` / `false`）を記録し、report.md 方式では `null` とする
 - `events[].kind == "superseded"`: dispatch 済みの新しい run が、放棄された古い prepared-only observe に付けるマーク。`superseded_by` に新しい observe の basename が入る。並列 dispatch 直前の observe を誤マークしても、その run の dispatch_start が phase を `running` で上書きするため自己修復する
@@ -425,6 +428,8 @@ follow-up は新しい request/response/observe/run_dir を作る別 run とし�
 Claude / Codex / Devin / Cursor wrapper は resumable initial run と follow-up run を support する。Codex follow-up は `codex exec resume` が cwd を復元せず `-C` / `--sandbox` を受けないため、wrapper が `cd "$REPO_ROOT"` してから起動し、`-c sandbox_mode=...` で初回 run と同等の sandbox を指定する。
 
 MCP 構成は backend ごとに扱いが異なる。Claude / Codex follow-up は初回 resumable run で生成した session home 配下の MCP config を再利用し、初回と同じサーバー集合を保つ。Cursor follow-up は run ごとに親 global `mcp.json` から隔離 config を再生成する。Devin は通常 run と同じく実行環境の共有設定を使う。
+
+Codex パスの `--dangerously-bypass-hook-trust` は argv を起動のたびに構成するため、`DELEGATE_CODEX_HOOKS` による opt-out は **run ごと**に当該 run の env が効く（follow-up でも初回 run の設定に引きずられない）。初回 run の設定を lineage に固定する MCP config とは挙動が異なる。
 
 follow-up は fail-closed であり、次の条件では新規実行へ暗黙 fallback しない:
 
@@ -551,22 +556,23 @@ delegate-skills/
 
 ## 12. 環境変数
 
-| 環境変数                                 | 既定                                     | 説明                                                             |
-| ---------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                             |
-| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                            |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値  |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384`（バイト、`0` は無制限）          | one-shot `run.sh` JSON の `content` 上限                         |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144`（バイト）                       | request を worker prompt に埋め込むサイズ閾値                    |
-| `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先 |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                               |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000`（ミリ秒、`0` は注入なし）       | claude backend の子へ注入する Bash tool の timeout 上限          |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に cache を削除。auth copy は設定によらず常に削除      |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する    |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限             |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する     |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                 |
-| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル             |
+| 環境変数                                 | 既定                                     | 説明                                                                                                        |
+| ---------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                                                                        |
+| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                                                                       |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値                                             |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384`（バイト、`0` は無制限）          | one-shot `run.sh` JSON の `content` 上限                                                                    |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144`（バイト）                       | request を worker prompt に埋め込むサイズ閾値                                                               |
+| `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先                                            |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                                                                          |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000`（ミリ秒、`0` は注入なし）       | claude backend の子へ注入する Bash tool の timeout 上限                                                     |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に cache を削除。auth copy は設定によらず常に削除                                                 |
+| `DELEGATE_CODEX_HOOKS`                   | `1`（有効、`0` / `false` / `no` で無効） | Codex パスの `implement` / `chore` で `--dangerously-bypass-hook-trust` を付与し project hooks を有効化する |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する                                               |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限                                                        |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する                                                |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                                                            |
+| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル                                                        |
 
 ## 13. 脅威モデル・割り切り
 

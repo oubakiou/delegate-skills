@@ -57,6 +57,11 @@ interface McpConfig {
   source: string | null
 }
 
+interface ProjectHooks {
+  enabled: boolean | null
+  source: string | null
+}
+
 interface RunEffort {
   requested: string | null
   effective: {
@@ -70,6 +75,7 @@ interface ObserveJson {
   backend_session: BackendSession | null
   event_kinds: string[]
   mcp_config: McpConfig | null
+  project_hooks: ProjectHooks | null
   run_context: RunContext | null
   run_effort: RunEffort | null
 }
@@ -239,6 +245,16 @@ const parseMcpConfig = (value: unknown): McpConfig | null => {
   }
 }
 
+const parseProjectHooks = (value: unknown): ProjectHooks | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+  return {
+    enabled: booleanOrNullValue(value.enabled),
+    source: stringOrNullValue(value.source),
+  }
+}
+
 const readObserve = (filePath: string): ObserveJson => {
   const value = readUnknownJson(filePath)
   if (!isRecord(value)) {
@@ -248,6 +264,7 @@ const readObserve = (filePath: string): ObserveJson => {
     backend_session: parseBackendSession(value.backend_session),
     event_kinds: parseEventKinds(value.events),
     mcp_config: parseMcpConfig(value.mcp_config),
+    project_hooks: parseProjectHooks(value.project_hooks),
     run_context: parseRunContext(value.run_context),
     run_effort: parseRunEffort(value.run),
   }
@@ -349,6 +366,11 @@ if (prompt === '-') {
 }
 const authPresent = Boolean(process.env.CODEX_HOME && fs.existsSync(path.join(process.env.CODEX_HOME, 'auth.json')))
 const logRun = () => fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, authPresent, prompt, cwd: process.cwd(), env: {CODEX_HOME: process.env.CODEX_HOME, TMPDIR: process.env.TMPDIR}}))
+if (process.env.FAKE_CODEX_REJECT_HOOK_TRUST_FLAG === '1' && args.includes('--dangerously-bypass-hook-trust')) {
+  logRun()
+  process.stderr.write("error: unexpected argument '--dangerously-bypass-hook-trust' found\\n")
+  process.exit(2)
+}
 if (process.env.FAKE_CODEX_SIGNAL_SELF === '1') {
   logRun()
   process.kill(process.pid, 'SIGTERM')
@@ -1127,6 +1149,13 @@ const requireMcpConfig = (observe: ObserveJson): McpConfig => {
   return observe.mcp_config
 }
 
+const requireProjectHooks = (observe: ObserveJson): ProjectHooks => {
+  if (!observe.project_hooks) {
+    throw new Error('missing project_hooks')
+  }
+  return observe.project_hooks
+}
+
 const expectNoMcpPayloadInObserve = (observeFile: string): void => {
   const content = readFileSync(observeFile, 'utf8')
   expect(content).not.toContain('alpha-server')
@@ -1514,6 +1543,162 @@ describe('delegate-codex.sh session modes', () => {
     expect(log.args).not.toContain('--ignore-user-config')
     expect(log.args).not.toContain('resume')
     expect(log.authPresent).toBe(true)
+  })
+})
+
+describe('delegate-codex.sh project hooks', () => {
+  it.each(['implement', 'chore'])('adds the hook trust flag to %s runs by default', (taskType) => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper(
+      'delegate-codex.sh',
+      taskTypeArgs(fixture, 'gpt-5.5', taskType),
+      fixture.env
+    )
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--dangerously-bypass-hook-trust')
+  })
+
+  it('adds the hook trust flag to resumable initial runs by default', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, ['resumable', '', ''])
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--dangerously-bypass-hook-trust')
+    expect(log.args).not.toContain('--ephemeral')
+  })
+
+  it('adds the hook trust flag to follow-up runs by default', () => {
+    const fixture = makeFixture('codex')
+    const sessionHome = prepareCodexSessionHome(fixture.workDir)
+    const result = runCodex(fixture, ['followup', 'thread-1', sessionHome])
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args.slice(0, 3)).toEqual(['exec', 'resume', 'thread-1'])
+    expect(log.args).toContain('--dangerously-bypass-hook-trust')
+  })
+
+  it.each(['explore', 'review', 'htmldoc'])(
+    'omits the hook trust flag for the %s task type',
+    (taskType) => {
+      const fixture = makeFixture('codex')
+      const result = runWrapper(
+        'delegate-codex.sh',
+        taskTypeArgs(fixture, 'gpt-5.5', taskType),
+        fixture.env
+      )
+      const log = readLog(fixture.logFile)
+
+      expect(result.status).toBe(0)
+      expect(log.args).not.toContain('--dangerously-bypass-hook-trust')
+    }
+  )
+
+  it.each(['0', 'false', 'no'])('omits the flag when DELEGATE_CODEX_HOOKS is %s', (value) => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, [], { ...fixture.env, DELEGATE_CODEX_HOOKS: value })
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).not.toContain('--dangerously-bypass-hook-trust')
+  })
+
+  it('re-evaluates the flag per run when a follow-up opts out', () => {
+    const fixture = makeFixture('codex')
+    const initial = runCodex(fixture, ['resumable', '', ''])
+
+    expect(initial.status).toBe(0)
+    expect(readLog(fixture.logFile).args).toContain('--dangerously-bypass-hook-trust')
+
+    const sessionHome = prepareCodexSessionHome(fixture.workDir)
+    const followup = runCodex(fixture, ['followup', 'thread-1', sessionHome], {
+      ...fixture.env,
+      DELEGATE_CODEX_HOOKS: '0',
+    })
+    const followupLog = readLog(fixture.logFile)
+
+    expect(followup.status).toBe(0)
+    expect(followupLog.args.slice(0, 3)).toEqual(['exec', 'resume', 'thread-1'])
+    expect(followupLog.args).not.toContain('--dangerously-bypass-hook-trust')
+  })
+
+  it('fails closed with the child exit code when the CLI rejects the flag', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, [], {
+      ...fixture.env,
+      FAKE_CODEX_REJECT_HOOK_TRUST_FLAG: '1',
+    })
+
+    expect(result.status).toBe(2)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+  })
+})
+
+describe('delegate-codex.sh project hooks observe', () => {
+  it('records project_hooks as flag-enabled by default', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture)
+
+    expect(result.status).toBe(0)
+    expect(requireProjectHooks(readObserve(fixture.observeFile))).toEqual({
+      enabled: true,
+      source: 'flag',
+    })
+  })
+
+  it('records project_hooks as flag-enabled for follow-up runs', () => {
+    const fixture = makeFixture('codex')
+    const sessionHome = prepareCodexSessionHome(fixture.workDir)
+    const result = runCodex(fixture, ['followup', 'thread-1', sessionHome])
+
+    expect(result.status).toBe(0)
+    expect(requireProjectHooks(readObserve(fixture.observeFile))).toEqual({
+      enabled: true,
+      source: 'flag',
+    })
+  })
+
+  it('records project_hooks as task_type_excluded for allowlist-external task types', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper(
+      'delegate-codex.sh',
+      taskTypeArgs(fixture, 'gpt-5.5', 'explore'),
+      fixture.env
+    )
+
+    expect(result.status).toBe(0)
+    expect(requireProjectHooks(readObserve(fixture.observeFile))).toEqual({
+      enabled: false,
+      source: 'task_type_excluded',
+    })
+  })
+
+  it('records project_hooks as disabled on opt-out', () => {
+    const fixture = makeFixture('codex')
+    const result = runCodex(fixture, [], { ...fixture.env, DELEGATE_CODEX_HOOKS: '0' })
+
+    expect(result.status).toBe(0)
+    expect(requireProjectHooks(readObserve(fixture.observeFile))).toEqual({
+      enabled: false,
+      source: 'disabled',
+    })
+  })
+
+  it('prefers disabled over task_type_excluded when both apply', () => {
+    const fixture = makeFixture('codex')
+    const result = runWrapper('delegate-codex.sh', taskTypeArgs(fixture, 'gpt-5.5', 'explore'), {
+      ...fixture.env,
+      DELEGATE_CODEX_HOOKS: '0',
+    })
+
+    expect(result.status).toBe(0)
+    expect(requireProjectHooks(readObserve(fixture.observeFile))).toEqual({
+      enabled: false,
+      source: 'disabled',
+    })
   })
 })
 
@@ -1989,6 +2174,19 @@ const runImagegen = (
     throw error
   }
 }
+
+describe('delegate-imagegen-codex.sh argv', () => {
+  it('keeps the imagegen argv free of the hook trust flag', () => {
+    const fixture = makeFixture('codex')
+    const result = runImagegen(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).toContain('--ignore-user-config')
+    expect(log.args).toContain('--ephemeral')
+    expect(log.args).not.toContain('--dangerously-bypass-hook-trust')
+  })
+})
 
 describe('delegate-imagegen-codex.sh prune', () => {
   it('prunes codex-home after successful runs', () => {

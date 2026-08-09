@@ -147,19 +147,20 @@ delegate-review でこのブランチの差分をレビューして
 
 ### 高度な設定
 
-| 環境変数                                 | 既定                          | 用途                                              |
-| ---------------------------------------- | ----------------------------- | ------------------------------------------------- |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                 | response の inline / 段階読み閾値                 |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限） | one-shot JSON に含める content の上限             |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                | worker prompt に埋め込む request の上限           |
-| `DELEGATE_METRICS_FILE`                  | 未設定                        | 任意の JSONL telemetry 出力先                     |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                       | observe heartbeat の間隔                          |
-| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                       | observe lock の timeout                           |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし） | Claude child の Bash timeout                      |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）             | 成功 run の cache を削除する。auth は常に削除する |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                   | stream が増えない child を指定秒数後に停止する    |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限） | observe JSON に保持する stdout / stderr の上限    |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                   | 古い run ごとの scratch directory を削除する      |
+| 環境変数                                 | 既定                           | 用途                                                                               |
+| ---------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------- |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                  | response の inline / 段階読み閾値                                                  |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限）  | one-shot JSON に含める content の上限                                              |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                 | worker prompt に埋め込む request の上限                                            |
+| `DELEGATE_METRICS_FILE`                  | 未設定                         | 任意の JSONL telemetry 出力先                                                      |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                        | observe heartbeat の間隔                                                           |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                        | observe lock の timeout                                                            |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）  | Claude child の Bash timeout                                                       |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）              | 成功 run の cache を削除する。auth は常に削除する                                  |
+| `DELEGATE_CODEX_HOOKS`                   | `1`（`0`/`false`/`no` で無効） | Codex の implement / chore run で project hooks を実行する（hook trust を bypass） |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                    | stream が増えない child を指定秒数後に停止する                                     |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限）  | observe JSON に保持する stdout / stderr の上限                                     |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                    | 古い run ごとの scratch directory を削除する                                       |
 
 ### 作業ファイルとテレメトリ
 

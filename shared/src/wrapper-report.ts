@@ -3,6 +3,7 @@ import { renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { runBuildResponse } from './build-response.ts'
 import type { Env } from './build-request.ts'
+import { envFlagEnabled } from './env-flag.ts'
 import { isRecord, parseJsonObjects, readFileOrEmpty } from './jq-compat.ts'
 import { randomToken, writeCompanionMarkdown } from './protocol.ts'
 
@@ -390,8 +391,7 @@ export const processTreeJson = (rootPid: number): string[] => {
 // 用途（ベンチ・CI）でディスクを圧迫する。正常終了時のみ prune し、失敗時は調査の
 // ため残す。観測と follow-up に使う sessions JSONL と config は常に残す
 export const codexHomePrune = (codexHome: string, env: Env): void => {
-  const setting = env.DELEGATE_CODEX_HOME_PRUNE ?? '1'
-  if (setting === '0' || setting === 'false' || setting === 'no') {
+  if (!envFlagEnabled(env, 'DELEGATE_CODEX_HOME_PRUNE')) {
     return
   }
   for (const entry of ['.tmp', 'tmp', 'cache', 'models_cache.json', 'plugins', 'shell_snapshots']) {

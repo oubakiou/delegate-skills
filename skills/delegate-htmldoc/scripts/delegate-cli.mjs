@@ -1282,6 +1282,14 @@ var updateMcpConfig = (observeFile, runDir, config) => {
 		};
 	});
 };
+var updateProjectHooks = (observeFile, runDir, hooks) => {
+	updateObserve(observeFile, runDir, (doc) => {
+		doc.project_hooks = {
+			enabled: hooks.enabled,
+			source: hooks.source
+		};
+	});
+};
 var updateLineage = (observeFile, runDir, lineage) => {
 	updateObserve(observeFile, runDir, (doc) => {
 		doc.lineage = {
@@ -3545,6 +3553,12 @@ var classifyChildFailure = (input) => {
 	return unknown;
 };
 //#endregion
+//#region shared/src/env-flag.ts
+var envFlagEnabled = (env, name) => {
+	const value = env[name] ?? "";
+	return value !== "0" && value !== "false" && value !== "no";
+};
+//#endregion
 //#region shared/src/wrapper-report.ts
 var reportModeForBackend = (backend) => {
 	if (backend === "claude" || backend === "codex") return "structured";
@@ -3767,8 +3781,7 @@ var processTreeJson = (rootPid) => {
 	return entries.filter((entry) => isDescendantOf(entry, rootPid, parents)).toSorted((left, right) => left.pid - right.pid).map((entry) => entry.line);
 };
 var codexHomePrune = (codexHome, env) => {
-	const setting = env.DELEGATE_CODEX_HOME_PRUNE ?? "1";
-	if (setting === "0" || setting === "false" || setting === "no") return;
+	if (!envFlagEnabled(env, "DELEGATE_CODEX_HOME_PRUNE")) return;
 	for (const entry of [
 		".tmp",
 		"tmp",
@@ -3795,6 +3808,7 @@ var quietly = (operation) => {
 		operation();
 	} catch {}
 };
+var HOOK_ENABLED_TASK_TYPES = new Set(["implement", "chore"]);
 var STDERR_TAIL_MAX_BYTES = 8192;
 var readTailBytes = (filePath, maxBytes) => {
 	try {
@@ -4917,6 +4931,24 @@ var effortConfigArgs = (context) => {
 	if (context.effort === "") return [];
 	return ["-c", `model_reasoning_effort=${context.effort}`];
 };
+var projectHooksDecision = (context) => {
+	if (!envFlagEnabled(context.env, "DELEGATE_CODEX_HOOKS")) return {
+		enabled: false,
+		source: "disabled"
+	};
+	if (!HOOK_ENABLED_TASK_TYPES.has(context.args.taskType)) return {
+		enabled: false,
+		source: "task_type_excluded"
+	};
+	return {
+		enabled: true,
+		source: "flag"
+	};
+};
+var hookTrustArgs = (context) => {
+	if (!projectHooksDecision(context).enabled) return [];
+	return ["--dangerously-bypass-hook-trust"];
+};
 var followupCodexArgs = (context, files, prompt) => [
 	"exec",
 	"resume",
@@ -4925,6 +4957,7 @@ var followupCodexArgs = (context, files, prompt) => [
 	context.baseModel,
 	...effortConfigArgs(context),
 	"--skip-git-repo-check",
+	...hookTrustArgs(context),
 	"-c",
 	`sandbox_mode=${sandboxOf(context.env)}`,
 	"--json",
@@ -4941,6 +4974,7 @@ var normalCodexArgs = (context, files) => {
 		context.baseModel,
 		...effortConfigArgs(context),
 		"--skip-git-repo-check",
+		...hookTrustArgs(context),
 		"--sandbox",
 		sandboxOf(context.env),
 		"--json",
@@ -5051,6 +5085,9 @@ var runCodexChild = async (context, codexHome) => runWithCodexAuth({
 	codexHome,
 	operation: async () => {
 		setupCodexMcp(context, codexHome);
+		quietly(() => {
+			updateProjectHooks(context.args.observeFile, context.workDir, projectHooksDecision(context));
+		});
 		const launch = codexLaunchOf(context);
 		const worker = spawnWorker({
 			command: "codex",

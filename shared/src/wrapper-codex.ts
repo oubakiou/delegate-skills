@@ -18,6 +18,7 @@ import {
   mcpRenderCodexToml,
   mcpTomlServerNames,
 } from './delegate-mcp.ts'
+import { envFlagEnabled } from './env-flag.ts'
 import { effortFromCodexSessions } from './observe-effort.ts'
 import {
   getPath,
@@ -28,7 +29,7 @@ import {
   readFileOrEmpty,
   stringOf,
 } from './jq-compat.ts'
-import { updateMcpConfig } from './observe-store.ts'
+import { updateMcpConfig, updateProjectHooks } from './observe-store.ts'
 import { usageFromCapture, usageFromCodexSessions } from './observe-usage.ts'
 import { promptConstraints } from './prompt-constraints.ts'
 import { randomToken } from './protocol.ts'
@@ -48,6 +49,7 @@ import {
   workerPrompt,
   wrapperResult,
   writePromptFile,
+  HOOK_ENABLED_TASK_TYPES,
   STRUCTURED_REPORT_HEAD_LINES,
   type WrapperContext,
 } from './wrapper-common.ts'
@@ -455,6 +457,27 @@ const effortConfigArgs = (context: WrapperContext): string[] => {
   return ['-c', `model_reasoning_effort=${context.effort}`]
 }
 
+// argv への flag 付与と observe 記録で同じ判定を使う。enabled=false の条件が
+// 重なったときは運用者の明示設定（opt-out）を allowlist 除外より優先する
+const projectHooksDecision = (
+  context: WrapperContext
+): { enabled: boolean; source: 'flag' | 'disabled' | 'task_type_excluded' } => {
+  if (!envFlagEnabled(context.env, 'DELEGATE_CODEX_HOOKS')) {
+    return { enabled: false, source: 'disabled' }
+  }
+  if (!HOOK_ENABLED_TASK_TYPES.has(context.args.taskType)) {
+    return { enabled: false, source: 'task_type_excluded' }
+  }
+  return { enabled: true, source: 'flag' }
+}
+
+const hookTrustArgs = (context: WrapperContext): string[] => {
+  if (!projectHooksDecision(context).enabled) {
+    return []
+  }
+  return ['--dangerously-bypass-hook-trust']
+}
+
 // `codex exec resume` での stdin prompt（positional `-`）は未実測のため、follow-up は
 // argv 渡しを維持する（通常 run は stdin）
 const followupCodexArgs = (
@@ -469,6 +492,7 @@ const followupCodexArgs = (
   context.baseModel,
   ...effortConfigArgs(context),
   '--skip-git-repo-check',
+  ...hookTrustArgs(context),
   '-c',
   `sandbox_mode=${sandboxOf(context.env)}`,
   '--json',
@@ -489,6 +513,7 @@ const normalCodexArgs = (
     context.baseModel,
     ...effortConfigArgs(context),
     '--skip-git-repo-check',
+    ...hookTrustArgs(context),
     '--sandbox',
     sandboxOf(context.env),
     '--json',
@@ -640,6 +665,9 @@ const runCodexChild = async (context: WrapperContext, codexHome: string): Promis
     codexHome,
     operation: async () => {
       setupCodexMcp(context, codexHome)
+      quietly(() => {
+        updateProjectHooks(context.args.observeFile, context.workDir, projectHooksDecision(context))
+      })
       const launch = codexLaunchOf(context)
       const worker = spawnWorker({
         command: 'codex',
