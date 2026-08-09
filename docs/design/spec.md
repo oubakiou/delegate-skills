@@ -77,7 +77,7 @@ env に入れる値は Claude エイリアス（claude -p の --model 引数対�
 
 `prepare.sh` / `prepare-imagegen.sh` は解決した `model` に加え、解決元を `model_source: "env" | "default"` として stdout JSON と observe JSON の `run.model_source` に記録する。種別 env が未設定または空文字の場合は `default`、非空の場合は `env` とする。
 
-モデル指定子の正規形は、reasoning effort suffix を含む解決済み文字列である。`DELEGATE_<TYPE>_MODEL=<model>@<effort>` のように指定された場合、suffix 込みの文字列が `resolve-model.sh` → `prepare.sh` stdout JSON → request JSON → `dispatch.sh` → observe JSON の `run.model` / `usage.model` / `backend_session.model` まで流れる。CLI argv を組む直前に各 wrapper 冒頭で共有ヘルパ `delegate_observe_split_model_effort` が `{base_model, effort}` へ分解し、`ORIGINAL_MODEL` は observe 記録・follow-up 検証用の suffix 込み指定子、`MODEL` は base model として扱う。target CLI に渡す最終的な model 名は base model と effort から backend 固有の変換で組み立てる。cursor はモデル別の変換テーブルで決めるため base model と一致しない場合がある（例: `cursor-grok-4.5@medium` → `cursor-grok-4.5-medium`）。follow-up は前回 observe の suffix 込み指定子を継承するため、同じ effort flag で再起動される。
+モデル指定子の正規形は、reasoning effort suffix を含む解決済み文字列である。`DELEGATE_<TYPE>_MODEL=<model>@<effort>` のように指定された場合、suffix 込みの文字列が `resolve-model.sh` → `prepare.sh` stdout JSON → request JSON → `dispatch.sh` → observe JSON の `run.model` / `usage.model` / `backend_session.model` まで流れる。CLI argv を組む直前に各 wrapper 冒頭で共有ヘルパ `delegate_observe_split_model_effort` が `{base_model, effort}` へ分解し、`ORIGINAL_MODEL` は observe 記録・follow-up 検証用の suffix 込み指定子、`MODEL` は base model として扱う。target CLI に渡す最終的な model 名は base model と effort から backend 固有の変換で組み立てる。cursor はモデル別の変換テーブルで決めるため base model と一致しない場合がある（例: `cursor-grok-4.5@medium` → `cursor-grok-4.5-medium`）。follow-up は前回 observe の suffix 込み指定子を継承するため、同じ指定子から backend 固有の変換を経た argv で再起動される。
 
 effort suffix は opt-in で、`@` が無い場合の起動 argv は backend 既定のまま変えない。不正な suffix、backend 非対応の suffix、Cursor の slug（`-high` / `-max`）と `@` の二重指定は `prepare.sh` が dispatch 前に exit 6 で fail-closed し、wrapper 直接起動でも同じ共有検証で CLI 起動前に停止する。
 
@@ -495,15 +495,15 @@ skill 昇格提案と同じ精神で、**LLM の判断を要さず決定論的�
 | `check-metrics-baseline.sh`               | —                                                                          | fixture 現在値と `fixtures/metrics/baseline.json` の drift 検出                                                |
 | `check-no-jq-md2idx.sh`                   | —                                                                          | 配布 tree に jq / md2idx 参照が残っていないことの静的検査（CI / pre-commit）                                   |
 
-| exit | 意味                                                |
-| ---- | --------------------------------------------------- |
-| 0    | 成功                                                |
-| 1    | その他の実行失敗                                    |
-| 2    | 引数エラー（usage）                                 |
-| 3    | 前提条件不足（node / 対象 backend CLI 不在）        |
-| 4    | 委譲サイクル検出（同一種別の多段委譲）              |
-| 5    | follow-up 検証失敗（resume 不可・context 不一致）   |
-| 6    | effort 指定不正（不正値・backend 非対応・二重指定） |
+| exit | 意味                                                                                    |
+| ---- | --------------------------------------------------------------------------------------- |
+| 0    | 成功                                                                                    |
+| 1    | その他の実行失敗                                                                        |
+| 2    | 引数エラー（usage）                                                                     |
+| 3    | 前提条件不足（node / 対象 backend CLI 不在）                                            |
+| 4    | 委譲サイクル検出（同一種別の多段委譲）                                                  |
+| 5    | follow-up 検証失敗（resume 不可・context 不一致・継承 model 名が無効）                  |
+| 6    | model 名・effort 指定不正（無効な model 表記・effort 不正値・backend 非対応・二重指定） |
 
 ## 11. リポジトリ構成と配布
 

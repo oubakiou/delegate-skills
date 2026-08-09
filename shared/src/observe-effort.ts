@@ -155,23 +155,65 @@ export const validateModelEffort = (backend: string, model: string): EffortValid
 
 const CURSOR_GROK_SLUG_PATTERN = /^cursor-grok-4\.5-(?<effort>low|medium|high)$/
 
-// 修正表記の導出。二重 prefix は先頭の cursor- を 1 つだけ除去し（effort suffix は
-// 引き継ぐ）、grok の effort slug は '@' 表記へ畳む（slug 自体が effort を持つため
-// もとの suffix は再付与しない）
-const correctedCursorModel = (model: string): string => {
-  const { base_model: base, effort } = splitModelEffort(model)
+// cursor model 名の問題を理由文字列で返す純粋な述語（問題無しなら null）。
+// 判定とメッセージ生成を分離し、修正表記の提案値の検証にも再利用する
+const cursorModelNameIssue = (model: string): string | null => {
+  const { base_model: base } = splitModelEffort(model)
+  if (base.startsWith('cursor-cursor-')) {
+    return "the 'cursor-' backend prefix must appear exactly once"
+  }
+  if (CURSOR_GROK_SLUG_PATTERN.test(base)) {
+    return "grok effort must be specified with the '@' suffix, not the catalog slug"
+  }
+  return null
+}
+
+// 先頭の cursor- が 2 個以上続く間 1 個ずつ削り、selector を 1 個にする
+const collapseCursorSelectors = (base: string): string => {
   let stripped = base
-  if (stripped.startsWith('cursor-cursor-')) {
+  while (stripped.startsWith('cursor-cursor-')) {
     stripped = stripped.slice('cursor-'.length)
   }
-  const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(stripped)
+  return stripped
+}
+
+// composer* は selector 無しで cursor backend に解決されるため、文書の正規形に合わせて
+// selector ごと落とす
+const dropComposerSelector = (collapsed: string): string => {
+  if (collapsed.startsWith('cursor-composer-')) {
+    return collapsed.slice('cursor-'.length)
+  }
+  return collapsed
+}
+
+const reattachEffort = (base: string, effort: string | null): string => {
+  if (effort === null) {
+    return base
+  }
+  return `${base}@${effort}`
+}
+
+// 修正表記の導出。grok の effort slug は '@' 表記へ畳む（slug 自体が effort を持つため
+// もとの suffix は再付与しない）。それ以外は削った base にもとの suffix を引き継ぐ
+const correctedCursorModel = (model: string): string => {
+  const { base_model: base, effort } = splitModelEffort(model)
+  const collapsed = collapseCursorSelectors(base)
+  const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(collapsed)
   if (grokSlug !== null) {
     return `cursor-grok-4.5@${grokSlug[1]}`
   }
-  if (effort === null) {
-    return stripped
+  return reattachEffort(dropComposerSelector(collapsed), effort)
+}
+
+// 提案値が name / effort 両方の検証を通るときだけ具体値を断定する。通らない提案値を
+// 「新規 run で使う値」として案内すると復旧手順が成立しないため、その場合は
+// ドキュメント済みの表記を参照させるに留める
+const cursorCorrectionGuidance = (model: string): string => {
+  const corrected = correctedCursorModel(model)
+  if (cursorModelNameIssue(corrected) === null && validateModelEffort('cursor', corrected).ok) {
+    return `'${corrected}'`
   }
-  return `${stripped}@${effort}`
+  return "a documented cursor model notation ('cursor-grok-4.5[@<effort>]', etc.)"
 }
 
 // follow-up は継承した指定子を変更できないため、修正提示ではなく新規 run の案内に分岐する
@@ -180,13 +222,13 @@ const invalidCursorModel = (
   source: 'requested' | 'followup',
   reason: string
 ): EffortValidation => {
-  const corrected = correctedCursorModel(model)
+  const guidance = cursorCorrectionGuidance(model)
   if (source === 'followup') {
     return invalid(
-      `ERROR: inherited cursor model '${model}' from the previous session is no longer valid; start a new resumable run with '${corrected}'`
+      `ERROR: inherited cursor model '${model}' from the previous session is no longer valid; start a new resumable run with ${guidance}`
     )
   }
-  return invalid(`ERROR: invalid cursor model '${model}': ${reason}; use '${corrected}'`)
+  return invalid(`ERROR: invalid cursor model '${model}': ${reason}; use ${guidance}`)
 }
 
 // cursor の model 名検証。validateModelEffort は '@' 無しを早期 return する契約のため、
@@ -202,22 +244,11 @@ export const validateModelName = (
   if (backend !== 'cursor') {
     return { ok: true }
   }
-  const { base_model: base } = splitModelEffort(model)
-  if (base.startsWith('cursor-cursor-')) {
-    return invalidCursorModel(
-      model,
-      source,
-      "the 'cursor-' backend prefix must appear exactly once"
-    )
+  const issue = cursorModelNameIssue(model)
+  if (issue === null) {
+    return { ok: true }
   }
-  if (CURSOR_GROK_SLUG_PATTERN.test(base)) {
-    return invalidCursorModel(
-      model,
-      source,
-      "grok effort must be specified with the '@' suffix, not the catalog slug"
-    )
-  }
-  return { ok: true }
+  return invalidCursorModel(model, source, issue)
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -513,6 +544,38 @@ if (import.meta.vitest) {
       expect(message).toContain('from the previous session is no longer valid')
       expect(message).toContain("start a new resumable run with 'cursor-grok-4.5@medium'")
       expect(message).not.toContain("use '")
+    })
+
+    it('suggests the documented selector-less notation for a doubled composer prefix', () => {
+      const message = messageOf(
+        validateModelName('cursor', 'cursor-cursor-composer-2.5', 'requested')
+      )
+      expect(message).toContain("use 'composer-2.5'")
+    })
+
+    it('collapses three or more leading cursor- prefixes to a single selector', () => {
+      const message = messageOf(
+        validateModelName('cursor', 'cursor-cursor-cursor-composer-2.5', 'requested')
+      )
+      expect(message).toContain("use 'composer-2.5'")
+    })
+
+    it('does not assert a concrete suggestion when the derived value fails validation', () => {
+      // cursor-cursor-glm-5.2-high@max の導出値は slug と '@' の二重指定で無効なため、
+      // 具体値ではなくドキュメント済み表記を参照させる
+      const message = messageOf(
+        validateModelName('cursor', 'cursor-cursor-glm-5.2-high@max', 'requested')
+      )
+      expect(message).toContain("invalid cursor model 'cursor-cursor-glm-5.2-high@max'")
+      expect(message).not.toContain("use 'cursor-glm-5.2-high@max'")
+      expect(message).toContain("a documented cursor model notation ('cursor-grok-4.5[@<effort>]'")
+      const followupMessage = messageOf(
+        validateModelName('cursor', 'cursor-cursor-glm-5.2-high@max', 'followup')
+      )
+      expect(followupMessage).not.toContain("run with 'cursor-glm-5.2-high@max'")
+      expect(followupMessage).toContain(
+        'start a new resumable run with a documented cursor model notation'
+      )
     })
 
     it('accepts documented cursor notations', () => {

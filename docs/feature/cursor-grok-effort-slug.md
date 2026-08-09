@@ -114,8 +114,8 @@ issue の記述は症状としては正しいが、原因の切り分けが 2 �
 - cursor backend の拒否ルール:
   1. `cursor-cursor-` で始まる → 二重 prefix
   2. base が `grok-4.5-<low|medium|high>` → grok の effort slug 直指定（§5-f で `@effort` 一本に絞るため）
-- **呼び出し位置**: `prepare.ts` では `validateEffortPhase` の follow-up 早期 return より **前** に無条件で実行する。effort suffix と違い、model 名の妥当性は「初回で検証済み」が成立しない（本変更以前に作られた session には無効表記が保存されている）。多重防御として `wrapper-common.ts:234` の `effortFailure` と同じ位置でも実行する（wrapper は継承元を区別できないため常に `requested` 扱い）
-- **exit code**: `requested` は **6**（不正なモデル指定子）、`followup` は **5**（follow-up 不可 = 親は新規 run を出し直す、という既存 exit 5 の意味に合わせる）。本計画の初版が一律 exit 6 としていた点の refinement
+- **呼び出し位置**: `prepare.ts` では `validateEffortPhase` の follow-up 早期 return より **前** に無条件で実行する。effort suffix と違い、model 名の妥当性は「初回で検証済み」が成立しない（本変更以前に作られた session には無効表記が保存されている）。多重防御として `wrapper-common.ts` の `effortFailure` でも実行する（直接起動時は `session_mode` 引数が followup なら `followup` 扱い、それ以外は `requested` 扱い）
+- **exit code**: `requested` は **6**（不正なモデル指定子）、`followup` は **5**（follow-up 不可 = 親は新規 run を出し直す、という既存 exit 5 の意味に合わせる）。wrapper 直接起動でも同じ対応にする。本計画の初版が一律 exit 6 としていた点の refinement
 
 follow-up は `backend_session.model` を無条件継承し env 指定を無視する（`prepare.ts:268-276`）ため、無効表記を保存した legacy session は**表記を直す手段が無い**。メッセージはその場合を分けて案内する:
 
@@ -159,7 +159,7 @@ ERROR: inherited cursor model 'cursor-cursor-grok-4.5-medium' from the previous 
 
 - `shared/src/failure-classify.ts:20-39` の `FailureSignature` を、同一行カンマ区切りの候補列挙にも対応できる形へ拡張する
 - Cursor signature（`^Cannot use this model: <model>\. Available models: <csv>$`）を追加する。model 名パターンと候補パーサは §5-h で確定した仕様に従う
-- 候補 0 件 = `model_catalog_unavailable`（retryable）/ 非空 = `model_not_found`（非 retryable）の既存分類をそのまま適用する
+- block レイアウト（Devin）は候補 0 件 = `model_catalog_unavailable`（retryable）/ 非空 = `model_not_found`（非 retryable）の既存分類をそのまま適用する。inline レイアウト（Cursor）は §5-h のとおり検証を通る候補が 1 件以上のときだけ `model_not_found` とし、`model_catalog_unavailable` は出さない
 - テスト: §6 の「failure classification」ケース（Devin の非回帰を含む）
 - 文書（同一 commit）:
   - README / README_ja の「既知のモデル解決失敗 signature（現時点では Devin のみ）」を更新する
@@ -257,6 +257,8 @@ ERROR: inherited cursor model 'cursor-cursor-grok-4.5-medium' from the previous 
 
 候補 CSV は `, ` で分割し、各要素は既存 `SLUG_PATTERN` で濾す（候補側に bracket は現れない）。1 つでも不適合なら以降を打ち切る既存の `collectCandidates` の作法に揃える。
 
+inline レイアウトの候補解析は 3 状態とし、Cursor では `model_catalog_unavailable` を出さない。候補 capture が無い（`Available models:` で行末）場合は空カタログと stderr tail の切断を区別できず、capture があっても検証を通る候補が 0 件なら未観測の区切り書式（スペース無しのカンマ区切り等）の可能性がある。Cursor の空カタログ書式は未観測のため、いずれも fail-closed で `unknown` に倒し、検証を通る候補が 1 件以上あるときだけ `model_not_found` とする。恒久的な失敗を「一過性・再実行可」と親へ誤報しないための判断で、block レイアウト（Devin）の「marker 行が無ければ unknown」と同じ原則。Devin の既存分類（空 marker → `model_catalog_unavailable`）は変えない。
+
 ## 6. テスト方針
 
 ### 自動テスト
@@ -283,7 +285,9 @@ ERROR: inherited cursor model 'cursor-cursor-grok-4.5-medium' from the previous 
   - 正常系: Cursor の 1 行カンマ区切り stderr → `model_not_found` + 候補 8 件 + `candidatesTruncated: true`
   - 正常系: 拒否 model 名が bracket を含む場合（`grok-4.5[effort=medium]`）も §5-h のパターンで分類できる
   - 異常系: model 名に Markdown 制御文字（バッククォート / 改行 / `|`）が混ざる細工 stderr は `unknown` に落ちる
-  - 境界: 候補 0 件 → `model_catalog_unavailable`
+  - 異常系（Cursor）: marker で行末（tail 切断と空カタログを区別不可）→ `unknown`
+  - 異常系（Cursor）: 候補 capture はあるが検証を通る候補が 0 件（未観測の区切り書式）→ `unknown`
+  - 境界（Devin）: 候補 0 件 → `model_catalog_unavailable`（非回帰。Cursor ではこの分類を出さない、§5-h）
   - 異常系: tail が途中で切れて model 行を含まない → `unknown`
   - 非回帰: Devin の改行区切り signature が従来どおり分類される
 - `scripts/delegate-wrapper-session.test.ts`（Step 1 / Step 2）

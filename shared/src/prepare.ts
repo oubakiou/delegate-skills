@@ -276,10 +276,9 @@ const resolveModelPhase = (args: PrepareArgs, env: Env): ModelPhase | CliResult 
   return { model: loaded.previous.model, modelSource: 'followup', followup: loaded }
 }
 
-// model 名の妥当性は effort suffix と違い「初回で検証済み」が成立しない（本検証の
-// 導入前に作られた session に無効表記が保存され、follow-up がそれを無条件継承する）
-// ため、follow-up でも実行する。継承指定子は変更できないため follow-up では
-// exit 5（follow-up 不可）で新規 run を案内する
+// model 名の妥当性は effort suffix と違い「初回で検証済み」が成立しない（legacy session
+// には現行規則で無効な指定子が残り得る）ため、follow-up でも実行する。継承指定子は
+// 変更できないため follow-up では exit 5（follow-up 不可）で新規 run を案内する
 const validateModelNamePhase = (
   backend: string,
   model: string,

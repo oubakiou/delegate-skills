@@ -2136,26 +2136,47 @@ var validateModelEffort = (backend, model) => {
 	});
 };
 var CURSOR_GROK_SLUG_PATTERN = /^cursor-grok-4\.5-(?<effort>low|medium|high)$/;
+var cursorModelNameIssue = (model) => {
+	const { base_model: base } = splitModelEffort(model);
+	if (base.startsWith("cursor-cursor-")) return "the 'cursor-' backend prefix must appear exactly once";
+	if (CURSOR_GROK_SLUG_PATTERN.test(base)) return "grok effort must be specified with the '@' suffix, not the catalog slug";
+	return null;
+};
+var collapseCursorSelectors = (base) => {
+	let stripped = base;
+	while (stripped.startsWith("cursor-cursor-")) stripped = stripped.slice(7);
+	return stripped;
+};
+var dropComposerSelector = (collapsed) => {
+	if (collapsed.startsWith("cursor-composer-")) return collapsed.slice(7);
+	return collapsed;
+};
+var reattachEffort = (base, effort) => {
+	if (effort === null) return base;
+	return `${base}@${effort}`;
+};
 var correctedCursorModel = (model) => {
 	const { base_model: base, effort } = splitModelEffort(model);
-	let stripped = base;
-	if (stripped.startsWith("cursor-cursor-")) stripped = stripped.slice(7);
-	const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(stripped);
+	const collapsed = collapseCursorSelectors(base);
+	const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(collapsed);
 	if (grokSlug !== null) return `cursor-grok-4.5@${grokSlug[1]}`;
-	if (effort === null) return stripped;
-	return `${stripped}@${effort}`;
+	return reattachEffort(dropComposerSelector(collapsed), effort);
+};
+var cursorCorrectionGuidance = (model) => {
+	const corrected = correctedCursorModel(model);
+	if (cursorModelNameIssue(corrected) === null && validateModelEffort("cursor", corrected).ok) return `'${corrected}'`;
+	return "a documented cursor model notation ('cursor-grok-4.5[@<effort>]', etc.)";
 };
 var invalidCursorModel = (model, source, reason) => {
-	const corrected = correctedCursorModel(model);
-	if (source === "followup") return invalid(`ERROR: inherited cursor model '${model}' from the previous session is no longer valid; start a new resumable run with '${corrected}'`);
-	return invalid(`ERROR: invalid cursor model '${model}': ${reason}; use '${corrected}'`);
+	const guidance = cursorCorrectionGuidance(model);
+	if (source === "followup") return invalid(`ERROR: inherited cursor model '${model}' from the previous session is no longer valid; start a new resumable run with ${guidance}`);
+	return invalid(`ERROR: invalid cursor model '${model}': ${reason}; use ${guidance}`);
 };
 var validateModelName = (backend, model, source) => {
 	if (backend !== "cursor") return { ok: true };
-	const { base_model: base } = splitModelEffort(model);
-	if (base.startsWith("cursor-cursor-")) return invalidCursorModel(model, source, "the 'cursor-' backend prefix must appear exactly once");
-	if (CURSOR_GROK_SLUG_PATTERN.test(base)) return invalidCursorModel(model, source, "grok effort must be specified with the '@' suffix, not the catalog slug");
-	return { ok: true };
+	const issue = cursorModelNameIssue(model);
+	if (issue === null) return { ok: true };
+	return invalidCursorModel(model, source, issue);
 };
 var isRecord$1 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var jqCoalesce = (...values) => {
@@ -3552,7 +3573,6 @@ var collectCandidates = (lines) => {
 	return candidates;
 };
 var collectInlineCandidates = (candidatesText) => {
-	if (typeof candidatesText === "undefined") return [];
 	const candidates = [];
 	for (const entry of candidatesText.split(", ")) {
 		if (!SLUG_PATTERN.test(entry)) break;
@@ -3595,13 +3615,19 @@ var classifyBlock = (signature, block, model) => {
 	if (markerIndex === -1) return unknown;
 	return resultFromCandidates(model, collectCandidates(block.slice(markerIndex + 1)));
 };
+var classifyInline = (model, candidatesText) => {
+	if (typeof candidatesText === "undefined") return unknown;
+	const candidates = collectInlineCandidates(candidatesText);
+	if (candidates.length === 0) return unknown;
+	return resultFromCandidates(model, candidates);
+};
 var classifyWithSignature = (signature, stderrTail) => {
 	const lines = stderrTail.split("\n").map((line) => line.trimEnd());
 	const modelIndex = lines.findIndex((line) => signature.unknownModelLine.test(line));
 	if (modelIndex === -1) return unknown;
 	const parsed = parseModelLine(signature, lines[modelIndex]);
 	if (parsed === null) return unknown;
-	if (signature.candidatesLayout === "inline") return resultFromCandidates(parsed.model, collectInlineCandidates(parsed.candidatesText));
+	if (signature.candidatesLayout === "inline") return classifyInline(parsed.model, parsed.candidatesText);
 	return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), parsed.model);
 };
 var classifyChildFailure = (input) => {
@@ -3994,11 +4020,21 @@ var finishWithoutChild = (context, exitCode, message) => {
 	};
 };
 var effortFailure = (context) => {
-	const name = validateModelName(context.backend, context.args.originalModel, "requested");
-	if (!name.ok) return finishWithoutChild(context, 6, name.message);
+	const policy = (() => {
+		if (context.args.sessionMode === "followup") return {
+			source: "followup",
+			exitCode: 5
+		};
+		return {
+			source: "requested",
+			exitCode: 6
+		};
+	})();
+	const name = validateModelName(context.backend, context.args.originalModel, policy.source);
+	if (!name.ok) return finishWithoutChild(context, policy.exitCode, name.message);
 	const validation = validateModelEffort(context.backend, context.args.originalModel);
 	if (validation.ok) return null;
-	return finishWithoutChild(context, 6, validation.message);
+	return finishWithoutChild(context, policy.exitCode, validation.message);
 };
 var responderSessionIdOf = (context, cliModel) => `${context.backend}:${cliModel}:${path.basename(context.args.responseFile, ".json")}`;
 var workerPrompt = (context, requestStep, parts) => [

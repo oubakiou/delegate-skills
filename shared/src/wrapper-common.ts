@@ -235,17 +235,24 @@ export const finishWithoutChild = (
 }
 
 // prepare を経ない直接起動でも不正な model 名・effort 指定を黙って通さない（二重検証）。
-// wrapper は継承元の指定子を区別できないため source は常に requested として扱う
+// follow-up 起動では継承指定子を変更できないため、prepare の follow-up 分岐と同じく
+// exit 5（follow-up 不可 = 親は新規 run を出し直す）で止める
 export const effortFailure = (context: WrapperContext): CliResult | null => {
-  const name = validateModelName(context.backend, context.args.originalModel, 'requested')
+  const policy = ((): { source: 'requested' | 'followup'; exitCode: number } => {
+    if (context.args.sessionMode === 'followup') {
+      return { source: 'followup', exitCode: 5 }
+    }
+    return { source: 'requested', exitCode: 6 }
+  })()
+  const name = validateModelName(context.backend, context.args.originalModel, policy.source)
   if (!name.ok) {
-    return finishWithoutChild(context, 6, name.message)
+    return finishWithoutChild(context, policy.exitCode, name.message)
   }
   const validation = validateModelEffort(context.backend, context.args.originalModel)
   if (validation.ok) {
     return null
   }
-  return finishWithoutChild(context, 6, validation.message)
+  return finishWithoutChild(context, policy.exitCode, validation.message)
 }
 
 export const responderSessionIdOf = (context: WrapperContext, cliModel: string): string =>

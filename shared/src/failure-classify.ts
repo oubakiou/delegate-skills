@@ -61,8 +61,10 @@ const signatures: Record<string, readonly FailureSignature[]> = {
   ],
   cursor: [
     {
-      // 空カタログ（`Available models:` で行末）と未観測の書式（`Available models:auto` 等）を
-      // 区別するため、候補部は 1 スペース + 1 文字以上がある場合だけ capture する
+      // 候補部は 1 スペース + 1 文字以上がある場合だけ capture する。capture が無い
+      // （`Available models:` で行末）場合は空カタログと tail 切断を区別できず、
+      // capture があっても検証を通る候補が無ければ未観測の区切り書式の可能性がある。
+      // いずれも unknown に落とし、観測できた書式だけを受理する（fail-closed）
       unknownModelLine:
         /^Cannot use this model: (?<model>\S+)\. Available models:(?: (?<candidates>.+))?$/,
       modelPattern: CURSOR_MODEL_PATTERN,
@@ -87,10 +89,7 @@ const collectCandidates = (lines: readonly string[]): string[] => {
 
 // 候補側に bracket は現れないため、各要素は SLUG_PATTERN で濾す。
 // 不適合な要素が出た時点で打ち切る作法は block レイアウトと同じ
-const collectInlineCandidates = (candidatesText: string | undefined): string[] => {
-  if (typeof candidatesText === 'undefined') {
-    return []
-  }
+const collectInlineCandidates = (candidatesText: string): string[] => {
   const candidates: string[] = []
   for (const entry of candidatesText.split(', ')) {
     if (!SLUG_PATTERN.test(entry)) {
@@ -162,6 +161,22 @@ const classifyBlock = (
   return resultFromCandidates(model, collectCandidates(block.slice(markerIndex + 1)))
 }
 
+// inline レイアウトでは空の候補列を「カタログ空 = retryable」と断定しない。
+// capture 不在（marker で行末）は空カタログと tail 切断を区別できず、capture が
+// あっても検証を通る候補が 0 件なら未観測の区切り書式の可能性がある。Cursor の
+// 空カタログ書式は未観測なので、いずれも unknown に落とす（block レイアウトの
+// marker 不在で unknown に落とすのと同じ fail-closed 原則）
+const classifyInline = (model: string, candidatesText: string | undefined): ChildFailure => {
+  if (typeof candidatesText === 'undefined') {
+    return unknown
+  }
+  const candidates = collectInlineCandidates(candidatesText)
+  if (candidates.length === 0) {
+    return unknown
+  }
+  return resultFromCandidates(model, candidates)
+}
+
 const classifyWithSignature = (signature: FailureSignature, stderrTail: string): ChildFailure => {
   const lines = stderrTail.split('\n').map((line) => line.trimEnd())
   const modelIndex = lines.findIndex((line) => signature.unknownModelLine.test(line))
@@ -173,7 +188,7 @@ const classifyWithSignature = (signature: FailureSignature, stderrTail: string):
     return unknown
   }
   if (signature.candidatesLayout === 'inline') {
-    return resultFromCandidates(parsed.model, collectInlineCandidates(parsed.candidatesText))
+    return classifyInline(parsed.model, parsed.candidatesText)
   }
   return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), parsed.model)
 }
@@ -318,10 +333,37 @@ if (import.meta.vitest) {
       })
     })
 
-    it('classifies an empty candidate list as model_catalog_unavailable', () => {
+    it('returns unknown when the line ends at the marker without candidates', () => {
+      // 空カタログと tail 切断を区別できないため、model_catalog_unavailable には断定しない
+      expect(
+        classifyChildFailure(cursorInput('Cannot use this model: grok-4.5. Available models:'))
+      ).toEqual({ kind: 'unknown' })
       expect(
         classifyChildFailure(cursorInput('Cannot use this model: grok-4.5. Available models: '))
-      ).toEqual({ kind: 'model_catalog_unavailable', retryable: true, model: 'grok-4.5' })
+      ).toEqual({ kind: 'unknown' })
+    })
+
+    it('returns unknown when no candidate passes validation', () => {
+      // 未観測の区切り書式（スペース無しのカンマ区切り等）は unknown に落とす
+      expect(
+        classifyChildFailure(
+          cursorInput('Cannot use this model: x. Available models: auto,glm-5.2')
+        )
+      ).toEqual({ kind: 'unknown' })
+    })
+
+    it('classifies a well-formed inline candidate list as model_not_found', () => {
+      expect(
+        classifyChildFailure(
+          cursorInput('Cannot use this model: x. Available models: auto, glm-5.2')
+        )
+      ).toEqual({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'x',
+        candidates: ['auto', 'glm-5.2'],
+        candidatesTruncated: false,
+      })
     })
 
     it('stops inline candidate collection at the first non-candidate entry', () => {

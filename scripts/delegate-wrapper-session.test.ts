@@ -2882,11 +2882,26 @@ describe('wrapper cursor model name validation', () => {
     )
     expectNoCliCall(fixture)
   })
+
+  it('stops a direct-launched follow-up with a legacy notation at exit 5 with new-run guidance', () => {
+    const fixture = makeFixture('cursor')
+    const result = runWrapper(
+      'delegate-cursor.sh',
+      wrapperModelArgs(fixture, 'cursor-cursor-grok-4.5-medium', ['followup', 'cursor-chat-1', '']),
+      fixture.env
+    )
+
+    expect(result.status).toBe(5)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(readFileSync(path.join(fixture.runDir, 'worker-stderr.capture'), 'utf8')).toContain(
+      "start a new resumable run with 'cursor-grok-4.5@medium'"
+    )
+    expectNoCliCall(fixture)
+  })
 })
 
-// follow-up golden: prepare が前回 observe の backend_session.model を無条件継承する
-// 経路を、bundle 経由の prepare + dispatch で通す。前回 observe は本検証の導入前に
-// 作られた session を模して直接書く
+// 無効表記を保持する legacy session は現行の prepare では作れない（fail-closed で
+// 止まる）ため、前回 observe は直接書く
 const writePreviousCursorObserve = (fixture: Fixture, model: string): string => {
   const previousRun = path.join(fixture.workDir, 'delegate_implement_20260721_120000_abcde')
   mkdirSync(previousRun, { recursive: true })
