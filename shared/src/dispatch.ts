@@ -285,17 +285,12 @@ export const runDispatch = (argv: readonly string[], env: Env, io: DispatchIo): 
   return dispatchToWrapper(args, env, io)
 }
 
-// in-source test 専用 helper (bundle からは treeshake で除去される)
-const makeDispatchTestDir = (): string => {
-  mkdirSync('.temp', { recursive: true })
-  const dir = `.temp/dispatch-test-${Math.random().toString(36).slice(2)}`
-  mkdirSync(dir)
-  return dir
-}
-
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { writeFileSync, chmodSync, readFileSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
+
+  const makeDispatchTestDir = (): string => createTestScratchDir('dispatch-test')
 
   const makeFakeWrapper = (dir: string, script: string): void => {
     const file = path.join(dir, 'delegate-claude.sh')

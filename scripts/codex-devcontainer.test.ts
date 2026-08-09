@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { createTestScratchDir } from '../shared/src/test-scratch.ts'
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const launcherPath = path.join(repoRoot, 'scripts', 'codex-devcontainer.sh')
-const fixtureRoots = new Set<string>()
 
 interface LauncherFixture {
   env: NodeJS.ProcessEnv
@@ -21,10 +21,7 @@ interface LauncherOutcome {
 }
 
 const createFixtureDirectory = (): { binDir: string; fixtureDir: string } => {
-  const tempRoot = path.join(repoRoot, '.temp')
-  mkdirSync(tempRoot, { recursive: true })
-  const fixtureDir = mkdtempSync(path.join(tempRoot, 'codex-devcontainer-test-'))
-  fixtureRoots.add(fixtureDir)
+  const fixtureDir = createTestScratchDir('codex-devcontainer-test')
   const binDir = path.join(fixtureDir, 'bin')
   mkdirSync(binDir)
   return { binDir, fixtureDir }
@@ -167,13 +164,6 @@ const expectIsolationWarning = (outcome: LauncherOutcome): void => {
   expect(outcome.stderr).toContain('full-access Codex can reach')
   expect(outcome.stderr).toContain('external isolation boundary')
 }
-
-afterEach(() => {
-  for (const fixtureRoot of fixtureRoots) {
-    rmSync(fixtureRoot, { force: true, recursive: true })
-  }
-  fixtureRoots.clear()
-})
 
 describe('codex Dev Container launcher', () => {
   it.each(launcherModeCases)('launches $name with one isolation warning', async (mode) => {

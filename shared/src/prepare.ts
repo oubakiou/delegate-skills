@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { backendFor } from './backend.ts'
 import { runBuildRequest, type Env } from './build-request.ts'
@@ -558,19 +558,13 @@ export const runPrepare = (
   return preparedRun(args, env, readStdin)
 }
 
-// in-source test 専用 helper (bundle からは treeshake で除去される)
-const makePrepareTestWorkDir = (): string => {
-  mkdirSync('.temp', { recursive: true })
-  const dir = `.temp/prepare-test-${Math.random().toString(36).slice(2)}`
-  mkdirSync(dir)
-  return dir
-}
-
 const testRequestBody = (): Buffer => Buffer.from('# Task\n\nprepare test body\n')
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  const { createTestScratchDir } = await import('./test-scratch.ts')
   const body = testRequestBody
+  const makePrepareTestWorkDir = (): string => createTestScratchDir('prepare-test')
 
   describe('runPrepare', () => {
     it('fails closed with exit 2 on missing args and invalid session_mode', () => {

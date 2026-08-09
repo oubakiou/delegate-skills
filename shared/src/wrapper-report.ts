@@ -411,14 +411,9 @@ const writeTempFile = (dir: string, name: string, content: string): string => {
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
 
-  const makeReportTestDir = (): string => {
-    mkdirSync('.temp', { recursive: true })
-    const dir = `.temp/wrapper-report-test-${Math.random().toString(36).slice(2)}`
-    mkdirSync(dir)
-    return dir
-  }
+  const makeReportTestDir = (): string => createTestScratchDir('wrapper-report-test')
 
   describe('reportModeForBackend', () => {
     it('uses structured for claude/codex and report_md otherwise', () => {

@@ -164,14 +164,10 @@ export const withObserveLock = <ResultType>(
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync, writeFileSync, existsSync } = await import('node:fs')
+  const { writeFileSync, existsSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
 
-  const makeLockTestDir = (): string => {
-    mkdirSync('.temp', { recursive: true })
-    const dir = `.temp/observe-lock-test-${Math.random().toString(36).slice(2)}`
-    mkdirSync(dir)
-    return dir
-  }
+  const makeLockTestDir = (): string => createTestScratchDir('observe-lock-test')
 
   describe('observe lock path', () => {
     it('derives the lock path beside the observe file', () => {

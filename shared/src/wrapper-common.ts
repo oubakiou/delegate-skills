@@ -619,11 +619,10 @@ export const wrapperResult = (context: WrapperContext, outcome: ResponseOutcome)
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { readdirSync, readFileSync } = await import('node:fs')
+  const { createTestScratchDir, createTestScratchFile } = await import('./test-scratch.ts')
 
   const makeCommonTestContext = (backend?: string): WrapperContext => {
-    mkdirSync('.temp', { recursive: true })
-    const dir = `.temp/wrapper-common-test-${Math.random().toString(36).slice(2)}`
-    mkdirSync(dir)
+    const dir = createTestScratchDir('wrapper-common-test')
     const args: WrapperArgs = {
       originalModel: 'haiku',
       taskType: 'chore',
@@ -646,10 +645,11 @@ if (import.meta.vitest) {
     return readFileSync(path.join(context.workDir, reportName), 'utf8')
   }
 
-  const tailTestDir = '.temp'
   const writeTempLog = (content: string): string => {
-    mkdirSync(tailTestDir, { recursive: true })
-    const file = `${tailTestDir}/read-tail-test-${Math.random().toString(36).slice(2)}.log`
+    const file = createTestScratchFile(
+      'read-tail-test',
+      `${Math.random().toString(36).slice(2)}.log`
+    )
     writeFileSync(file, content)
     return file
   }
@@ -668,7 +668,7 @@ if (import.meta.vitest) {
     })
 
     it('returns an empty string for a missing file', () => {
-      expect(readTailBytes('.temp/read-tail-test-missing.log', 8)).toBe('')
+      expect(readTailBytes(createTestScratchFile('read-tail-test', 'missing.log'), 8)).toBe('')
     })
   })
 

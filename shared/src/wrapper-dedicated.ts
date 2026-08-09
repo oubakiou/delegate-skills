@@ -187,12 +187,11 @@ export const finishDedicated = (
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync, readdirSync, readFileSync } = await import('node:fs')
+  const { readdirSync, readFileSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
 
   const makeDedicatedTestContext = (): WrapperContext => {
-    mkdirSync('.temp', { recursive: true })
-    const dir = `.temp/wrapper-dedicated-test-${Math.random().toString(36).slice(2)}`
-    mkdirSync(dir)
+    const dir = createTestScratchDir('wrapper-dedicated-test')
     return makeDedicatedContext(
       {
         model: 'gpt-5',

@@ -119,7 +119,8 @@ export const runReadJson = (argv: readonly string[], stdin: Buffer): CliResult =
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync, writeFileSync } = await import('node:fs')
+  const { writeFileSync } = await import('node:fs')
+  const { createTestScratchFile } = await import('./test-scratch.ts')
 
   const json = Buffer.from(
     JSON.stringify({
@@ -146,8 +147,10 @@ if (import.meta.vitest) {
     })
 
     it('reads from a file when a path is given', () => {
-      mkdirSync('.temp', { recursive: true })
-      const file = `.temp/read-json-test-${Math.random().toString(36).slice(2)}.json`
+      const file = createTestScratchFile(
+        'read-json-test',
+        `${Math.random().toString(36).slice(2)}.json`
+      )
       writeFileSync(file, JSON.stringify({ model: 'haiku' }))
       expect(runReadJson(['.model', file], Buffer.alloc(0)).stdout).toBe('haiku\n')
     })

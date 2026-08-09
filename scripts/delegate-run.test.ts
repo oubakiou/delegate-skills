@@ -1,8 +1,9 @@
 // run.sh / run-imagegen.sh / run-x-research.sh の one-shot 契約（単一 JSON stdout・
 // exit code 透過・observe_file の stderr 先出し・selector 既定）を fake CLI で検証する。
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { createTestScratchDir } from '../shared/src/test-scratch.ts'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -115,9 +116,7 @@ const makeHarnessEnv = (workDir: string, binDir: string): NodeJS.ProcessEnv => {
 }
 
 const makeHarness = (): Harness => {
-  const tempRoot = path.join(repoRoot, '.temp')
-  mkdirSync(tempRoot, { recursive: true })
-  const workDir = mkdtempSync(path.join(tempRoot, 'delegate-run-test-'))
+  const workDir = createTestScratchDir('delegate-run-test')
   const binDir = makeFakeBinDir(workDir)
   const codexHome = path.join(workDir, 'root-codex-home')
   mkdirSync(codexHome, { recursive: true })

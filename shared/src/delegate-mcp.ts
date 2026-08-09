@@ -192,20 +192,18 @@ export const mcpTomlServerNames = (configTomlPath: string): string[] => {
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { chmodSync, mkdirSync, writeFileSync } = await import('node:fs')
+  const { createTestScratchDir, createTestScratchFile } = await import('./test-scratch.ts')
 
   const makeTempFile = (content: string): string => {
-    mkdirSync('.temp', { recursive: true })
-    const file = `.temp/delegate-mcp-test-${Math.random().toString(36).slice(2)}.json`
+    const file = createTestScratchFile(
+      'delegate-mcp-test',
+      `${Math.random().toString(36).slice(2)}.json`
+    )
     writeFileSync(file, content)
     return file
   }
 
-  const makeTestWorkDir = (): string => {
-    mkdirSync('.temp', { recursive: true })
-    const dir = `.temp/delegate-mcp-test-${Math.random().toString(36).slice(2)}`
-    mkdirSync(dir, { recursive: true })
-    return dir
-  }
+  const makeTestWorkDir = (): string => createTestScratchDir('delegate-mcp-test')
 
   describe('mcpExtractJsonFile', () => {
     it('extracts mcpServers and falls back to {} on missing or corrupt input', () => {

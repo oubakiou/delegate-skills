@@ -9,17 +9,16 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { createTestScratchDir } from '../shared/src/test-scratch.ts'
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const scriptPath = path.join(repoRoot, 'scripts', 'clean-devcontainer-disk.sh')
@@ -177,13 +176,30 @@ const fakeDu = `#!/usr/bin/env bash
 set -u
 printf 'du %s\\n' "$*" >> "$FAKE_STATE/calls.log"
 DU_FAIL_MATCH=""
+DU_FIXED_MATCH=""
+DU_FIXED_BYTES=""
 [ -f "$FAKE_STATE/du.env" ] && source "$FAKE_STATE/du.env"
+[ -f "$FAKE_STATE/du-fixed.env" ] && source "$FAKE_STATE/du-fixed.env"
 if [ -n "$DU_FAIL_MATCH" ]; then
   for a in "$@"; do
     case "$a" in
       *"$DU_FAIL_MATCH"*)
         printf 'fake du: simulated failure for %s\\n' "$a" >&2
         exit 1
+        ;;
+    esac
+  done
+fi
+if [ -n "$DU_FIXED_MATCH" ]; then
+  for a in "$@"; do
+    # fixture root も .temp/ 配下にあるため、部分一致だと fixture の実計測まで潰れる
+    case "$a" in
+      "$DU_FIXED_MATCH")
+        if [ "$DU_FIXED_BYTES" = "fail" ]; then
+          exit 1
+        fi
+        printf '%s\\t%s\\n' "$DU_FIXED_BYTES" "$a"
+        exit 0
         ;;
     esac
   done
@@ -279,15 +295,6 @@ interface OutcomeExpectation {
   stderrContains?: string[]
 }
 
-const fixtureRoots = new Set<string>()
-
-afterEach(() => {
-  for (const fixtureRoot of fixtureRoots) {
-    rmSync(fixtureRoot, { force: true, recursive: true })
-  }
-  fixtureRoots.clear()
-})
-
 const shQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 const DF_PROFILE_KEYS = [
@@ -371,6 +378,28 @@ const setDuFail = (fixture: Fixture, match: string): void => {
   writeFileSync(path.join(fixture.stateDir, 'du.env'), `DU_FAIL_MATCH=${shQuote(match)}\n`)
 }
 
+const setDuFixed = (fixture: Fixture, match: string, bytes: 'fail' | number): void => {
+  writeFileSync(
+    path.join(fixture.stateDir, 'du-fixed.env'),
+    `DU_FIXED_MATCH=${shQuote(match)}\nDU_FIXED_BYTES=${shQuote(String(bytes))}\n`
+  )
+}
+
+// 12MiB ちょうど。human() の丸めが安定するので期待文字列を固定できる
+const REPO_TEMP_FIXED_BYTES = 12 * 1024 * 1024
+const REPO_TEMP_FIXED_HUMAN = '12.0MiB'
+
+const seedFixtureDefaults = (fixture: Fixture, homeDir: string): void => {
+  // 既定は / と別 filesystem (実環境の host mount と同じ構図) にし、
+  // repository .temp/ の du 計測分岐を不要に踏まないようにする
+  setDfProfile(fixture, 'home', { fs: 'homefs', mount: homeDir })
+  setDfProfile(fixture, 'workspace', { fs: 'hostmount', mount: repoRoot })
+  // --test-root は script の repo_root を差し替えないため、同一 filesystem 分岐では
+  // 実 .temp/ が du の対象になる。実測に落とすと所要時間が repository の外部状態に
+  // 依存するので、この path だけ実 du へ委譲せず固定値を返す
+  setDuFixed(fixture, path.join(repoRoot, '.temp'), REPO_TEMP_FIXED_BYTES)
+}
+
 const writeFakes = (binDir: string): void => {
   const fakes: Record<string, string> = {
     df: fakeDf,
@@ -419,9 +448,7 @@ const makeFixtureEnv = (
 // HOME を fixture に差し替え、必ず --test-root を渡すことで、実 HOME・実 /vscode・
 // 実 ~/.npm に script が触れる経路を fixture に閉じ込める
 const makeFixture = (): Fixture => {
-  mkdirSync(tempRoot, { recursive: true })
-  const dir = realpathSync(mkdtempSync(path.join(tempRoot, 'clean-devcontainer-disk-test-')))
-  fixtureRoots.add(dir)
+  const dir = realpathSync(createTestScratchDir('clean-devcontainer-disk-test'))
   const dirs = makeFixtureDirs(dir)
   writeFakes(dirs.binDir)
   const vscodeRoot = path.join(dirs.testRoot, 'vscode')
@@ -432,10 +459,7 @@ const makeFixture = (): Fixture => {
     env: makeFixtureEnv({ ...dirs, vscodeRoot }, dir),
     vscodeRoot,
   }
-  // 既定は / と別 filesystem (実環境の host mount と同じ構図) にし、
-  // repository .temp/ の du 計測分岐を不要に踏まないようにする
-  setDfProfile(fixture, 'home', { fs: 'homefs', mount: dirs.homeDir })
-  setDfProfile(fixture, 'workspace', { fs: 'hostmount', mount: repoRoot })
+  seedFixtureDefaults(fixture, dirs.homeDir)
   return fixture
 }
 
@@ -810,8 +834,27 @@ describe('filesystem 観測と報告', () => {
       status: 0,
       contains: [
         '  overlay @ /: / /vscode HOME workspace',
-        'workspace は / と同一 filesystem: repository の .temp/ (',
+        `workspace は / と同一 filesystem: repository の .temp/ (${REPO_TEMP_FIXED_HUMAN})`,
       ],
+    })
+    // 実 .temp/ を走査していれば固定値にはならない (所要時間が repository 状態に依存する)
+    expect(
+      calls(fixture).some((call) => call === `du -sb -- ${path.join(repoRoot, '.temp')}`)
+    ).toBe(true)
+  })
+
+  it('.temp/ の容量を計測できない場合は 0B ではなく計測不能と報告する', () => {
+    const fixture = makeFixture()
+    mkdirSync(fixture.vscodeRoot, { recursive: true })
+    setDfProfile(fixture, 'home', { fs: 'overlay', mount: '/' })
+    setDfProfile(fixture, 'workspace', { fs: 'overlay', mount: '/' })
+    setDuFixed(fixture, path.join(repoRoot, '.temp'), 'fail')
+
+    const outcome = runScript(fixture, [])
+
+    expectOutcome(outcome, {
+      status: 0,
+      contains: ['workspace は / と同一 filesystem: repository の .temp/ (計測不能)'],
     })
   })
 
@@ -1644,9 +1687,7 @@ const extractPostStartCommand = (): string => {
 }
 
 const makeWrapperFixture = (stubExit: number | null): { argsFile: string; dir: string } => {
-  mkdirSync(tempRoot, { recursive: true })
-  const dir = mkdtempSync(path.join(tempRoot, 'clean-devcontainer-disk-wrapper-test-'))
-  fixtureRoots.add(dir)
+  const dir = createTestScratchDir('clean-devcontainer-disk-wrapper-test')
   mkdirSync(path.join(dir, 'scripts'))
   const argsFile = path.join(dir, 'stub-args')
   if (stubExit !== null) {

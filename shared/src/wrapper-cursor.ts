@@ -460,23 +460,15 @@ export const runWrapperCursor = async (
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const {
-    chmodSync,
-    mkdirSync: mkdirTestDir,
-    mkdtempSync,
-    rmSync,
-    writeFileSync: writeTestFile,
-  } = await import('node:fs')
+  const { chmodSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
 
-  const makeResolverTestDir = (): string => {
-    mkdirTestDir('.temp', { recursive: true })
-    return mkdtempSync(path.join('.temp', 'wrapper-cursor-resolver-test-'))
-  }
+  const makeResolverTestDir = (): string => createTestScratchDir('wrapper-cursor-resolver-test')
 
   const writeAgentScript = (dir: string, script: string): string => {
-    mkdirTestDir(dir, { recursive: true })
+    mkdirSync(dir, { recursive: true })
     const agent = path.join(dir, 'agent')
-    writeTestFile(agent, script)
+    writeFileSync(agent, script)
     chmodSync(agent, 0o755)
     return agent
   }
@@ -487,56 +479,40 @@ if (import.meta.vitest) {
   describe('resolveCursorAgent', () => {
     it('skips a different CLI and returns the first valid Cursor agent path', () => {
       const dir = makeResolverTestDir()
-      try {
-        const wrong = writeAgent(path.join(dir, 'wrong'), 'grok 0.2.73 (9ff14c43bb) [stable]')
-        const valid = writeAgent(path.join(dir, 'valid'), '2026.07.16-899851b')
-        expect(
-          resolveCursorAgent({
-            HOME: path.join(dir, 'home'),
-            PATH: `${path.dirname(wrong)}:${path.dirname(valid)}`,
-          })
-        ).toBe(path.resolve(valid))
-      } finally {
-        rmSync(dir, { force: true, recursive: true })
-      }
+      const wrong = writeAgent(path.join(dir, 'wrong'), 'grok 0.2.73 (9ff14c43bb) [stable]')
+      const valid = writeAgent(path.join(dir, 'valid'), '2026.07.16-899851b')
+      expect(
+        resolveCursorAgent({
+          HOME: path.join(dir, 'home'),
+          PATH: `${path.dirname(wrong)}:${path.dirname(valid)}`,
+        })
+      ).toBe(path.resolve(valid))
     })
 
     it('uses the known local install path when PATH has no valid candidate', () => {
       const dir = makeResolverTestDir()
-      try {
-        const home = path.join(dir, 'home')
-        const valid = writeAgent(path.join(home, '.local', 'bin'), '2026.07.16-899851b')
-        expect(resolveCursorAgent({ HOME: home, PATH: path.join(dir, 'empty') })).toBe(
-          path.resolve(valid)
-        )
-      } finally {
-        rmSync(dir, { force: true, recursive: true })
-      }
+      const home = path.join(dir, 'home')
+      const valid = writeAgent(path.join(home, '.local', 'bin'), '2026.07.16-899851b')
+      expect(resolveCursorAgent({ HOME: home, PATH: path.join(dir, 'empty') })).toBe(
+        path.resolve(valid)
+      )
     })
 
     it('rejects candidates whose version output is not a Cursor version', () => {
       const dir = makeResolverTestDir()
-      try {
-        const invalid = writeAgent(path.join(dir, 'invalid'), 'agent version 1.0')
-        expect(resolveCursorAgent({ PATH: path.dirname(invalid) })).toBeNull()
-      } finally {
-        rmSync(dir, { force: true, recursive: true })
-      }
+      const invalid = writeAgent(path.join(dir, 'invalid'), 'agent version 1.0')
+      expect(resolveCursorAgent({ PATH: path.dirname(invalid) })).toBeNull()
     })
 
     it('rejects a SIGTERM-ignoring candidate within the timeout even if stdout looks valid', () => {
       const dir = makeResolverTestDir()
-      try {
-        const agent = writeAgentScript(
-          path.join(dir, 'stubborn'),
-          `#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' '2026.07.16-899851b'\nsleep 60\n`
-        )
-        const startedAt = Date.now()
-        expect(resolveCursorAgent({ PATH: path.dirname(agent) }, 500)).toBeNull()
-        expect(Date.now() - startedAt).toBeLessThan(10_000)
-      } finally {
-        rmSync(dir, { force: true, recursive: true })
-      }
+      const agent = writeAgentScript(
+        path.join(dir, 'stubborn'),
+        `#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' '2026.07.16-899851b'\nsleep 60\n`
+      )
+      const startedAt = Date.now()
+      expect(resolveCursorAgent({ PATH: path.dirname(agent) }, 500)).toBeNull()
+      expect(Date.now() - startedAt).toBeLessThan(10_000)
     })
   })
 
@@ -559,11 +535,7 @@ if (import.meta.vitest) {
         throw new Error('unexpected wrapper args failure')
       }
       const context = makeWrapperContext(args, { env: {}, scriptsDir: dir })
-      try {
-        return cursorCliModelOf(context, stripCursorPrefix(context.baseModel))
-      } finally {
-        rmSync(dir, { force: true, recursive: true })
-      }
+      return cursorCliModelOf(context, stripCursorPrefix(context.baseModel))
     }
 
     it('maps the grok effort suffix to the catalog slug', () => {

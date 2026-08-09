@@ -164,4 +164,33 @@ if (isDirectRun()) {
   }
 }
 
-export default assertTestExecutionCapability
+const STALE_RUN_MS = 60 * 60 * 1000
+
+const sweepScratch = async (olderThanMs: number): Promise<void> => {
+  const { sweepTestScratch } = await import('../shared/src/test-scratch.ts')
+  sweepTestScratch({ olderThanMs })
+}
+
+export interface TestEnvironmentSetupDeps {
+  assertCapability: () => Promise<void>
+  sweep: (olderThanMs: number) => Promise<void>
+}
+
+// teardown ではなく setup 側で掃除する。teardown は worker pool が閉じる前に走るため
+// 自 run の scratch を所有 pid 生存として保護してしまい、異常終了時には走らない
+export const runTestEnvironmentSetup = async (deps: TestEnvironmentSetupDeps): Promise<void> => {
+  // probe が通らない環境では sweep も実行しない (capability 不成立のまま副作用を出さない)
+  await deps.assertCapability()
+  // sweep の失敗は preflight の fail-closed 判定を覆さない。catch を sweep 呼び出しだけに
+  // 狭く掛け、TEST_ENVIRONMENT_UNSUPPORTED を警告へ格下げしないようにする
+  try {
+    await deps.sweep(STALE_RUN_MS)
+  } catch (error) {
+    process.stderr.write(`test scratch sweep skipped: ${errorMessage(error)}\n`)
+  }
+}
+
+export const setupTestEnvironment = async (): Promise<void> =>
+  runTestEnvironmentSetup({ assertCapability: assertTestExecutionCapability, sweep: sweepScratch })
+
+export default setupTestEnvironment

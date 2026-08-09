@@ -121,15 +121,11 @@ export const runBuildResponse = (argv: readonly string[], env: Env, stdin: Buffe
   return emitResponse({ status, responderSessionId, responseFile, env, stdin })
 }
 
-// in-source test 専用 helper (bundle からは treeshake で除去される)
-const makeTestResponsePath = (): string => {
-  mkdirSync('.temp', { recursive: true })
-  return `.temp/build-response-test-${randomToken(8)}_res.json`
-}
-
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const responsePath = makeTestResponsePath
+  const { createTestScratchFile } = await import('./test-scratch.ts')
+  const responsePath = (): string =>
+    createTestScratchFile('build-response-test', `${randomToken(8)}_res.json`)
   describe('runBuildResponse', () => {
     it('fails closed with exit 2 on missing args or an unknown status', () => {
       expect(runBuildResponse(['completed'], {}, Buffer.alloc(0)).exitCode).toBe(2)

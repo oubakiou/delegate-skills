@@ -3,7 +3,6 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -11,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
+import { createTestScratchDir } from '../shared/src/test-scratch.ts'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -90,11 +90,7 @@ interface Fixture {
   workDir: string
 }
 
-const makeWorkDir = (): string => {
-  const tempRoot = path.join(repoRoot, '.temp')
-  mkdirSync(tempRoot, { recursive: true })
-  return mkdtempSync(path.join(tempRoot, 'delegate-wrapper-session-test-'))
-}
+const makeWorkDir = (): string => createTestScratchDir('delegate-wrapper-session-test')
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null

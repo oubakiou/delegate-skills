@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { backendFor } from './backend.ts'
 import { runBuildRequest, type Env } from './build-request.ts'
 import { runCheckDelegateChain } from './check-delegate-chain.ts'
@@ -178,18 +178,12 @@ export const runPrepareImagegen = (
   )
 }
 
-// in-source test 専用 helper (bundle からは treeshake で除去される)
-const makeImagegenTestWorkDir = (): string => {
-  mkdirSync('.temp', { recursive: true })
-  const dir = `.temp/prepare-imagegen-test-${Math.random().toString(36).slice(2)}`
-  mkdirSync(dir)
-  return dir
-}
-
 const testRequestBody = (): Buffer => Buffer.from('# Task\n\nimagegen test body\n')
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  const { createTestScratchDir } = await import('./test-scratch.ts')
+  const makeImagegenTestWorkDir = (): string => createTestScratchDir('prepare-imagegen-test')
   const body = testRequestBody
 
   describe('runPrepareImagegen', () => {

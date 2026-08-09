@@ -310,16 +310,10 @@ const makeAgedRunDir = (workDir: string, token: string, phase: string | null): s
   return dir
 }
 
-const makeTestWorkDir = (): string => {
-  mkdirSync('.temp', { recursive: true })
-  const dir = path.join('.temp', `build-request-test-${randomToken(8)}`)
-  mkdirSync(dir)
-  return dir
-}
-
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const makeWorkDir = makeTestWorkDir
+  const { createTestScratchDir } = await import('./test-scratch.ts')
+  const makeWorkDir = (): string => createTestScratchDir('build-request-test')
   describe('runBuildRequest', () => {
     it('fails closed with exit 2 on missing args or a non-array chain', () => {
       expect(runBuildRequest(['chore'], {}, Buffer.alloc(0)).exitCode).toBe(2)

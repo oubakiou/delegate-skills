@@ -378,14 +378,10 @@ export const waitWithHeartbeat = async (input: WaitInput): Promise<WaitResult> =
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync, writeFileSync, readFileSync } = await import('node:fs')
+  const { writeFileSync, readFileSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
 
-  const makeWaitTestDir = (): string => {
-    mkdirSync('.temp', { recursive: true })
-    const dir = `.temp/wrapper-wait-test-${Math.random().toString(36).slice(2)}`
-    mkdirSync(dir)
-    return dir
-  }
+  const makeWaitTestDir = (): string => createTestScratchDir('wrapper-wait-test')
 
   const writeObserveFixture = (dir: string, heartbeatDoc: Record<string, unknown>): string => {
     const observeFile = path.join(dir, 'run_observe.json')

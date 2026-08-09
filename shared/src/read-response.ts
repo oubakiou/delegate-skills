@@ -1,4 +1,4 @@
-import { mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { statSync, writeFileSync } from 'node:fs'
 import type { CliResult } from './cli-result.ts'
 import type { Env } from './build-request.ts'
 import {
@@ -265,27 +265,27 @@ export const runReadResponse = (argv: readonly string[], env: Env): CliResult =>
   })
 }
 
-// in-source test 専用 helper (bundle からは treeshake で除去される)
-const writeTestResponseFixture = (sections: string[]): string => {
-  mkdirSync('.temp', { recursive: true })
-  const file = `.temp/read-response-test-${Math.random().toString(36).slice(2)}.json`
-  writeFileSync(
-    file,
-    JSON.stringify({
-      protocol_version: 1,
-      type: 'response',
-      status: 'completed',
-      responder_session_id: 'worker',
-      index: '# idx',
-      sections,
-    })
-  )
-  return file
-}
-
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const writeFixture = writeTestResponseFixture
+  const { createTestScratchFile } = await import('./test-scratch.ts')
+  const writeFixture = (sections: string[]): string => {
+    const file = createTestScratchFile(
+      'read-response-test',
+      `${Math.random().toString(36).slice(2)}.json`
+    )
+    writeFileSync(
+      file,
+      JSON.stringify({
+        protocol_version: 1,
+        type: 'response',
+        status: 'completed',
+        responder_session_id: 'worker',
+        index: '# idx',
+        sections,
+      })
+    )
+    return file
+  }
   describe('runReadResponse', () => {
     it('keeps the exit code table (usage 2 / missing 1 / bad selector 1 / range 5)', () => {
       expect(runReadResponse([], {}).exitCode).toBe(2)

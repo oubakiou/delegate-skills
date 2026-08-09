@@ -64,6 +64,7 @@ delegate-skills/
       wrapper-{claude,codex,cursor,devin,imagegen,xresearch}.ts
       observe-{store,lock,followup,effort,usage,cost,timing}.ts
       prompt-constraints.ts  delegate-mcp.ts  backend.ts  build-*.ts  read-*.ts  resolve-model.ts
+      test-scratch.ts                # テスト用スクラッチの生成・回収 (テスト専用・非配布)
     dist/delegate-cli.mjs          # vp build 生成の単一ファイル CLI（md2idx 内包・コミット対象）
     resolve-model.sh  check-delegate-chain.sh          # 直接実行エントリの exec shim
     build-request.sh  read-request.sh  build-response.sh  read-response.sh  read-json.sh
@@ -171,6 +172,25 @@ TypeScript のコード調査・変更検証には Claude Code の `LSP` deferre
 ## テスト
 
 Vitest の **in-source testing** で TS モジュールを単体検証する。対象は `vite.config.ts` の `test.includeSource`（`shared/src/**/*.ts` ほか）。各モジュールの `if (import.meta.vitest)` ブロックにテストを隣接させ、バンドル時は `define` で dead-code 除去される。
+
+### テスト用スクラッチ
+
+テストが作る一時ディレクトリは `shared/src/test-scratch.ts` の `createTestScratchDir` / `createTestScratchFile` 経由で作る。`.temp/` 直下を直接掘らない。
+
+- 生成先は専用 namespace `.temp/test-scratch/<run>/` 配下に閉じる。削除判定を名前ではなくパスの包含で決めるための境界で、`.temp/` 直下に置かれた手動作業ディレクトリを巻き込まない
+- 削除は `onTestFinished` で予約されるので、テスト側に `afterEach` / `try-finally` の後片付けを書かない。**`it` / `test` の本体からのみ呼べる**（`describe` 直下や `beforeAll` からの呼び出しは fail-fast する）
+- 各 worker process が残す run ディレクトリは、次回実行時に globalSetup（`scripts/test-execution-capability.ts`）の sweep が回収する。sweep は所有 pid の生存を主判定、mtime を副判定にし、preflight の fail-closed 判定より後で実行され、失敗しても警告に留まる
+- 失敗調査で scratch を残したいときは `KEEP_TEST_SCRATCH=1` を付ける。削除が抑止され、保持したパスが stderr に出る
+
+```sh
+KEEP_TEST_SCRATCH=1 npm test -- delegate-wrapper-session
+```
+
+専用 namespace 導入前の checkout では `.temp/` 直下に旧世代の `*-test-*` が大量に残っている。sweep は名前マッチを使わないためこれらを回収しないので、一度だけ手動で回収する。対象は既知 prefix の明示 allowlist に限られ、`.temp/delegate/` などは触らない。
+
+```sh
+node --experimental-strip-types -e "import('./shared/src/test-scratch.ts').then((m) => console.log(m.recoverLegacyTestScratch()))"
+```
 
 契約テストは Node / bash / fake backend CLI の子プロセスを実際に起動する。preflight は `status === 0` だけではなく spawn error が無いことと sentinel stdout が一致することを要求するため、sandbox が子プロセスを抑止しながら status 0 を返す環境でも製品 assertion の失敗や偽成功として分類しない。Codex では、管理・host policy が許す場合に新しい session を `--sandbox danger-full-access` で開始するか、通常の terminal / CI で `npm test` を再実行する。project `.codex/config.toml` は CLI override より優先度が低く managed requirements の制約も受けるため、repository の設定だけで実行 capability が得られるとは見なさない。
 

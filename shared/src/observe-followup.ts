@@ -260,7 +260,8 @@ export const writeFailedResponse = (
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { mkdirSync, readdirSync, readFileSync } = await import('node:fs')
+  const { readdirSync, readFileSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
   const { initObserve } = await import('./observe-store.ts')
 
   const makeFailedResponseFixture = (): {
@@ -268,9 +269,7 @@ if (import.meta.vitest) {
     observeFile: string
     responseFile: string
   } => {
-    mkdirSync('.temp', { recursive: true })
-    const runDir = `.temp/observe-followup-test-${Math.random().toString(36).slice(2)}`
-    mkdirSync(runDir)
+    const runDir = createTestScratchDir('observe-followup-test')
     const observeFile = path.join(runDir, 'delegate_chore_x_observe.json')
     const responseFile = path.join(runDir, 'delegate_chore_x_res.json')
     initObserve({

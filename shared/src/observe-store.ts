@@ -823,10 +823,11 @@ const observeEventKinds = (doc: Record<string, unknown>): unknown[] => {
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { mkdirSync, utimesSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
   const { runReadJson } = await import('./read-json.ts')
 
   const initFixture = (): { observeFile: string; runDir: string } => {
-    const dir = `.temp/observe-store-test-${randomToken(8)}`
+    const dir = createTestScratchDir('observe-store-test')
     const runDir = path.join(dir, 'delegate_chore_run')
     mkdirSync(runDir, { recursive: true })
     const run = { observeFile: path.join(dir, 'delegate_chore_run_observe.json'), runDir }

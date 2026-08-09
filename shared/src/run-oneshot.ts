@@ -1,4 +1,3 @@
-import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import type { Env } from './build-request.ts'
 import type { CliResult } from './cli-result.ts'
@@ -359,14 +358,6 @@ export const runRunXResearch = (
   })
 }
 
-// in-source test 専用 helper (bundle からは treeshake で除去される)
-const makeOneShotTestDir = (): string => {
-  mkdirSync('.temp', { recursive: true })
-  const dir = `.temp/run-oneshot-test-${Math.random().toString(36).slice(2)}`
-  mkdirSync(dir)
-  return dir
-}
-
 const stderrSpyIo = (dir: string, lines: string[]): OneShotIo => ({
   scriptsDir: dir,
   writeStderr: (text: string): void => {
@@ -379,6 +370,9 @@ const silentIo = (dir: string): OneShotIo => stderrSpyIo(dir, [])
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { writeFileSync, chmodSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
+
+  const makeOneShotTestDir = (): string => createTestScratchDir('run-oneshot-test')
 
   const makeFakeWrapper = (dir: string, name: string): void => {
     const file = path.join(dir, name)

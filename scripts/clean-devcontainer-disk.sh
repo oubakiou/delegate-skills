@@ -15,6 +15,7 @@ export LC_ALL=C
 
 readonly DEFAULT_THRESHOLD_PCT=90
 readonly DEFAULT_MIN_FREE_BYTES=$((5 * 1024 * 1024 * 1024))
+readonly TEMP_MEASURE_TIMEOUT_SECONDS=10
 
 # extensionsCache の完成済み entry 名 (publisher.name-version[-platform])。
 # lock / partial download / .trash 等はこの形式に合致しないため自然に skip される
@@ -499,11 +500,18 @@ done
 
 # repository 実体が host mount 上にあるかは実行時の filesystem identity でのみ判断する
 if [ -n "${OBS_FSKEY[workspace]:-}" ] && [ "${OBS_FSKEY[workspace]:-}" = "${OBS_FSKEY[/]:-}" ]; then
-  temp_bytes=0
+  temp_display="$(human 0)"
   if [ -d "$repo_root/.temp" ]; then
-    temp_bytes="$(entry_bytes "$repo_root/.temp" || printf '0')"
+    # .temp/ は entry 数が多いと du の全走査が長引く。報告は情報提供で掃除の可否判定には
+    # 使わないため、上限を超えたら計測不能として先へ進む (無言の 0B 表示にはしない)
+    if temp_bytes="$(timeout "$TEMP_MEASURE_TIMEOUT_SECONDS" du -sb -- "$repo_root/.temp" 2>/dev/null | awk 'NR==1 {print $1}')" \
+      && [[ "$temp_bytes" =~ ^[0-9]+$ ]]; then
+      temp_display="$(human "$temp_bytes")"
+    else
+      temp_display="計測不能"
+    fi
   fi
-  printf 'workspace は / と同一 filesystem: repository の .temp/ (%s) はコンテナディスクを圧迫し得る (手動 emergency 候補。自動削除は retention 機構の責務)\n' "$(human "$temp_bytes")"
+  printf 'workspace は / と同一 filesystem: repository の .temp/ (%s) はコンテナディスクを圧迫し得る (手動 emergency 候補。自動削除は retention 機構の責務)\n' "$temp_display"
 else
   printf 'workspace は / と別 filesystem: repository の .temp/ はコンテナディスクを圧迫しない\n'
 fi
