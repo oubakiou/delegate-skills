@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { backendFor } from './backend.ts'
 import { runBuildRequest, type Env } from './build-request.ts'
 import { runCheckDelegateChain } from './check-delegate-chain.ts'
 import type { CliResult } from './cli-result.ts'
 import { getPath, hasFileContent, isRecord, readFileOrEmpty, stringOf } from './jq-compat.ts'
-import { validateModelEffort } from './observe-effort.ts'
+import { validateModelEffort, validateModelName } from './observe-effort.ts'
 import { validateFollowup } from './observe-followup.ts'
 import { initObserve, updateLineage, updateRunContext } from './observe-store.ts'
 import { elapsedMs, monotonicMs } from './observe-timing.ts'
@@ -24,7 +24,7 @@ import { runResolveModel } from './resolve-model.ts'
 // bash 版 prepare.sh と同一契約:
 // Usage: prepare <task_type> <type_env_name> <default_model> <parent_task_type_chain_json> <requester_session_id> [session_mode]
 //   リクエスト本文 Markdown は stdin から渡す。
-// exit: 2=引数エラー / 4=委譲サイクル / 5=follow-up 検証失敗 / 6=effort 指定不正 / 1=md2idx 失敗・空 index/sections
+// exit: 2=引数エラー / 4=委譲サイクル / 5=follow-up 検証失敗 / 6=model 名・effort 指定不正 / 1=md2idx 失敗・空 index/sections
 // bash 版が呼んでいた check-md2idx.sh (exit 3) は md2idx のバンドル内包で前提条件ごと消滅した。
 
 const USAGE =
@@ -276,6 +276,29 @@ const resolveModelPhase = (args: PrepareArgs, env: Env): ModelPhase | CliResult 
   return { model: loaded.previous.model, modelSource: 'followup', followup: loaded }
 }
 
+// model 名の妥当性は effort suffix と違い「初回で検証済み」が成立しない（本検証の
+// 導入前に作られた session に無効表記が保存され、follow-up がそれを無条件継承する）
+// ため、follow-up でも実行する。継承指定子は変更できないため follow-up では
+// exit 5（follow-up 不可）で新規 run を案内する
+const validateModelNamePhase = (
+  backend: string,
+  model: string,
+  modelSource: string
+): CliResult | null => {
+  if (modelSource === 'followup') {
+    const inherited = validateModelName(backend, model, 'followup')
+    if (!inherited.ok) {
+      return failure(5, `${inherited.message}\n`)
+    }
+    return null
+  }
+  const requested = validateModelName(backend, model, 'requested')
+  if (!requested.ok) {
+    return failure(6, `${requested.message}\n`)
+  }
+  return null
+}
+
 const validateEffortPhase = (
   backend: string,
   model: string,
@@ -317,6 +340,16 @@ const validateFollowupPhase = (
   return null
 }
 
+// model 名 → effort suffix の順で指定子を検証する（名が不正なら suffix 検証の
+// メッセージは利用者に意味を持たないため名を先に返す）
+const validateSpecifierPhases = (backend: string, phase: ModelPhase): CliResult | null => {
+  const modelNameFailure = validateModelNamePhase(backend, phase.model, phase.modelSource)
+  if (modelNameFailure !== null) {
+    return modelNameFailure
+  }
+  return validateEffortPhase(backend, phase.model, phase.modelSource)
+}
+
 interface ResolvedPrepare {
   phase: ModelPhase
   backend: string
@@ -328,9 +361,9 @@ const validateResolvedPhase = (
   phase: ModelPhase
 ): ResolvedPrepare | CliResult => {
   const backend = backendFor(args.taskType, phase.model)
-  const effortFailure = validateEffortPhase(backend, phase.model, phase.modelSource)
-  if (effortFailure !== null) {
-    return effortFailure
+  const specifierFailure = validateSpecifierPhases(backend, phase)
+  if (specifierFailure !== null) {
+    return specifierFailure
   }
   const repoRoot = gitRepoRoot()
   const followupFailure = validateFollowupPhase(phase, backend, repoRoot)
@@ -608,6 +641,54 @@ if (import.meta.vitest) {
       )
       expect(result.exitCode).toBe(6)
       expect(result.stderr).toContain('invalid effort')
+    })
+
+    it('fails closed with exit 6 on an invalid cursor model name and writes no run artifacts', () => {
+      const workDir = makePrepareTestWorkDir()
+      const result = runPrepare(
+        ['chore', 'DELEGATE_PREPARE_TEST_MODEL', 'haiku', '[]', 'sid-1'],
+        {
+          DELEGATE_WORK_DIR: workDir,
+          DELEGATE_PREPARE_TEST_MODEL: 'cursor-cursor-grok-4.5-medium',
+        },
+        body
+      )
+      expect(result.exitCode).toBe(6)
+      expect(result.stderr).toContain("invalid cursor model 'cursor-cursor-grok-4.5-medium'")
+      expect(result.stderr).toContain("use 'cursor-grok-4.5@medium'")
+      expect(readdirSync(workDir)).toEqual([])
+    })
+
+    it('fails closed with exit 5 when a follow-up inherits an invalid cursor model', () => {
+      const workDir = makePrepareTestWorkDir()
+      const previousObserve = path.join(workDir, 'previous_observe.json')
+      writeFileSync(
+        previousObserve,
+        JSON.stringify({
+          backend_session: {
+            backend: 'cursor',
+            model: 'cursor-cursor-grok-4.5-medium',
+            persistence: 'resumable',
+            resume_id: 'cursor-chat-1',
+          },
+        })
+      )
+      const result = runPrepare(
+        [
+          'chore',
+          'DELEGATE_PREPARE_TEST_MODEL',
+          'haiku',
+          '[]',
+          'sid-1',
+          `followup=${previousObserve}`,
+        ],
+        { DELEGATE_WORK_DIR: workDir, DELEGATE_PREPARE_TEST_MODEL: 'cursor-grok-4.5' },
+        body
+      )
+      expect(result.exitCode).toBe(5)
+      expect(result.stderr).toContain('from the previous session is no longer valid')
+      expect(result.stderr).toContain("start a new resumable run with 'cursor-grok-4.5@medium'")
+      expect(readdirSync(workDir)).toEqual(['previous_observe.json'])
     })
 
     it('fails closed with exit 5 when the follow-up observe file is missing', () => {

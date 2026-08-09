@@ -153,6 +153,73 @@ export const validateModelEffort = (backend: string, model: string): EffortValid
   return validateBackendEffort({ backend, model, base, effort })
 }
 
+const CURSOR_GROK_SLUG_PATTERN = /^cursor-grok-4\.5-(?<effort>low|medium|high)$/
+
+// 修正表記の導出。二重 prefix は先頭の cursor- を 1 つだけ除去し（effort suffix は
+// 引き継ぐ）、grok の effort slug は '@' 表記へ畳む（slug 自体が effort を持つため
+// もとの suffix は再付与しない）
+const correctedCursorModel = (model: string): string => {
+  const { base_model: base, effort } = splitModelEffort(model)
+  let stripped = base
+  if (stripped.startsWith('cursor-cursor-')) {
+    stripped = stripped.slice('cursor-'.length)
+  }
+  const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(stripped)
+  if (grokSlug !== null) {
+    return `cursor-grok-4.5@${grokSlug[1]}`
+  }
+  if (effort === null) {
+    return stripped
+  }
+  return `${stripped}@${effort}`
+}
+
+// follow-up は継承した指定子を変更できないため、修正提示ではなく新規 run の案内に分岐する
+const invalidCursorModel = (
+  model: string,
+  source: 'requested' | 'followup',
+  reason: string
+): EffortValidation => {
+  const corrected = correctedCursorModel(model)
+  if (source === 'followup') {
+    return invalid(
+      `ERROR: inherited cursor model '${model}' from the previous session is no longer valid; start a new resumable run with '${corrected}'`
+    )
+  }
+  return invalid(`ERROR: invalid cursor model '${model}': ${reason}; use '${corrected}'`)
+}
+
+// cursor の model 名検証。validateModelEffort は '@' 無しを早期 return する契約のため、
+// 二重 prefix（cursor-cursor-*）と grok の effort slug 直指定はここで別途拒否する。
+// 二重 prefix は CLI 側では受理され observe の表記揺れとして残り、slug 直指定は
+// '@' 表記との 2 系統化で telemetry が割れるため、両方を dispatch 前に止めて
+// 表記を cursor-grok-4.5[@effort] の 1 系統に収束させる。fail-closed。
+export const validateModelName = (
+  backend: string,
+  model: string,
+  source: 'requested' | 'followup'
+): EffortValidation => {
+  if (backend !== 'cursor') {
+    return { ok: true }
+  }
+  const { base_model: base } = splitModelEffort(model)
+  if (base.startsWith('cursor-cursor-')) {
+    return invalidCursorModel(
+      model,
+      source,
+      "the 'cursor-' backend prefix must appear exactly once"
+    )
+  }
+  if (CURSOR_GROK_SLUG_PATTERN.test(base)) {
+    return invalidCursorModel(
+      model,
+      source,
+      "grok effort must be specified with the '@' suffix, not the catalog slug"
+    )
+  }
+  return { ok: true }
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
@@ -373,6 +440,14 @@ export const effortFromCursorConfig = (model: string, cliConfig: string): Effect
   return buildCursorEffort(effort, firstParamValue(params, ['fast']))
 }
 
+// in-source test 専用 helper (bundle からは treeshake で除去される)
+const messageOf = (result: EffortValidation): string => {
+  if (result.ok) {
+    throw new Error('expected a rejection')
+  }
+  return result.message
+}
+
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs')
@@ -406,6 +481,62 @@ if (import.meta.vitest) {
       expect(validateModelEffort('devin', 'devin-kimi-k3@medium').ok).toBe(false)
       expect(validateModelEffort('devin', 'devin-glm-5.2@high').ok).toBe(false)
       expect(validateModelEffort('grok', 'grok-build@low').ok).toBe(false)
+    })
+  })
+
+  describe('validateModelName', () => {
+    it('rejects a doubled cursor- prefix and points at the canonical notation', () => {
+      const message = messageOf(
+        validateModelName('cursor', 'cursor-cursor-grok-4.5-medium', 'requested')
+      )
+      expect(message).toContain("invalid cursor model 'cursor-cursor-grok-4.5-medium'")
+      expect(message).toContain('must appear exactly once')
+      expect(message).toContain("use 'cursor-grok-4.5@medium'")
+    })
+
+    it('rejects the direct grok effort slug and keeps the requested effort suffix', () => {
+      for (const effort of ['low', 'medium', 'high']) {
+        const message = messageOf(
+          validateModelName('cursor', `cursor-grok-4.5-${effort}`, 'requested')
+        )
+        expect(message).toContain(`use 'cursor-grok-4.5@${effort}'`)
+      }
+      expect(
+        messageOf(validateModelName('cursor', 'cursor-cursor-glm-5.2@max', 'requested'))
+      ).toContain("use 'cursor-glm-5.2@max'")
+    })
+
+    it('guides a follow-up inheritance to a new run instead of a fixed specifier', () => {
+      const message = messageOf(
+        validateModelName('cursor', 'cursor-cursor-grok-4.5-medium', 'followup')
+      )
+      expect(message).toContain('from the previous session is no longer valid')
+      expect(message).toContain("start a new resumable run with 'cursor-grok-4.5@medium'")
+      expect(message).not.toContain("use '")
+    })
+
+    it('accepts documented cursor notations', () => {
+      for (const model of [
+        'cursor-glm-5.2-high',
+        'cursor-glm-5.2@max',
+        'cursor-grok-4.5',
+        'cursor-grok-4.5@medium',
+        'composer-2.5',
+      ]) {
+        expect(validateModelName('cursor', model, 'requested')).toEqual({ ok: true })
+        expect(validateModelName('cursor', model, 'followup')).toEqual({ ok: true })
+      }
+    })
+
+    it('passes through models of non-cursor backends unconditionally', () => {
+      for (const backend of ['claude', 'codex', 'devin']) {
+        expect(validateModelName(backend, 'cursor-cursor-grok-4.5-medium', 'requested')).toEqual({
+          ok: true,
+        })
+        expect(validateModelName(backend, 'cursor-grok-4.5-low', 'followup')).toEqual({
+          ok: true,
+        })
+      }
     })
   })
 

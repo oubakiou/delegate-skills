@@ -6,7 +6,12 @@ import type { Env } from './build-request.ts'
 import type { CliResult } from './cli-result.ts'
 import { classifyChildFailure } from './failure-classify.ts'
 import { getPath, hasFileContent, readFileOrEmpty, stringOf } from './jq-compat.ts'
-import { splitModelEffort, validateModelEffort, type EffectiveEffort } from './observe-effort.ts'
+import {
+  splitModelEffort,
+  validateModelEffort,
+  validateModelName,
+  type EffectiveEffort,
+} from './observe-effort.ts'
 import { writeFailedResponse } from './observe-followup.ts'
 import {
   heartbeat,
@@ -229,8 +234,13 @@ export const finishWithoutChild = (
   return { exitCode, stdout: `${context.args.responseFile}\n`, stderr: '' }
 }
 
-// prepare を経ない直接起動でも不正な effort 指定を黙って通さない（二重検証）
+// prepare を経ない直接起動でも不正な model 名・effort 指定を黙って通さない（二重検証）。
+// wrapper は継承元の指定子を区別できないため source は常に requested として扱う
 export const effortFailure = (context: WrapperContext): CliResult | null => {
+  const name = validateModelName(context.backend, context.args.originalModel, 'requested')
+  if (!name.ok) {
+    return finishWithoutChild(context, 6, name.message)
+  }
   const validation = validateModelEffort(context.backend, context.args.originalModel)
   if (validation.ok) {
     return null

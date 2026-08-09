@@ -2135,6 +2135,28 @@ var validateModelEffort = (backend, model) => {
 		effort
 	});
 };
+var CURSOR_GROK_SLUG_PATTERN = /^cursor-grok-4\.5-(?<effort>low|medium|high)$/;
+var correctedCursorModel = (model) => {
+	const { base_model: base, effort } = splitModelEffort(model);
+	let stripped = base;
+	if (stripped.startsWith("cursor-cursor-")) stripped = stripped.slice(7);
+	const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(stripped);
+	if (grokSlug !== null) return `cursor-grok-4.5@${grokSlug[1]}`;
+	if (effort === null) return stripped;
+	return `${stripped}@${effort}`;
+};
+var invalidCursorModel = (model, source, reason) => {
+	const corrected = correctedCursorModel(model);
+	if (source === "followup") return invalid(`ERROR: inherited cursor model '${model}' from the previous session is no longer valid; start a new resumable run with '${corrected}'`);
+	return invalid(`ERROR: invalid cursor model '${model}': ${reason}; use '${corrected}'`);
+};
+var validateModelName = (backend, model, source) => {
+	if (backend !== "cursor") return { ok: true };
+	const { base_model: base } = splitModelEffort(model);
+	if (base.startsWith("cursor-cursor-")) return invalidCursorModel(model, source, "the 'cursor-' backend prefix must appear exactly once");
+	if (CURSOR_GROK_SLUG_PATTERN.test(base)) return invalidCursorModel(model, source, "grok effort must be specified with the '@' suffix, not the catalog slug");
+	return { ok: true };
+};
 var isRecord$1 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var jqCoalesce = (...values) => {
 	for (const value of values) if (value !== null && value !== false && typeof value !== "undefined") return value;
@@ -2451,6 +2473,16 @@ var resolveModelPhase = (args, env) => {
 		followup: loaded
 	};
 };
+var validateModelNamePhase = (backend, model, modelSource) => {
+	if (modelSource === "followup") {
+		const inherited = validateModelName(backend, model, "followup");
+		if (!inherited.ok) return failure$3(5, `${inherited.message}\n`);
+		return null;
+	}
+	const requested = validateModelName(backend, model, "requested");
+	if (!requested.ok) return failure$3(6, `${requested.message}\n`);
+	return null;
+};
 var validateEffortPhase = (backend, model, modelSource) => {
 	if (modelSource === "followup") return null;
 	const effort = validateModelEffort(backend, model);
@@ -2471,10 +2503,15 @@ var validateFollowupPhase = (phase, backend, repoRoot) => {
 	if (followup.previous.lineageId === "") return failure$3(5, "follow-up unavailable: lineage.lineage_id is missing\n");
 	return null;
 };
+var validateSpecifierPhases = (backend, phase) => {
+	const modelNameFailure = validateModelNamePhase(backend, phase.model, phase.modelSource);
+	if (modelNameFailure !== null) return modelNameFailure;
+	return validateEffortPhase(backend, phase.model, phase.modelSource);
+};
 var validateResolvedPhase = (args, phase) => {
 	const backend = backendFor(args.taskType, phase.model);
-	const effortFailure = validateEffortPhase(backend, phase.model, phase.modelSource);
-	if (effortFailure !== null) return effortFailure;
+	const specifierFailure = validateSpecifierPhases(backend, phase);
+	if (specifierFailure !== null) return specifierFailure;
 	const repoRoot = gitRepoRoot$1();
 	const followupFailure = validateFollowupPhase(phase, backend, repoRoot);
 	if (followupFailure !== null) return followupFailure;
@@ -3934,6 +3971,8 @@ var finishWithoutChild = (context, exitCode, message) => {
 	};
 };
 var effortFailure = (context) => {
+	const name = validateModelName(context.backend, context.args.originalModel, "requested");
+	if (!name.ok) return finishWithoutChild(context, 6, name.message);
 	const validation = validateModelEffort(context.backend, context.args.originalModel);
 	if (validation.ok) return null;
 	return finishWithoutChild(context, 6, validation.message);

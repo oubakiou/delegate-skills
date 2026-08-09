@@ -173,6 +173,25 @@ const readLogs = (filePath: string): FakeCliLog[] => {
   })
 }
 
+// cursor fake CLI は --version をメインログへ書かずに終了するため、agent 解決の
+// 有無は別ファイルの sentinel（JSONL）を読む。無ければ 0 件
+const readVersionCalls = (fixture: Fixture): string[][] => {
+  const sentinel = `${fixture.logFile}.version`
+  if (!existsSync(sentinel)) {
+    return []
+  }
+  return readFileSync(sentinel, 'utf8')
+    .trimEnd()
+    .split('\n')
+    .map((line): string[] => {
+      const record: unknown = JSON.parse(line)
+      if (!isRecord(record) || !Array.isArray(record.args)) {
+        throw new Error('invalid version sentinel record')
+      }
+      return record.args.map(String)
+    })
+}
+
 const parseBackendSession = (value: unknown): BackendSession | null => {
   if (!isRecord(value)) {
     return null
@@ -458,6 +477,9 @@ const cursorFakeScript = (version = '2026.07.16-899851b'): string => `#!/usr/bin
 import fs from 'node:fs'
 const args = process.argv.slice(2)
 if (args[0] === '--version') {
+  // メインログとは別ファイルへ記録する。fail-closed 検証が「ログ不在」を
+  // 「--version 以外の呼び出しが無い」と読み分けられるようにするための sentinel
+  fs.appendFileSync(process.env.FAKE_CLI_LOG + '.version', JSON.stringify({args, cwd: process.cwd()}) + '\\n')
   console.log(${JSON.stringify(version)})
   process.exit(0)
 }
@@ -2818,6 +2840,199 @@ describe('wrapper cursor grok effort slug', () => {
       effective: { source: 'not_exposed', value: null },
       requested: 'medium',
     })
+  })
+})
+
+describe('wrapper cursor model name validation', () => {
+  // wrapper の fail-closed は agent 解決（--version）より前に止まるため、
+  // sentinel 含め fake CLI の呼び出しが 1 件も無いことを確認する
+  const expectNoCliCall = (fixture: Fixture): void => {
+    expect(existsSync(fixture.logFile)).toBe(false)
+    expect(readVersionCalls(fixture)).toEqual([])
+  }
+
+  it('fails closed before launching the CLI for a doubled cursor- prefix', () => {
+    const fixture = makeFixture('cursor')
+    const result = runWrapper(
+      'delegate-cursor.sh',
+      wrapperModelArgs(fixture, 'cursor-cursor-grok-4.5-medium'),
+      fixture.env
+    )
+
+    expect(result.status).toBe(6)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(readFileSync(path.join(fixture.runDir, 'worker-stderr.capture'), 'utf8')).toContain(
+      "use 'cursor-grok-4.5@medium'"
+    )
+    expectNoCliCall(fixture)
+  })
+
+  it('fails closed before launching the CLI for a direct grok effort slug', () => {
+    const fixture = makeFixture('cursor')
+    const result = runWrapper(
+      'delegate-cursor.sh',
+      wrapperModelArgs(fixture, 'cursor-grok-4.5-high'),
+      fixture.env
+    )
+
+    expect(result.status).toBe(6)
+    expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+    expect(readFileSync(path.join(fixture.runDir, 'worker-stderr.capture'), 'utf8')).toContain(
+      "use 'cursor-grok-4.5@high'"
+    )
+    expectNoCliCall(fixture)
+  })
+})
+
+// follow-up golden: prepare が前回 observe の backend_session.model を無条件継承する
+// 経路を、bundle 経由の prepare + dispatch で通す。前回 observe は本検証の導入前に
+// 作られた session を模して直接書く
+const writePreviousCursorObserve = (fixture: Fixture, model: string): string => {
+  const previousRun = path.join(fixture.workDir, 'delegate_implement_20260721_120000_abcde')
+  mkdirSync(previousRun, { recursive: true })
+  const previousObserve = `${previousRun}_observe.json`
+  writeFileSync(
+    previousObserve,
+    JSON.stringify({
+      backend_session: {
+        backend: 'cursor',
+        home_dir: null,
+        model,
+        persistence: 'resumable',
+        resume_id: 'cursor-chat-1',
+        resume_source: 'cursor_create_chat',
+      },
+      lineage: { lineage_id: 'delegate_implement_20260721_120000_abcde', followup_of: null },
+      run_context: {
+        git_head: execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+        }).trimEnd(),
+        repo_root: repoRoot,
+        worktree_root: repoRoot,
+      },
+    })
+  )
+  return previousObserve
+}
+
+const runPrepareFollowup = (
+  fixture: Fixture,
+  previousObserve: string
+): { output: string; status: number } => {
+  try {
+    const output = execFileSync(
+      'node',
+      [
+        followupBundle,
+        'prepare',
+        'implement',
+        'DELEGATE_IMPLEMENT_MODEL',
+        'sonnet',
+        '[]',
+        'sid-1',
+        `followup=${previousObserve}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: { ...fixture.env, DELEGATE_WORK_DIR: fixture.workDir },
+        input: '# Task\n\nfollow-up golden\n',
+        stdio: 'pipe',
+      }
+    )
+    return { output, status: 0 }
+  } catch (error) {
+    if (isRecord(error) && typeof error.status === 'number') {
+      return {
+        output: `${errorOutputPart(error.stdout)}${errorOutputPart(error.stderr)}`,
+        status: error.status,
+      }
+    }
+    throw error
+  }
+}
+
+const runDispatchScript = (
+  fixture: Fixture,
+  prepared: Record<string, unknown>
+): { status: number } => {
+  try {
+    execFileSync(
+      'bash',
+      [
+        path.join(repoRoot, 'shared', 'dispatch.sh'),
+        String(prepared.model),
+        'implement',
+        String(prepared.request_file),
+        String(prepared.response_file),
+        String(prepared.run_dir),
+        String(prepared.observe_file),
+        String(prepared.session_mode),
+        String(prepared.resume_id),
+        String(prepared.backend_session_home),
+      ],
+      { cwd: repoRoot, env: fixture.env, stdio: 'pipe' }
+    )
+    return { status: 0 }
+  } catch (error) {
+    if (isRecord(error) && typeof error.status === 'number') {
+      return { status: error.status }
+    }
+    throw error
+  }
+}
+
+const prepareInheritedFollowup = (fixture: Fixture, model: string): Record<string, unknown> => {
+  const previousObserve = writePreviousCursorObserve(fixture, model)
+  const prepare = runPrepareFollowup(fixture, previousObserve)
+  expect(prepare.status).toBe(0)
+  const prepared: unknown = JSON.parse(prepare.output)
+  if (!isRecord(prepared)) {
+    throw new Error('prepare stdout is not a JSON object')
+  }
+  return prepared
+}
+
+const expectCanonicalGrokFollowupDispatch = (
+  fixture: Fixture,
+  prepared: Record<string, unknown>
+): void => {
+  const dispatch = runDispatchScript(fixture, prepared)
+  const log = readLog(fixture.logFile)
+  const modelIndex = log.args.indexOf('--model')
+  expect(dispatch.status).toBe(0)
+  expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', 'cursor-grok-4.5-medium'])
+  expect(log.args).toContain('--resume')
+  expect(log.args).toContain('cursor-chat-1')
+  // agent 解決の --version が sentinel へ記録され、メインログには run のみ残る
+  expect(readVersionCalls(fixture)).toEqual([['--version']])
+  expect(readLogs(fixture.logFile)).toHaveLength(1)
+}
+
+describe('wrapper cursor follow-up model inheritance', () => {
+  it('resumes a canonical grok effort notation inherited from the previous session', () => {
+    const fixture = makeFixture('cursor')
+    const prepared = prepareInheritedFollowup(fixture, 'cursor-grok-4.5@medium')
+    expect(prepared).toMatchObject({
+      model: 'cursor-grok-4.5@medium',
+      model_source: 'followup',
+      resume_id: 'cursor-chat-1',
+      session_mode: 'followup',
+    })
+    expectCanonicalGrokFollowupDispatch(fixture, prepared)
+  })
+
+  it('stops a legacy invalid notation at prepare with exit 5 and launches nothing', () => {
+    const fixture = makeFixture('cursor')
+    const previousObserve = writePreviousCursorObserve(fixture, 'cursor-cursor-grok-4.5-medium')
+    const prepare = runPrepareFollowup(fixture, previousObserve)
+
+    expect(prepare.status).toBe(5)
+    expect(prepare.output).toContain('from the previous session is no longer valid')
+    expect(prepare.output).toContain("start a new resumable run with 'cursor-grok-4.5@medium'")
+    expect(existsSync(fixture.logFile)).toBe(false)
+    expect(readVersionCalls(fixture)).toEqual([])
   })
 })
 

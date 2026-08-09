@@ -203,6 +203,8 @@ DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 
 Invalid values and unsupported combinations stop before dispatch. Do not combine a Cursor model slug that already encodes the effort with an `@...` suffix.
 
+For Cursor models, the leading `cursor-` is the delegate backend selector and must appear exactly once. A doubled prefix (`cursor-cursor-*`) or a direct grok effort catalog slug (`cursor-grok-4.5-low` / `-medium` / `-high`) stops before dispatch with exit 6; use the `cursor-grok-4.5[@<effort>]` notation instead. A follow-up that inherits one of these legacy notations from an existing session cannot resume (exit 5); start a new resumable run with the corrected notation.
+
 Without a suffix, delegate-skills does not set an effort override and the target CLI default applies. The documented exceptions are `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-mini` (catalog default `medium`), `cursor-grok-4.5` (catalog default `medium`), and Cursor model slugs that already encode the effort (`-high` / `-max`, and the `cursor-gemini-3.6-flash-*` variants).
 
 Requested and effective values are recorded in observe JSON when the backend exposes them. See [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for details. Codex `max` / `ultra` support was verified with Codex CLI v0.144.1 and `gpt-5.6-sol`; older CLIs may reject those values.

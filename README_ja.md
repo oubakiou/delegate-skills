@@ -203,6 +203,8 @@ DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 
 不正な値や非対応の組み合わせは dispatch 前に停止する。effort を model slug 自体に含む Cursor モデルと `@...` suffix は併用できない。
 
+Cursor モデルの先頭 `cursor-` は delegate の backend selector であり、ちょうど 1 回だけ付ける。二重 prefix（`cursor-cursor-*`）や grok の effort catalog slug の直指定（`cursor-grok-4.5-low` / `-medium` / `-high`）は dispatch 前に exit 6 で停止する。代わりに `cursor-grok-4.5[@<effort>]` の表記を使うこと。既存 session がこれらの旧表記を保持している場合、その follow-up は再開できず（exit 5）、修正した表記で新規 resumable run を開始する。
+
 suffix を付けない場合、delegate-skills は effort を明示せず、実行先 CLI の既定値を使う。例外は、catalog 既定が `medium` の `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` と `cursor-grok-4.5`、および model slug 自体に effort を含む Cursor モデル（`-high` / `-max`、および `cursor-gemini-3.6-flash-*` 変種）である。
 
 backend が公開する場合、指定値と実効値を observe JSON へ記録する。詳細は [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。Codex の `max` / `ultra` は Codex CLI v0.144.1 と `gpt-5.6-sol` で確認済みで、古い CLI では拒否される場合がある。

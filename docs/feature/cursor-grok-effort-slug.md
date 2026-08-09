@@ -43,15 +43,15 @@ issue の記述は症状としては正しいが、原因の切り分けが 2 �
 
 ## 1. 対応スコープ
 
-| 要件                                                                 | 開始時の状態                                                                            | 完了条件                                                                                                                                       | 最終状態 | 状態   |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------ |
-| [MUST] `cursor-grok-4.5@{low,medium,high}` が 1 往復で成功する       | wrapper が `grok-4.5[effort=...]` を渡し CLI が起動前に拒否（exit 1）                   | wrapper が `--model cursor-grok-4.5-<effort>` を渡し、fake CLI golden の argv assert と実 CLI 手動確認の両方が通る                             | {未記入} | 未着手 |
-| [MUST] `cursor-cursor-*` が dispatch 前に fail-closed で止まる       | `@` が無いため effort 検証を素通りし、CLI 側では成功するが observe に二重 prefix が残る | prepare / wrapper が exit 6 で停止し、stderr が修正表記を 1 行で提示する。**follow-up 継承経路でも検証される**（§3.3）。子プロセスは起動しない | {未記入} | 未着手 |
-| [MUST] observe の `usage.model` から価格照合が `grok-4.5` に到達する | 二重 prefix 入力時に `cursor-grok-4.5-medium` までしか戻らず未照合                      | 有効な表記が `cursor-grok-4.5[@effort]` の 1 系統に収束し、`cost_usd_estimated` が付く。in-source test で実価格表キー `grok-4.5` を固定        | {未記入} | 未着手 |
-| [MUST] grok の effective effort が `measured` で記録される           | bracket 前提のため slug 経由で拾えるか未確認だった                                      | §0.2 のとおり実装変更なしで成立することを in-source test（cli-config fixture）で固定する                                                       | {未記入} | 未着手 |
-| [MUST] README / README_ja / spec.md が実装と一致する                 | 変換方式のモデル別差、grok の catalog 既定 `medium`、Cursor の measured usage が未記載  | 公開挙動を変える Step と**同一 commit で**更新される（§4）。`spec.md:303` の「cursor は常に chars_4 推定」の誤りも解消する                     | {未記入} | 未着手 |
-| [SHOULD] Cursor の model 解決失敗が observe `error` に分類記録される | signature 未登録のため `error` が現れず、親は stderr を読むしかない                     | `failure-classify.ts` に Cursor signature を追加し、`.error.kind` が `model_not_found` を返す。`error.model` の意味を spec に明記する（§5-g）  | {未記入} | 未着手 |
-| [SHOULD] catalog drift の再発を運用手順で検知できる                  | 手順なし。drift は実委譲の失敗ではじめて判明する                                        | development.md に Cursor catalog 確認手順（`agent --list-models` との突合）が書かれている                                                      | {未記入} | 未着手 |
+| 要件                                                                 | 開始時の状態                                                                            | 完了条件                                                                                                                                                                   | 最終状態 | 状態   |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------ |
+| [MUST] `cursor-grok-4.5@{low,medium,high}` が 1 往復で成功する       | wrapper が `grok-4.5[effort=...]` を渡し CLI が起動前に拒否（exit 1）                   | wrapper が `--model cursor-grok-4.5-<effort>` を渡し、fake CLI golden の argv assert と実 CLI 手動確認の両方が通る                                                         | {未記入} | 未着手 |
+| [MUST] `cursor-cursor-*` が dispatch 前に fail-closed で止まる       | `@` が無いため effort 検証を素通りし、CLI 側では成功するが observe に二重 prefix が残る | prepare / wrapper が exit 6（follow-up 継承時は exit 5）で停止し、stderr が修正表記を 1 行で提示する。**follow-up 継承経路でも検証される**（§3.3）。子プロセスは起動しない | {未記入} | 未着手 |
+| [MUST] observe の `usage.model` から価格照合が `grok-4.5` に到達する | 二重 prefix 入力時に `cursor-grok-4.5-medium` までしか戻らず未照合                      | 有効な表記が `cursor-grok-4.5[@effort]` の 1 系統に収束し、`cost_usd_estimated` が付く。in-source test で実価格表キー `grok-4.5` を固定                                    | {未記入} | 未着手 |
+| [MUST] grok の effective effort が `measured` で記録される           | bracket 前提のため slug 経由で拾えるか未確認だった                                      | §0.2 のとおり実装変更なしで成立することを in-source test（cli-config fixture）で固定する                                                                                   | {未記入} | 未着手 |
+| [MUST] README / README_ja / spec.md が実装と一致する                 | 変換方式のモデル別差、grok の catalog 既定 `medium`、Cursor の measured usage が未記載  | 公開挙動を変える Step と**同一 commit で**更新される（§4）。`spec.md:303` の「cursor は常に chars_4 推定」の誤りも解消する                                                 | {未記入} | 未着手 |
+| [SHOULD] Cursor の model 解決失敗が observe `error` に分類記録される | signature 未登録のため `error` が現れず、親は stderr を読むしかない                     | `failure-classify.ts` に Cursor signature を追加し、`.error.kind` が `model_not_found` を返す。`error.model` の意味を spec に明記する（§5-g）                              | {未記入} | 未着手 |
+| [SHOULD] catalog drift の再発を運用手順で検知できる                  | 手順なし。drift は実委譲の失敗ではじめて判明する                                        | development.md に Cursor catalog 確認手順（`agent --list-models` との突合）が書かれている                                                                                  | {未記入} | 未着手 |
 
 スコープ外:
 
@@ -110,11 +110,12 @@ issue の記述は症状としては正しいが、原因の切り分けが 2 �
 
 `validateModelEffort` は `model.includes('@')` が false のとき即 `ok` を返す契約（`observe-effort.ts:138-141`）。したがって `cursor-cursor-grok-4.5-medium` は現状 **検証をまったく通らない**。加えて `prepare.ts` の `validateEffortPhase` は `modelSource === 'followup'` のとき検証ごとスキップする（初回で検証済みという前提）。この 2 点を踏まえて配置を決める。
 
-- 新規 `validateModelName(backend, model): EffortValidation`（返り値型は既存の `EffortValidation` を再利用）。cursor 以外の backend は無条件 `ok`
+- 新規 `validateModelName(backend, model, source): EffortValidation`（返り値型は既存の `EffortValidation` を再利用。`source` は `"requested" | "followup"`）。cursor 以外の backend は無条件 `ok`
 - cursor backend の拒否ルール:
   1. `cursor-cursor-` で始まる → 二重 prefix
   2. base が `grok-4.5-<low|medium|high>` → grok の effort slug 直指定（§5-f で `@effort` 一本に絞るため）
-- **呼び出し位置**: `prepare.ts` では `validateEffortPhase` の follow-up 早期 return より **前** に無条件で実行する。effort suffix と違い、model 名の妥当性は「初回で検証済み」が成立しない（本変更以前に作られた session には無効表記が保存されている）。多重防御として `wrapper-common.ts:234` の `effortFailure` と同じ位置でも実行する
+- **呼び出し位置**: `prepare.ts` では `validateEffortPhase` の follow-up 早期 return より **前** に無条件で実行する。effort suffix と違い、model 名の妥当性は「初回で検証済み」が成立しない（本変更以前に作られた session には無効表記が保存されている）。多重防御として `wrapper-common.ts:234` の `effortFailure` と同じ位置でも実行する（wrapper は継承元を区別できないため常に `requested` 扱い）
+- **exit code**: `requested` は **6**（不正なモデル指定子）、`followup` は **5**（follow-up 不可 = 親は新規 run を出し直す、という既存 exit 5 の意味に合わせる）。本計画の初版が一律 exit 6 としていた点の refinement
 
 follow-up は `backend_session.model` を無条件継承し env 指定を無視する（`prepare.ts:268-276`）ため、無効表記を保存した legacy session は**表記を直す手段が無い**。メッセージはその場合を分けて案内する:
 
@@ -218,11 +219,11 @@ ERROR: inherited cursor model 'cursor-cursor-grok-4.5-medium' from the previous 
 
 ### e. `cursor-cursor-` を許容して正規化するか、拒否するか
 
-| 候補                                       | 採用 | 理由                                                                                                                                                         |
-| ------------------------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **拒否（exit 6 + 正しい表記を提示）**      | ✓    | 二重 prefix は §3.1 の正規表記に存在しない。許容すると同一モデルに 2 通りの `usage.model` が生まれ、telemetry の分母が割れる。fail-closed の既存方針とも一致 |
-| 正規化して受理（`cursor-` を貪欲に剥がす） | ✗    | §5-d と同じ理由で、正しい `cursor-grok-4.5` を壊す                                                                                                           |
-| 価格照合側だけで吸収                       | ✗    | issue の提案どおりだが対症療法。`usage.model` の表記揺れは残り、telemetry の分母が汚れたままになる                                                           |
+| 候補                                       | 採用 | 理由                                                                                                                                                                                            |
+| ------------------------------------------ | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **拒否（exit 6 + 正しい表記を提示）**      | ✓    | 二重 prefix は §3.1 の正規表記に存在しない。許容すると同一モデルに 2 通りの `usage.model` が生まれ、telemetry の分母が割れる。fail-closed の既存方針とも一致。follow-up 継承時は exit 5（§3.3） |
+| 正規化して受理（`cursor-` を貪欲に剥がす） | ✗    | §5-d と同じ理由で、正しい `cursor-grok-4.5` を壊す                                                                                                                                              |
+| 価格照合側だけで吸収                       | ✗    | issue の提案どおりだが対症療法。`usage.model` の表記揺れは残り、telemetry の分母が汚れたままになる                                                                                              |
 
 ### f. grok の effort slug 直指定（`cursor-grok-4.5-medium`）を許容するか
 
@@ -268,9 +269,10 @@ ERROR: inherited cursor model 'cursor-cursor-grok-4.5-medium' from the previous 
   - 注: `cursorCliModelOf` は非 export のため、in-source test（同一モジュール内）から直接呼ぶか、export して呼ぶかを実装時に選ぶ。in-source test は同一ファイルなので追加 export なしで到達できる
 - `shared/src/observe-effort.ts` の in-source test（Step 1 / Step 2）
   - 正常系: §0.2 の cli-config fixture で `effortFromCursorConfig('grok-4.5', ...)` が `{value: 'low', source: 'measured', fast: false}` を返す（Step 1）
-  - 異常系: `validateModelName('cursor', 'cursor-cursor-grok-4.5-medium')` が拒否し、メッセージに `cursor-grok-4.5@medium` を含む（Step 2）
-  - 異常系: `validateModelName('cursor', 'cursor-grok-4.5-medium')` が拒否する（Step 2）
-  - 境界: `validateModelName('cursor', 'cursor-glm-5.2-high')` は受理（既存 slug の非回帰）
+  - 異常系: `validateModelName('cursor', 'cursor-cursor-grok-4.5-medium', 'requested')` が拒否し、メッセージに `cursor-grok-4.5@medium` を含む（Step 2）
+  - 異常系: `validateModelName('cursor', 'cursor-grok-4.5-medium', 'requested')` が拒否する（Step 2）
+  - 異常系: `source: 'followup'` では修正提示ではなく新規 resumable run を案内する文言になる（Step 2）
+  - 境界: `validateModelName('cursor', 'cursor-glm-5.2-high', ...)` は受理（既存 slug の非回帰）
   - 境界: `validateModelName` が claude / codex / devin の model を素通しする
   - 非回帰: `validateModelEffort` の既存ケースが変わらない（`cursor-grok-4.5@max` 拒否など）
 - `shared/src/observe-cost.ts` の in-source test（Step 1）
@@ -287,9 +289,10 @@ ERROR: inherited cursor model 'cursor-cursor-grok-4.5-medium' from the previous 
 - `scripts/delegate-wrapper-session.test.ts`（Step 1 / Step 2）
   - Step 1: `:2674-2691` の Cursor argv assert に grok ケースを追加（`--model cursor-grok-4.5-medium` を含み、`grok-4.5[effort=` を含まない）
   - Step 2: cursor fake CLI に `--version` 呼び出しも記録する sentinel を追加し、fail-closed ケースで**「`--version` 以外の呼び出しが 1 件も無い」**ことを assert する（現行 fake は `--version` でログ書き込み前に exit するため、ログ不在では未起動を証明できない）
-  - Step 2: follow-up golden 2 本 — canonical（`cursor-grok-4.5@medium` を継承して成功）と legacy（`cursor-cursor-grok-4.5-medium` を継承して exit 6、専用メッセージを含む）
+  - Step 2: follow-up golden 2 本 — canonical（`cursor-grok-4.5@medium` を継承して成功）と legacy（`cursor-cursor-grok-4.5-medium` を継承して exit 5、新規 run を案内する専用メッセージを含む）。exit code の使い分けは §3.3 参照
 - `shared/src/prepare.ts` の in-source test（Step 2）
   - `validateModelName` の配線確認: cursor の無効表記で exit 6 になり、request / observe / dispatch の生成物が作られないこと（wrapper 直接起動のテストでは prepare 側の配線漏れを検出できないため、prepare もしくは one-shot レベルで確認する）
+  - follow-up 継承の無効表記は `validateEffortPhase` の早期 return に隠れず exit 5 で停止し、新規 run を案内するメッセージを含む
 
 ### 手動確認
 
