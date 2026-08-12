@@ -2068,10 +2068,34 @@ var CURSOR_GROK_EFFORTS = new Set([
 	"medium",
 	"high"
 ]);
+var CURSOR_GROK_46_EFFORTS = new Set([
+	"low",
+	"medium",
+	"high",
+	"xhigh"
+]);
 var DEVIN_KIMI_K3_EFFORTS = new Set([
 	"low",
 	"high",
 	"max"
+]);
+var CURSOR_NAMED_MODEL_RULES = new Map([
+	["glm-5.2", {
+		allowed: CURSOR_GLM_EFFORTS,
+		allowedLabel: "high|max"
+	}],
+	["grok-4.5", {
+		allowed: CURSOR_GROK_EFFORTS,
+		allowedLabel: "low|medium|high"
+	}],
+	["grok-4.6", {
+		allowed: CURSOR_GROK_46_EFFORTS,
+		allowedLabel: "low|medium|high|xhigh"
+	}],
+	["grok-4.6-fast", {
+		allowed: CURSOR_GROK_46_EFFORTS,
+		allowedLabel: "low|medium|high|xhigh"
+	}]
 ]);
 var BACKEND_EFFORT_RULES = {
 	claude: {
@@ -2084,15 +2108,10 @@ var BACKEND_EFFORT_RULES = {
 	}
 };
 var cursorNamedModelValidation = (cursorModel, model, effort) => {
-	if (cursorModel === "glm-5.2") {
-		if (CURSOR_GLM_EFFORTS.has(effort)) return { ok: true };
-		return invalid(`ERROR: invalid effort '${effort}' for cursor model '${model}'; allowed: high|max`);
-	}
-	if (cursorModel === "grok-4.5") {
-		if (CURSOR_GROK_EFFORTS.has(effort)) return { ok: true };
-		return invalid(`ERROR: invalid effort '${effort}' for cursor model '${model}'; allowed: low|medium|high`);
-	}
-	return null;
+	const rule = CURSOR_NAMED_MODEL_RULES.get(cursorModel);
+	if (typeof rule === "undefined") return null;
+	if (rule.allowed.has(effort)) return { ok: true };
+	return invalid(`ERROR: invalid effort '${effort}' for cursor model '${model}'; allowed: ${rule.allowedLabel}`);
 };
 var validateCursorEffort = (model, base, effort) => {
 	let cursorModel = base;
@@ -2100,7 +2119,7 @@ var validateCursorEffort = (model, base, effort) => {
 	if (cursorModel.endsWith("-high") || cursorModel.endsWith("-max")) return invalid(`ERROR: effort suffix cannot be combined with the effort slug in cursor model '${model}'; use either '${base}' or '${base.slice(0, base.lastIndexOf("-"))}@<effort>'`);
 	const named = cursorNamedModelValidation(cursorModel, model, effort);
 	if (named !== null) return named;
-	return invalid(`ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high)`);
+	return invalid(`ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high), cursor-grok-4.6@(low|medium|high|xhigh), cursor-grok-4.6-fast@(low|medium|high|xhigh)`);
 };
 var validateDevinEffort = (model, base, effort) => {
 	let devinModel = base;
@@ -2136,10 +2155,11 @@ var validateModelEffort = (backend, model) => {
 	});
 };
 var CURSOR_GROK_SLUG_PATTERN = /^cursor-grok-4\.5-(?<effort>low|medium|high)$/;
+var CURSOR_GROK_46_SLUG_PATTERN = /^cursor-grok-4\.6-(?<effort>low|medium|high|xhigh)(?<fast>-fast)?$/;
 var cursorModelNameIssue = (model) => {
 	const { base_model: base } = splitModelEffort(model);
 	if (base.startsWith("cursor-cursor-")) return "the 'cursor-' backend prefix must appear exactly once";
-	if (CURSOR_GROK_SLUG_PATTERN.test(base)) return "grok effort must be specified with the '@' suffix, not the catalog slug";
+	if (CURSOR_GROK_SLUG_PATTERN.test(base) || CURSOR_GROK_46_SLUG_PATTERN.test(base)) return "grok effort must be specified with the '@' suffix, not the catalog slug";
 	return null;
 };
 var collapseCursorSelectors = (base) => {
@@ -2160,6 +2180,8 @@ var correctedCursorModel = (model) => {
 	const collapsed = collapseCursorSelectors(base);
 	const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(collapsed);
 	if (grokSlug !== null) return `cursor-grok-4.5@${grokSlug[1]}`;
+	const grok46Slug = CURSOR_GROK_46_SLUG_PATTERN.exec(collapsed);
+	if (grok46Slug !== null) return `cursor-grok-4.6${grok46Slug[2] ?? ""}@${grok46Slug[1]}`;
 	return reattachEffort(dropComposerSelector(collapsed), effort);
 };
 var cursorCorrectionGuidance = (model) => {
@@ -2301,10 +2323,14 @@ var buildCursorEffort = (effort, fastRaw) => {
 	if (fastRaw !== null) result.fast = asFastBoolean(fastRaw);
 	return result;
 };
+var cursorConfigBaseModel = (model, slugEffort) => {
+	if (slugEffort !== "") return model.slice(0, model.lastIndexOf("-"));
+	if (model.endsWith("-fast")) return model.slice(0, model.lastIndexOf("-"));
+	return model;
+};
 var effortFromCursorConfig = (model, cliConfig) => {
 	const slugEffort = cursorSlugEffort(model);
-	let baseModel = model;
-	if (slugEffort !== "") baseModel = model.slice(0, model.lastIndexOf("-"));
+	const baseModel = cursorConfigBaseModel(model, slugEffort);
 	const params = resolveCursorParams(readConfigJson(cliConfig), model, baseModel);
 	let effort = firstParamValue(params, ["effort", "reasoning"]);
 	if (slugEffort !== "") effort = slugEffort;
@@ -5264,7 +5290,13 @@ var resolveCursorAgent = (env, timeoutMs = 1e4) => {
 	for (const candidate of cursorAgentCandidates(env)) if (cursorAgentVersionIsValid(candidate, env, timeoutMs)) return candidate;
 	return null;
 };
+var cursorGrok46CliModelOf = (context, model) => {
+	const effort = context.effort || "high";
+	if (model === "grok-4.6-fast") return `cursor-grok-4.6-${effort}-fast`;
+	return `cursor-grok-4.6-${effort}`;
+};
 var cursorCliModelOf = (context, model) => {
+	if (model === "grok-4.6" || model === "grok-4.6-fast") return cursorGrok46CliModelOf(context, model);
 	if (context.effort === "") return model;
 	if (model === "glm-5.2") return `glm-5.2[reasoning=${context.effort}]`;
 	if (model === "grok-4.5") return `cursor-grok-4.5-${context.effort}`;

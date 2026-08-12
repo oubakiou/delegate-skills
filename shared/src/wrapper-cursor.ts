@@ -91,8 +91,23 @@ const resolveCursorAgent = (env: Env, timeoutMs = 10_000): string | null => {
 // Cursor catalog 側が parameterized model かどうかに従うため:
 // glm-5.2 は parameterized で bracket override（glm-5.2[reasoning=<v>]）を受理し、
 // grok-4.5 は bracket を受理せず catalog の effort 別 slug（cursor-grok-4.5-<v>）のみ
-// 通る。CLI model 名は base model と一致しない場合がある
+// 通る。grok-4.6 も catalog slug（cursor-grok-4.6-<v>[-fast]）を使い、CLI model 名は
+// base model と一致しない場合がある
+const cursorGrok46CliModelOf = (context: WrapperContext, model: string): string => {
+  // catalog の素の grok-4.6 は high かつ fast を既定にし、grok-4.6-fast は catalog に
+  // 存在しない名前のため、どちらの表記も effort 無指定時に明示 slug へ解決して
+  // 指定どおりの fast / non-fast 単価を保つ
+  const effort = context.effort || 'high'
+  if (model === 'grok-4.6-fast') {
+    return `cursor-grok-4.6-${effort}-fast`
+  }
+  return `cursor-grok-4.6-${effort}`
+}
+
 const cursorCliModelOf = (context: WrapperContext, model: string): string | CliResult => {
+  if (model === 'grok-4.6' || model === 'grok-4.6-fast') {
+    return cursorGrok46CliModelOf(context, model)
+  }
   if (context.effort === '') {
     return model
   }
@@ -547,6 +562,15 @@ if (import.meta.vitest) {
     it('keeps the glm bracket override and passes an effort-less grok through', () => {
       expect(cliModelFor('cursor-glm-5.2@high')).toBe('glm-5.2[reasoning=high]')
       expect(cliModelFor('cursor-grok-4.5')).toBe('grok-4.5')
+    })
+
+    it('maps 4.6 non-fast and fast names to explicit catalog slugs', () => {
+      expect(cliModelFor('cursor-grok-4.6')).toBe('cursor-grok-4.6-high')
+      expect(cliModelFor('cursor-grok-4.6-fast')).toBe('cursor-grok-4.6-high-fast')
+      for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+        expect(cliModelFor(`cursor-grok-4.6@${effort}`)).toBe(`cursor-grok-4.6-${effort}`)
+        expect(cliModelFor(`cursor-grok-4.6-fast@${effort}`)).toBe(`cursor-grok-4.6-${effort}-fast`)
+      }
     })
 
     it('fails closed with exit 6 for a base model missing from the mapping table', () => {

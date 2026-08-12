@@ -2837,6 +2837,23 @@ describe('wrapper cursor grok effort slug', () => {
       requested: 'medium',
     })
   })
+
+  it('maps 4.6 names to explicit non-fast and fast catalog slugs in argv', () => {
+    for (const [model, expectedCliModel] of [
+      ['cursor-grok-4.6', 'cursor-grok-4.6-high'],
+      ['cursor-grok-4.6@xhigh', 'cursor-grok-4.6-xhigh'],
+      ['cursor-grok-4.6-fast', 'cursor-grok-4.6-high-fast'],
+      ['cursor-grok-4.6-fast@xhigh', 'cursor-grok-4.6-xhigh-fast'],
+    ] as const) {
+      const fixture = makeFixture('cursor')
+      const result = runWrapper('delegate-cursor.sh', wrapperModelArgs(fixture, model), fixture.env)
+      const log = readLog(fixture.logFile)
+      const modelIndex = log.args.indexOf('--model')
+
+      expect(result.status).toBe(0)
+      expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', expectedCliModel])
+    }
+  })
 })
 
 describe('wrapper cursor model name validation', () => {

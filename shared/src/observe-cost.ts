@@ -351,5 +351,32 @@ if (import.meta.vitest) {
       )
       expect(result.pricing_source).toBe('model-token-prices.json:cursor')
     })
+
+    it('matches 4.6 non-fast and fast names against their real price entries', () => {
+      const realTable = loadRealPriceTable()
+      const grok = pricedRatesOf(realTable, 'grok-4.6')
+      const fast = pricedRatesOf(realTable, 'grok-4.6-fast')
+      const result = augmentCostEstimate(
+        usage({ model: 'cursor-grok-4.6@high' }),
+        'cursor',
+        realTable
+      )
+      const fastResult = augmentCostEstimate(
+        usage({ model: 'cursor-grok-4.6-fast@high' }),
+        'cursor',
+        realTable
+      )
+
+      expect(result.cost_usd_estimated).toBeCloseTo(
+        (1000 * grok.input + 100 * grok.output) / 1_000_000,
+        12
+      )
+      expect(fastResult.cost_usd_estimated).toBeCloseTo(
+        (1000 * fast.input + 100 * fast.output) / 1_000_000,
+        12
+      )
+      expect(result.pricing_source).toBe('model-token-prices.json:cursor')
+      expect(fastResult.pricing_source).toBe('model-token-prices.json:cursor')
+    })
   })
 }

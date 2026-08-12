@@ -175,12 +175,12 @@ delegate-review でこのブランチの差分をレビューして
 
 `DELEGATE_<TYPE>_MODEL` には次のドキュメント済みモデル名を指定できる:
 
-| 実行系           | モデル名                                                                                                                                                                                                                                                                                  | 補足                                                                                                              |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`, `claude-fable-5`, `claude-opus-5`, `claude-opus-5[1m]`, `claude-opus-4-8`, `claude-opus-4-8[1m]`, `claude-sonnet-5`, `claude-sonnet-5[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5`                                                                   | Claude 系モデルの alias に加え、バージョン固定用にフル `claude-*` モデル ID も指定可（`[1m]` は 1M context 変種） |
-| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                                                                                           | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける                                                          |
-| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`, `devin-nemotron-3-ultra`, `devin-kimi-k3`                                                                                                                                            | `devin-*` は prefix を剥がして Devin CLI に渡す                                                                   |
-| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-gemini-3.1-pro`, `cursor-gemini-3.6-flash-minimal`, `cursor-gemini-3.6-flash-low`, `cursor-gemini-3.6-flash-medium`, `cursor-gemini-3.6-flash-high`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` は backend selector を 1 回剥がし、モデル別に変換する（grok の effort は catalog slug へ再構成）       |
+| 実行系           | モデル名                                                                                                                                                                                                                                                                                                                             | 補足                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`, `claude-fable-5`, `claude-opus-5`, `claude-opus-5[1m]`, `claude-opus-4-8`, `claude-opus-4-8[1m]`, `claude-sonnet-5`, `claude-sonnet-5[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5`                                                                                                              | Claude 系モデルの alias に加え、バージョン固定用にフル `claude-*` モデル ID も指定可（`[1m]` は 1M context 変種） |
+| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                                                                                                                                      | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける                                                          |
+| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`, `devin-nemotron-3-ultra`, `devin-kimi-k3`                                                                                                                                                                                       | `devin-*` は prefix を剥がして Devin CLI に渡す                                                                   |
+| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-grok-4.6`, `cursor-grok-4.6-fast`, `cursor-gemini-3.1-pro`, `cursor-gemini-3.6-flash-minimal`, `cursor-gemini-3.6-flash-low`, `cursor-gemini-3.6-flash-medium`, `cursor-gemini-3.6-flash-high`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` は backend selector を 1 回剥がし、モデル別に変換する（grok の effort は catalog slug へ再構成）       |
 
 上記はドキュメント済みの対応モデルであり、厳密な allowlist ではない。実行先 CLI 側でも指定モデルが利用可能である必要がある。`delegate-x-research` は別途 `DELEGATE_X_RESEARCH_MODEL` を使い、ドキュメント済みモデルは `grok-build`。
 
@@ -192,20 +192,23 @@ delegate-review でこのブランチの差分をレビューして
 DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 ```
 
-| backend / model                        | 指定できる値                                     | 補足                                                   |
-| -------------------------------------- | ------------------------------------------------ | ------------------------------------------------------ |
-| Claude                                 | `low`, `medium`, `high`, `xhigh`, `max`          | `--effort` として渡す                                  |
-| Codex                                  | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | reasoning config として渡す                            |
-| `cursor-glm-5.2`                       | `high`, `max`                                    | bracket override `glm-5.2[reasoning=<effort>]` へ変換  |
-| `cursor-grok-4.5`                      | `low`, `medium`, `high`                          | catalog slug `cursor-grok-4.5-<effort>` へ変換         |
-| `devin-kimi-k3`                        | `low`, `high`, `max`                             | Devin の model variant slug（`kimi-k3-high` 等）へ変換 |
-| 上記以外の Devin、imagegen、X research | 非対応                                           | effort suffix なし                                     |
+| backend / model                            | 指定できる値                                     | 補足                                                                |
+| ------------------------------------------ | ------------------------------------------------ | ------------------------------------------------------------------- |
+| Claude                                     | `low`, `medium`, `high`, `xhigh`, `max`          | `--effort` として渡す                                               |
+| Codex                                      | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | reasoning config として渡す                                         |
+| `cursor-glm-5.2`                           | `high`, `max`                                    | bracket override `glm-5.2[reasoning=<effort>]` へ変換               |
+| `cursor-grok-4.5`                          | `low`, `medium`, `high`                          | catalog slug `cursor-grok-4.5-<effort>` へ変換                      |
+| `cursor-grok-4.6` / `cursor-grok-4.6-fast` | `low`, `medium`, `high`, `xhigh`                 | `cursor-grok-4.6-<effort>` / `cursor-grok-4.6-<effort>-fast` へ変換 |
+| `devin-kimi-k3`                            | `low`, `high`, `max`                             | Devin の model variant slug（`kimi-k3-high` 等）へ変換              |
+| 上記以外の Devin、imagegen、X research     | 非対応                                           | effort suffix なし                                                  |
 
 不正な値や非対応の組み合わせは dispatch 前に停止する。effort を model slug 自体に含む Cursor モデルと `@...` suffix は併用できない。
 
-`cursor-` selector を使う Cursor モデルでは、先頭 `cursor-` は delegate の backend selector であり、ちょうど 1 回だけ付ける。二重 prefix（`cursor-cursor-*`）や grok の effort catalog slug の直指定（`cursor-grok-4.5-low` / `-medium` / `-high`）は dispatch 前に exit 6 で停止する。代わりに `cursor-grok-4.5[@<effort>]` の表記を使うこと。既存 session がこれらの旧表記を保持している場合、その follow-up は再開できず（exit 5）、修正した表記で新規 resumable run を開始する。
+`cursor-` selector を使う Cursor モデルでは、先頭 `cursor-` は delegate の backend selector であり、ちょうど 1 回だけ付ける。二重 prefix（`cursor-cursor-*`）や grok の effort catalog slug の直指定（`cursor-grok-4.5-low` / `-medium` / `-high`、`cursor-grok-4.6-low` / `-medium` / `-high` / `-xhigh`、および対応する `-fast` 付き）は dispatch 前に exit 6 で停止する。代わりに `cursor-grok-4.5[@<effort>]` または `cursor-grok-4.6[-fast][@<effort>]` の表記を使うこと。既存 session がこれらの旧表記を保持している場合、その follow-up は再開できず（exit 5）、修正した表記で新規 resumable run を開始する。
 
-suffix を付けない場合、delegate-skills は effort を明示せず、実行先 CLI の既定値を使う。例外は、catalog 既定が `medium` の `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` と `cursor-grok-4.5`、および model slug 自体に effort を含む Cursor モデル（`-high` / `-max`、および `cursor-gemini-3.6-flash-*` 変種）である。
+suffix を付けない場合、delegate-skills は effort を明示せず、実行先 CLI の既定値を使う。例外は、catalog 既定が `medium` の `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` と `cursor-grok-4.5`、effort が `high` に解決される `cursor-grok-4.6` / `cursor-grok-4.6-fast`、および model slug 自体に effort を含む Cursor モデル（`-high` / `-max`、および `cursor-gemini-3.6-flash-*` 変種）である。
+
+`cursor-grok-4.6` は effort を省略すると `cursor-grok-4.6-high` へ変換されるため、non-fast のままになる。catalog の bare `grok-4.6` は `high` かつ `fast` を既定にするため、これをそのまま渡さない。fast は `cursor-grok-4.6-fast` を明示した場合だけ選ばれ、effort 省略時は `cursor-grok-4.6-high-fast` へ変換される。
 
 backend が公開する場合、指定値と実効値を observe JSON へ記録する。詳細は [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。Codex の `max` / `ultra` は Codex CLI v0.144.1 と `gpt-5.6-sol` で確認済みで、古い CLI では拒否される場合がある。
 

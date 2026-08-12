@@ -29,12 +29,22 @@ const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 const CODEX_EFFORTS = new Set([...CLAUDE_EFFORTS, 'ultra'])
 const CURSOR_GLM_EFFORTS = new Set(['high', 'max'])
 const CURSOR_GROK_EFFORTS = new Set(['low', 'medium', 'high'])
+const CURSOR_GROK_46_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'])
 const DEVIN_KIMI_K3_EFFORTS = new Set(['low', 'high', 'max'])
 
 interface BackendEffortRule {
   allowed: Set<string>
   allowedLabel: string
 }
+
+// model 名は利用者入力なので、prototype 由来のキー（constructor 等）を継承しない
+// Map で引く。object literal だと未対応名で例外になり fail-closed を外れる
+const CURSOR_NAMED_MODEL_RULES: ReadonlyMap<string, BackendEffortRule> = new Map([
+  ['glm-5.2', { allowed: CURSOR_GLM_EFFORTS, allowedLabel: 'high|max' }],
+  ['grok-4.5', { allowed: CURSOR_GROK_EFFORTS, allowedLabel: 'low|medium|high' }],
+  ['grok-4.6', { allowed: CURSOR_GROK_46_EFFORTS, allowedLabel: 'low|medium|high|xhigh' }],
+  ['grok-4.6-fast', { allowed: CURSOR_GROK_46_EFFORTS, allowedLabel: 'low|medium|high|xhigh' }],
+])
 
 const BACKEND_EFFORT_RULES: Readonly<Partial<Record<string, BackendEffortRule>>> = {
   claude: { allowed: CLAUDE_EFFORTS, allowedLabel: 'low|medium|high|xhigh|max' },
@@ -46,23 +56,16 @@ const cursorNamedModelValidation = (
   model: string,
   effort: string
 ): EffortValidation | null => {
-  if (cursorModel === 'glm-5.2') {
-    if (CURSOR_GLM_EFFORTS.has(effort)) {
-      return { ok: true }
-    }
-    return invalid(
-      `ERROR: invalid effort '${effort}' for cursor model '${model}'; allowed: high|max`
-    )
+  const rule = CURSOR_NAMED_MODEL_RULES.get(cursorModel)
+  if (typeof rule === 'undefined') {
+    return null
   }
-  if (cursorModel === 'grok-4.5') {
-    if (CURSOR_GROK_EFFORTS.has(effort)) {
-      return { ok: true }
-    }
-    return invalid(
-      `ERROR: invalid effort '${effort}' for cursor model '${model}'; allowed: low|medium|high`
-    )
+  if (rule.allowed.has(effort)) {
+    return { ok: true }
   }
-  return null
+  return invalid(
+    `ERROR: invalid effort '${effort}' for cursor model '${model}'; allowed: ${rule.allowedLabel}`
+  )
 }
 
 const validateCursorEffort = (model: string, base: string, effort: string): EffortValidation => {
@@ -81,7 +84,7 @@ const validateCursorEffort = (model: string, base: string, effort: string): Effo
     return named
   }
   return invalid(
-    `ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high)`
+    `ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high), cursor-grok-4.6@(low|medium|high|xhigh), cursor-grok-4.6-fast@(low|medium|high|xhigh)`
   )
 }
 
@@ -154,6 +157,8 @@ export const validateModelEffort = (backend: string, model: string): EffortValid
 }
 
 const CURSOR_GROK_SLUG_PATTERN = /^cursor-grok-4\.5-(?<effort>low|medium|high)$/
+const CURSOR_GROK_46_SLUG_PATTERN =
+  /^cursor-grok-4\.6-(?<effort>low|medium|high|xhigh)(?<fast>-fast)?$/
 
 // cursor model 名の問題を理由文字列で返す純粋な述語（問題無しなら null）。
 // 判定とメッセージ生成を分離し、修正表記の提案値の検証にも再利用する
@@ -162,7 +167,7 @@ const cursorModelNameIssue = (model: string): string | null => {
   if (base.startsWith('cursor-cursor-')) {
     return "the 'cursor-' backend prefix must appear exactly once"
   }
-  if (CURSOR_GROK_SLUG_PATTERN.test(base)) {
+  if (CURSOR_GROK_SLUG_PATTERN.test(base) || CURSOR_GROK_46_SLUG_PATTERN.test(base)) {
     return "grok effort must be specified with the '@' suffix, not the catalog slug"
   }
   return null
@@ -202,6 +207,10 @@ const correctedCursorModel = (model: string): string => {
   if (grokSlug !== null) {
     return `cursor-grok-4.5@${grokSlug[1]}`
   }
+  const grok46Slug = CURSOR_GROK_46_SLUG_PATTERN.exec(collapsed)
+  if (grok46Slug !== null) {
+    return `cursor-grok-4.6${grok46Slug[2] ?? ''}@${grok46Slug[1]}`
+  }
   return reattachEffort(dropComposerSelector(collapsed), effort)
 }
 
@@ -235,7 +244,7 @@ const invalidCursorModel = (
 // 二重 prefix（cursor-cursor-*）と grok の effort slug 直指定はここで別途拒否する。
 // 二重 prefix は CLI 側では受理され observe の表記揺れとして残り、slug 直指定は
 // '@' 表記との 2 系統化で telemetry が割れるため、両方を dispatch 前に止めて
-// 表記を cursor-grok-4.5[@effort] の 1 系統に収束させる。fail-closed。
+// canonical な @ 表記へ収束させる。fail-closed。
 export const validateModelName = (
   backend: string,
   model: string,
@@ -456,13 +465,22 @@ const buildCursorEffort = (effort: unknown, fastRaw: unknown): EffectiveEffort =
   return result
 }
 
+// cursor CLI は fast variant を base 名 + fast パラメータとして cli-config に記録する
+// ため、照合用の base 名からは -fast を落とす
+const cursorConfigBaseModel = (model: string, slugEffort: string): string => {
+  if (slugEffort !== '') {
+    return model.slice(0, model.lastIndexOf('-'))
+  }
+  if (model.endsWith('-fast')) {
+    return model.slice(0, model.lastIndexOf('-'))
+  }
+  return model
+}
+
 export const effortFromCursorConfig = (model: string, cliConfig: string): EffectiveEffort => {
   // slug（-high / -max）は CLI argv に載る宣言そのものなので cli-config より優先する
   const slugEffort = cursorSlugEffort(model)
-  let baseModel = model
-  if (slugEffort !== '') {
-    baseModel = model.slice(0, model.lastIndexOf('-'))
-  }
+  const baseModel = cursorConfigBaseModel(model, slugEffort)
   const params = resolveCursorParams(readConfigJson(cliConfig), model, baseModel)
   let effort = firstParamValue(params, ['effort', 'reasoning'])
   if (slugEffort !== '') {
@@ -499,20 +517,51 @@ if (import.meta.vitest) {
       expect(validateModelEffort('codex', 'gpt-5.5@ultra').ok).toBe(true)
       expect(validateModelEffort('cursor', 'cursor-glm-5.2@max').ok).toBe(true)
       expect(validateModelEffort('cursor', 'cursor-grok-4.5@low').ok).toBe(true)
+      for (const model of [
+        'cursor-grok-4.6@low',
+        'cursor-grok-4.6@medium',
+        'cursor-grok-4.6@high',
+        'cursor-grok-4.6@xhigh',
+        'cursor-grok-4.6-fast@low',
+        'cursor-grok-4.6-fast@medium',
+        'cursor-grok-4.6-fast@high',
+        'cursor-grok-4.6-fast@xhigh',
+      ]) {
+        expect(validateModelEffort('cursor', model).ok).toBe(true)
+      }
       expect(validateModelEffort('devin', 'devin-kimi-k3@low').ok).toBe(true)
       expect(validateModelEffort('devin', 'devin-kimi-k3@high').ok).toBe(true)
       expect(validateModelEffort('devin', 'devin-kimi-k3@max').ok).toBe(true)
     })
 
     it('fails closed on invalid, doubled, or unsupported suffixes', () => {
-      expect(validateModelEffort('claude', 'sonnet@ultra').ok).toBe(false)
-      expect(validateModelEffort('codex', 'gpt-5.5@hi@gh').ok).toBe(false)
-      expect(validateModelEffort('cursor', 'cursor-glm-5.2-high@max').ok).toBe(false)
-      expect(validateModelEffort('cursor', 'composer-2.5@high').ok).toBe(false)
-      expect(validateModelEffort('devin', 'swe-1.7@high').ok).toBe(false)
-      expect(validateModelEffort('devin', 'devin-kimi-k3@medium').ok).toBe(false)
-      expect(validateModelEffort('devin', 'devin-glm-5.2@high').ok).toBe(false)
-      expect(validateModelEffort('grok', 'grok-build@low').ok).toBe(false)
+      for (const [backend, model] of [
+        ['claude', 'sonnet@ultra'],
+        ['codex', 'gpt-5.5@hi@gh'],
+        ['cursor', 'cursor-glm-5.2-high@max'],
+        ['cursor', 'cursor-grok-4.6@max'],
+        ['cursor', 'cursor-grok-4.6-fast@max'],
+        ['cursor', 'cursor-grok-4.6-high@low'],
+        ['cursor', 'composer-2.5@high'],
+        ['devin', 'swe-1.7@high'],
+        ['devin', 'devin-kimi-k3@medium'],
+        ['devin', 'devin-glm-5.2@high'],
+        ['grok', 'grok-build@low'],
+      ] as const) {
+        expect(validateModelEffort(backend, model).ok).toBe(false)
+      }
+    })
+
+    it('rejects prototype-derived model names instead of throwing', () => {
+      for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+        expect(validateModelEffort('cursor', `cursor-${name}@low`).ok).toBe(false)
+      }
+    })
+
+    it('lists both 4.6 variants among supported cursor suffixes', () => {
+      const message = messageOf(validateModelEffort('cursor', 'cursor-unknown@low'))
+      expect(message).toContain('cursor-grok-4.6@(low|medium|high|xhigh)')
+      expect(message).toContain('cursor-grok-4.6-fast@(low|medium|high|xhigh)')
     })
   })
 
@@ -536,6 +585,31 @@ if (import.meta.vitest) {
       expect(
         messageOf(validateModelName('cursor', 'cursor-cursor-glm-5.2@max', 'requested'))
       ).toContain("use 'cursor-glm-5.2@max'")
+    })
+
+    it('rejects direct 4.6 catalog slugs and suggests the canonical fast notation', () => {
+      for (const [slug, corrected] of [
+        ['cursor-grok-4.6-low', 'cursor-grok-4.6@low'],
+        ['cursor-grok-4.6-medium', 'cursor-grok-4.6@medium'],
+        ['cursor-grok-4.6-high', 'cursor-grok-4.6@high'],
+        ['cursor-grok-4.6-xhigh', 'cursor-grok-4.6@xhigh'],
+        ['cursor-grok-4.6-low-fast', 'cursor-grok-4.6-fast@low'],
+        ['cursor-grok-4.6-medium-fast', 'cursor-grok-4.6-fast@medium'],
+        ['cursor-grok-4.6-high-fast', 'cursor-grok-4.6-fast@high'],
+        ['cursor-grok-4.6-xhigh-fast', 'cursor-grok-4.6-fast@xhigh'],
+      ]) {
+        expect(messageOf(validateModelName('cursor', slug, 'requested'))).toContain(
+          `use '${corrected}'`
+        )
+      }
+    })
+
+    it('guides a fast 4.6 legacy slug to a new run during follow-up', () => {
+      const message = messageOf(
+        validateModelName('cursor', 'cursor-grok-4.6-high-fast', 'followup')
+      )
+      expect(message).toContain('from the previous session is no longer valid')
+      expect(message).toContain("start a new resumable run with 'cursor-grok-4.6-fast@high'")
     })
 
     it('guides a follow-up inheritance to a new run instead of a fixed specifier', () => {
@@ -585,6 +659,10 @@ if (import.meta.vitest) {
         'cursor-glm-5.2@max',
         'cursor-grok-4.5',
         'cursor-grok-4.5@medium',
+        'cursor-grok-4.6',
+        'cursor-grok-4.6@xhigh',
+        'cursor-grok-4.6-fast',
+        'cursor-grok-4.6-fast@low',
         'composer-2.5',
       ]) {
         expect(validateModelName('cursor', model, 'requested')).toEqual({ ok: true })
@@ -637,6 +715,36 @@ if (import.meta.vitest) {
         value: 'low',
         source: 'measured',
         fast: false,
+      })
+    })
+
+    it('reads the effort of a fast variant recorded under the non-fast base model', () => {
+      const dir = createTestScratchDir('observe-effort-test')
+      // catalog slug（cursor-grok-4.6-low-fast）で run した後の cli-config の実測形状。
+      // fast は model 名ではなくパラメータとして base 名の下に記録される
+      const cliConfig = path.join(dir, 'cli-config.json')
+      writeFileSync(
+        cliConfig,
+        JSON.stringify({
+          selectedModel: {
+            modelId: 'grok-4.6',
+            parameters: [
+              { id: 'effort', value: 'low' },
+              { id: 'fast', value: 'true' },
+            ],
+          },
+          modelParameters: {
+            'grok-4.6': [
+              { id: 'effort', value: 'low' },
+              { id: 'fast', value: 'true' },
+            ],
+          },
+        })
+      )
+      expect(effortFromCursorConfig('grok-4.6-fast', cliConfig)).toEqual({
+        value: 'low',
+        source: 'measured',
+        fast: true,
       })
     })
   })
