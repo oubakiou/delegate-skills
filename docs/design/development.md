@@ -101,7 +101,7 @@ devcontainer 前提。初回はリポジトリ root で `local_setup.sh` を実�
 
 - コンテナディスクの掃除（`scripts/clean-devcontainer-disk.sh --threshold 90`。満杯だと後続の `npm ci` 自体が書き込めないため最初に実行する）
 - `npm ci`（`package-lock.json` があればロック厳守、無ければ `npm install`）
-- `claude` / `codex` / `vp` / `typescript-language-server` を `/usr/local/bin` にシンボリックリンク
+- `claude` / `codex` / `opencode` / `vp` / `typescript-language-server` を `/usr/local/bin` にシンボリックリンク
 - `.claude/settings.local.json` / `CLAUDE.local.md` を example から生成（無ければ）
 - 既定 skill の `gh skill install`
 - `git config core.hooksPath .githooks`（pre-commit hook を有効化）
@@ -270,6 +270,8 @@ self-contained 配布のため、バンドル `shared/dist/delegate-cli.mjs` と
 
 実装は `shared/src/**/*.ts` が正本、生成物は `shared/dist/delegate-cli.mjs`、生成コピー（`skills/*/scripts/*`、`skills/*/model-token-prices.json` 等）は直接編集してはならない。編集は `shared/src/` で行い、`npm run build` → `npm run sync-shared` を走らせる。
 
+同期先は repository 内の配布ソース（`skills/*/`）までで、`gh skill install` が配置した実行時コピー（`.claude/skills/*/` / `.agents/skills/*/`）は含まれない。`sync-shared:check` もこの配置先を見ないため、`shared/src/` を変更してビルド・同期しただけでは手元のエージェントは古いバンドルを実行し続ける。[ローカル skill の再インストール](#ローカル-skill-の再インストール)を続けて行う。
+
 backend の CLI 出力を observe JSON へ正規化する処理は `shared/src/observe-{store,usage,timing,cost,effort,followup,lock}.ts` に置く。`usage` の実測値抽出や推定 fallback、session reuse の `lineage` / `backend_session` / `run_context` helper、follow-up validation を変更した場合は、対応モジュールの in-source test（`import.meta.vitest` ブロック）にケースを追加し、`npm run build` → `npm run sync-shared` で各 skill へ同期する。end-to-end の等価性は fake CLI golden（`scripts/delegate-wrapper-session.test.ts` / `delegate-run.test.ts`）が担保する。
 
 ## モデル追加・価格更新
@@ -403,11 +405,42 @@ publish が付ける auto notes を What's New 形式に置き換える。
 
 ## ローカル skill の再インストール
 
-`skills/<skill-name>/` を編集した後で Claude Code から最新版を試すには、対象 skill を再インストールする:
+`gh skill install` が配置する `.claude/skills/*/`（Claude Code 向け）と `.agents/skills/*/`（Codex 向け）は gitignore 対象の実行時コピーで、`npm run sync-shared` の同期先に含まれない。次のいずれかを行った後は再インストールする。
+
+- `skills/<skill-name>/` の `SKILL.md` や同梱 asset を編集した
+- `shared/src/` を編集して `npm run build` → `npm run sync-shared` を実行した（バンドル `delegate-cli.mjs` が全 skill で変わるため、対象は編集した skill だけではない）
+
+単一 skill を対象にする場合:
 
 ```bash
 gh skill install . <skill-name> --from-local --agent claude-code --scope project --force
 ```
+
+delegate skill 全体を両 agent へ反映する場合:
+
+```bash
+for agent in claude-code codex; do
+  for skill in \
+    delegate-explore \
+    delegate-implement \
+    delegate-chore \
+    delegate-review \
+    delegate-imagegen \
+    delegate-x-research \
+    delegate-htmldoc \
+  ; do
+    gh skill install . "$skill" --from-local --agent "$agent" --scope project --force
+  done
+done
+```
+
+反映は配置先と配布ソースの byte 比較で確認する:
+
+```bash
+cmp .claude/skills/delegate-explore/scripts/delegate-cli.mjs skills/delegate-explore/scripts/delegate-cli.mjs
+```
+
+`SKILL.md` は install が frontmatter を正規化する（キーのソート、`description` の折り畳み形式の変更、`metadata.local-path` の付加、frontmatter 直後の空行除去）ため byte 一致しない。frontmatter 以降の本文が一致していれば反映済みと判断してよい。
 
 ## コーディング規約
 
