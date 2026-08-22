@@ -4,6 +4,7 @@ import os, { constants as constants$1 } from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 //#region node_modules/md2idx/dist/md2idx.mjs
 var INACTIVE_FENCE = {
 	active: false,
@@ -1699,7 +1700,8 @@ var BACKEND_SCRIPTS = {
 	claude: "delegate-claude.sh",
 	codex: "delegate-codex.sh",
 	devin: "delegate-devin.sh",
-	cursor: "delegate-cursor.sh"
+	cursor: "delegate-cursor.sh",
+	opencode: "delegate-opencode.sh"
 };
 var exitStatusOf = (result) => exitStatusFromChild({
 	code: result.status,
@@ -1846,7 +1848,7 @@ var startDispatch = (args, backend) => {
 		supersedeStalePrepared(args.observeFile, args.taskType);
 	} catch {}
 };
-var backendDispatchPlan = (backend) => {
+var backendDispatchPlan = (backend, scriptsDir) => {
 	if (backend === "grok") return {
 		exitCode: 2,
 		stderr: "ERROR: grok backend is not supported by shared dispatch.sh; use the xresearch wrapper directly.\n",
@@ -1858,11 +1860,16 @@ var backendDispatchPlan = (backend) => {
 		stderr: `ERROR: backend '${backend}' is not registered; refusing dispatch\n`,
 		stdout: ""
 	};
+	if (backend === "opencode" && !existsSync(path.join(scriptsDir, script))) return {
+		exitCode: 2,
+		stderr: `ERROR: backend '${backend}' is not registered; refusing dispatch\n`,
+		stdout: ""
+	};
 	return { script };
 };
 var dispatchToWrapper = (args, env, io) => {
 	const backend = backendFor(args.taskType, args.model);
-	const plan = backendDispatchPlan(backend);
+	const plan = backendDispatchPlan(backend, io.scriptsDir);
 	if ("exitCode" in plan) return plan;
 	const startMs = monotonicMs();
 	startDispatch(args, backend);
@@ -2122,7 +2129,7 @@ var BACKEND_EFFORT_RULES = {
 		allowedLabel: "low|medium|high|xhigh|max|ultra"
 	}
 };
-var OPENCODE_SELECTOR = "opencode/";
+var OPENCODE_SELECTOR$1 = "opencode/";
 var OPENCODE_COMPONENT_PATTERN = /^[A-Za-z0-9._-]+$/;
 var OPENCODE_FORMAT = "opencode/<provider>/<model>[@<effort>]";
 var invalidOpencodeModel = (model, reason, source) => {
@@ -2132,7 +2139,7 @@ var invalidOpencodeModel = (model, reason, source) => {
 };
 var validateOpencodeModel = (model, source) => {
 	const { base_model: base } = splitModelEffort(model);
-	if (!base.startsWith(OPENCODE_SELECTOR)) return invalidOpencodeModel(model, `the model must start with the '${OPENCODE_SELECTOR}' selector`, source);
+	if (!base.startsWith(OPENCODE_SELECTOR$1)) return invalidOpencodeModel(model, `the model must start with the '${OPENCODE_SELECTOR$1}' selector`, source);
 	const components = base.slice(9).split("/");
 	if (components.length !== 2) return invalidOpencodeModel(model, "the selector-stripped model must contain exactly one \"/\"", source);
 	const [provider = "", modelId = ""] = components;
@@ -6129,6 +6136,313 @@ var runWrapperImagegen = async (argv, env, io) => {
 	return runImagegenChild(context, lifecycle);
 };
 //#endregion
+//#region shared/src/wrapper-opencode.ts
+var OPENCODE_SELECTOR = "opencode/";
+var OPENCODE_VERSION_TIMEOUT_MS = 1e4;
+var OPENCODE_VERSION_MAX_BYTES = 16384;
+var OPENCODE_CAPTURE_MAX_BYTES = 8388608;
+var OPENCODE_CAPTURE_MAX_LINE_BYTES = 1048576;
+var OPENCODE_CAPTURE_READ_BYTES = 65536;
+var PURE_TASK_TYPES = /* @__PURE__ */ new Set([
+	"explore",
+	"review",
+	"htmldoc"
+]);
+var opencodePromptTailLines = [
+	"3. 作業完了後、最終応答として front-matter 付き Markdown だけを返す。先頭に",
+	"   ---",
+	"   status: <completed | partial | failed | needs_input のいずれか>",
+	"   ---",
+	"   の front-matter を置き、その下に見出し Summary / Changed files / Commands / Verification / Findings / Blockers / Error の本文を書く。",
+	"   report は簡潔に書く: Summary は 5 行以内。Findings は重要なものに絞る。コマンドの生ログは貼らず、Verification は実行コマンドと結果（exit code / pass・fail）のみ。該当が無い見出しは省く。",
+	"   JSON やコードフェンスで全体をラップせず、md2idx / jq / build-response.sh によるレスポンス生成はしない。"
+];
+var versionOutputOf = (candidate, env, timeoutMs) => {
+	const result = spawnSync(candidate, ["--version"], {
+		encoding: "utf8",
+		env: { ...env },
+		killSignal: "SIGKILL",
+		maxBuffer: OPENCODE_VERSION_MAX_BYTES,
+		stdio: [
+			"ignore",
+			"pipe",
+			"pipe"
+		],
+		timeout: timeoutMs
+	});
+	if (result.error || result.status !== 0) return null;
+	const output = (result.stdout ?? "").trim();
+	if (output === "") return null;
+	return output;
+};
+var resolveOpencode = (env, timeoutMs = OPENCODE_VERSION_TIMEOUT_MS) => {
+	for (const candidate of executablePaths("opencode", env)) if (versionOutputOf(candidate, env, timeoutMs) !== null) return candidate;
+	return null;
+};
+var stripOpencodeSelector = (model) => {
+	if (model.startsWith(OPENCODE_SELECTOR)) return model.slice(9);
+	return model;
+};
+var opencodePureEnabled = (env) => {
+	const value = (env.DELEGATE_OPENCODE_PURE ?? "").trim().toLowerCase();
+	return value === "1" || value === "true" || value === "yes";
+};
+var usePureMode = (context) => PURE_TASK_TYPES.has(context.args.taskType) || opencodePureEnabled(context.env);
+var opencodeConfigContent = (taskType) => {
+	const config = {};
+	if (taskType === "explore" || taskType === "review") config.permission = { edit: "deny" };
+	return JSON.stringify(config);
+};
+var opencodeCliArgs = (context, cliModel) => {
+	const args = [
+		"run",
+		"--format",
+		"json",
+		"-m",
+		cliModel
+	];
+	if (context.effort !== "") args.push("--variant", context.effort);
+	if (usePureMode(context)) args.push("--pure");
+	return args;
+};
+var stringOrNull = (value) => {
+	if (typeof value === "string") return value;
+	return null;
+};
+var textEventContent = (event) => {
+	if (!isRecord$3(event) || event.type !== "text") return {
+		isTextEvent: false,
+		text: null
+	};
+	return {
+		isTextEvent: true,
+		text: stringOrNull(getPath(event, ["part", "text"]))
+	};
+};
+var captureScanState = () => ({
+	line: "",
+	lineBytes: 0,
+	lastText: null,
+	sawTextEvent: false
+});
+var consumeCaptureLine = (line, state) => {
+	const content = textEventContent(parseJsonLine$1(line));
+	if (!content.isTextEvent) return;
+	state.sawTextEvent = true;
+	state.lastText = content.text;
+};
+var captureFragmentOf = (text, offset) => {
+	const newline = text.indexOf("\n", offset);
+	let end = text.length;
+	let nextOffset = text.length;
+	let hasNewline = false;
+	if (newline !== -1) {
+		end = newline;
+		nextOffset = newline + 1;
+		hasNewline = true;
+	}
+	return {
+		text: text.slice(offset, end),
+		nextOffset,
+		hasNewline
+	};
+};
+var captureFragmentWithinLimit = (fragment, state) => {
+	state.lineBytes += Buffer.byteLength(fragment.text);
+	if (fragment.hasNewline) state.lineBytes += 1;
+	return state.lineBytes <= OPENCODE_CAPTURE_MAX_LINE_BYTES;
+};
+var consumeCaptureFragment = (text, offset, state) => {
+	const fragment = captureFragmentOf(text, offset);
+	if (!captureFragmentWithinLimit(fragment, state)) return null;
+	state.line += fragment.text;
+	if (!fragment.hasNewline) return fragment.nextOffset;
+	consumeCaptureLine(state.line, state);
+	state.line = "";
+	state.lineBytes = 0;
+	return fragment.nextOffset;
+};
+var appendCaptureText = (text, state) => {
+	for (let offset = 0; offset < text.length;) {
+		const nextOffset = consumeCaptureFragment(text, offset, state);
+		if (nextOffset === null) return false;
+		offset = nextOffset;
+	}
+	return true;
+};
+var scanCaptureChunks = (fd, decoder, state) => {
+	const buffer = Buffer.alloc(OPENCODE_CAPTURE_READ_BYTES);
+	let totalBytes = 0;
+	while (true) {
+		const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+		if (bytesRead === 0) return true;
+		totalBytes += bytesRead;
+		if (totalBytes > OPENCODE_CAPTURE_MAX_BYTES || !appendCaptureText(decoder.write(buffer.subarray(0, bytesRead)), state)) return false;
+	}
+};
+var finishCaptureScan = (decoder, state) => {
+	if (!appendCaptureText(decoder.end(), state)) return null;
+	if (state.line !== "") consumeCaptureLine(state.line, state);
+	if (!state.sawTextEvent) return null;
+	return state.lastText;
+};
+var scanCaptureFile = (fd) => {
+	if (fstatSync(fd).size > OPENCODE_CAPTURE_MAX_BYTES) return null;
+	const decoder = new StringDecoder("utf8");
+	const state = captureScanState();
+	if (!scanCaptureChunks(fd, decoder, state)) return null;
+	return finishCaptureScan(decoder, state);
+};
+var closeCaptureQuietly = (fd) => {
+	if (fd === null) return;
+	try {
+		closeSync(fd);
+	} catch {}
+};
+var lastTextFromCapture = (captureFile) => {
+	let fd = null;
+	try {
+		fd = openSync(captureFile, "r");
+		return scanCaptureFile(fd);
+	} catch {
+		return null;
+	} finally {
+		closeCaptureQuietly(fd);
+	}
+};
+var opencodeCapturedText = (context, wait) => {
+	if (wait.childStatus !== 0) return null;
+	return lastTextFromCapture(context.stdoutCapture);
+};
+var opencodeChildEnv = (context) => ({
+	...context.env,
+	OPENCODE_CONFIG_CONTENT: opencodeConfigContent(context.args.taskType),
+	TMPDIR: path.join(context.workDir, "tmp")
+});
+var inlineFailureTarget = (context) => ({
+	responderSessionId: `wrapper:${context.backend}:${path.basename(context.args.responseFile, ".json")}`,
+	responseFile: context.args.responseFile,
+	runDir: context.workDir
+});
+var sessionModeFailureReport = (message) => [
+	"---",
+	"status: failed",
+	"---",
+	"# Summary",
+	"OpenCode session reuse is unavailable.",
+	"",
+	"# Error",
+	message,
+	""
+].join("\n");
+var finishSessionModeFailure = (context, exitCode, message) => {
+	const result = finishWithoutChild(context, exitCode, message);
+	buildResponseFromStdoutText(sessionModeFailureReport(message), inlineFailureTarget(context), context.env);
+	return result;
+};
+var sessionModeFailure = (context) => {
+	const { sessionMode } = context.args;
+	if (sessionMode !== "" && sessionMode !== "resumable" && sessionMode !== "followup") return finishWithoutChild(context, 2, `ERROR: session_mode must be empty, resumable, or followup: ${sessionMode}`);
+	if (sessionMode === "resumable" || sessionMode === "followup") return finishSessionModeFailure(context, 5, "ERROR: opencode backend の session reuse は未実装です。");
+	return null;
+};
+var inlineFailureReport = (context) => {
+	return [
+		"---",
+		"status: failed",
+		"---",
+		"# Summary",
+		"OpenCode request delivery stopped before child CLI startup.",
+		"",
+		"# Error",
+		`Cause: request exceeds DELEGATE_REQUEST_INLINE_MAX (${requestInlineMax(context.env)} bytes).`,
+		"Workaround: request を分割する / 他 backend を使う。",
+		""
+	].join("\n");
+};
+var finishInlineFailure = (context) => {
+	const result = finishWithoutChild(context, 1, `ERROR: request exceeds DELEGATE_REQUEST_INLINE_MAX (${requestInlineMax(context.env)} bytes); request を分割するか、他 backend を使ってください。`);
+	buildResponseFromStdoutText(inlineFailureReport(context), inlineFailureTarget(context), context.env);
+	return result;
+};
+var launchValidationFailure = (context) => {
+	const effortError = effortFailure(context);
+	if (effortError !== null) return effortError;
+	return sessionModeFailure(context);
+};
+var requestStepForOpencode = (context) => {
+	const requestStep = requestPromptStep(context.args.requestFile, {
+		scriptsDir: context.scriptsDir,
+		env: context.env
+	});
+	if (!requestStep.inline) return finishInlineFailure(context);
+	return requestStep;
+};
+var prepareOpencodeLaunch = (context) => {
+	const validationFailure = launchValidationFailure(context);
+	if (validationFailure !== null) return validationFailure;
+	const requestStep = requestStepForOpencode(context);
+	if ("exitCode" in requestStep) return requestStep;
+	const command = resolveOpencode(context.env);
+	if (command === null) return finishWithoutChild(context, 3, "ERROR: opencode CLI が見つからないか、--version に応答しません。");
+	return {
+		command,
+		requestStep
+	};
+};
+var finalizeOpencodeRun = (context, cliModel, wait) => {
+	if (wait.childStatus !== 0) buildFailedResponseFromStdoutText({
+		responderSessionId: responderSessionIdOf(context, cliModel),
+		responseFile: context.args.responseFile,
+		runDir: context.workDir
+	}, context.env);
+	completeResponse(context, {
+		responderSessionId: responderSessionIdOf(context, cliModel),
+		reportMode: reportModeForBackend("opencode"),
+		collectStdoutText: () => opencodeCapturedText(context, wait)
+	}, wait);
+	return wrapperResult(context, finalizeResponse(context, wait.childStatus));
+};
+var runOpencodeChild = async (context, launch) => {
+	const cliModel = stripOpencodeSelector(context.baseModel);
+	const promptFile = writePromptFile(context, workerPrompt(context, launch.requestStep.step, {
+		constraints: promptConstraints(context.args.taskType, "", "stdout"),
+		tailLines: opencodePromptTailLines
+	}));
+	const worker = spawnWorker({
+		command: launch.command,
+		args: opencodeCliArgs(context, cliModel),
+		cwd: context.repoRoot,
+		env: opencodeChildEnv(context),
+		stdinFile: promptFile,
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture
+	});
+	return finalizeOpencodeRun(context, cliModel, await waitWithHeartbeat({
+		observeFile: context.args.observeFile,
+		runDir: context.workDir,
+		backend: context.backend,
+		worker,
+		stdoutCapture: context.stdoutCapture,
+		stderrCapture: context.stderrCapture,
+		responseFile: context.args.responseFile,
+		env: context.env
+	}));
+};
+var wrapperOpencodeWithContext = async (context) => {
+	const launch = prepareOpencodeLaunch(context);
+	if ("exitCode" in launch) return launch;
+	return runOpencodeChild(context, launch);
+};
+var runWrapperOpencode = async (argv, env, io) => {
+	const args = parseWrapperArgs(argv, "delegate-opencode.sh");
+	if ("exitCode" in args) return args;
+	return wrapperOpencodeWithContext(makeWrapperContext(args, {
+		env,
+		scriptsDir: io.scriptsDir
+	}));
+};
+//#endregion
 //#region shared/src/wrapper-xresearch.ts
 var availableGrokModels = (env) => {
 	const listed = spawnSync("grok", ["models"], {
@@ -6335,6 +6649,7 @@ var WRAPPER_BACKENDS = {
 	cursor: runWrapperCursor,
 	devin: runWrapperDevin,
 	imagegen: runWrapperImagegen,
+	opencode: runWrapperOpencode,
 	xresearch: runWrapperXresearch
 };
 var runWrapperBackend = async (rest) => {

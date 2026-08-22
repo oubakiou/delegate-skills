@@ -334,6 +334,9 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
   - 採用: `DELEGATE_REQUEST_INLINE_MAX` 超過を child 起動前に fail-closed とし、wrapper が failed response を書いて Error section に理由と回避策（request を分割する / 他 backend を使う）を載せる。exit code は 1（`spec.md` §10 の「その他の実行失敗」）。stderr のみの通知は main へ届かないため使わない。cwd 内 staging は cleanup 責任とリポジトリ汚染を招くため採らない
 - **補助 subprocess を helper に集約する**: `--version` は bounded timeout 付きの fail-closed preflight とし、CLI 不在・応答なしは exit 3（前提条件不足）で停止する。`DELEGATE_OPENCODE_MCP_SOURCE=codex` の抽出（`codex mcp list --json`）も同じ helper 経由にする。`export` / `models --verbose` / `session delete` を timeout・出力上限・SIGKILL 付き helper 経由の fail-soft にし、失敗は telemetry 欠落として run を止めない
 - `shared/delegate-opencode.sh` shim を追加する（既存 shim と同構造。`sync-shared.ts` は `.sh` を自動列挙するため設定変更は不要）
+- **中間状態の fail-closed**: session reuse は Step 6 で実装するため、それまで非空の session mode（`resumable` / `followup`）は child 起動前に exit 5 と failed response で止める。`-s` を付けずに通常 run として成功させない
+- **child 失敗時の status**: child が非 0 終了または signal を受けた場合、有効な最終 `text` があっても completed envelope を採用せず status=failed と Error section を強制する
+- **stdout の逐次走査**: JSONL は全量を配列化せず逐次走査し、最後の `text` イベントだけを保持する。そのイベントの `part.text` が非文字列なら古いイベントへ遡らず failed にする。capture 全体 8 MiB / 行 1 MiB の内部上限を超えたら小さな failed response を書く
 - **配線**: `shared/src/dispatch.ts` の `BACKEND_SCRIPTS.opencode = 'delegate-opencode.sh'` と `shared/src/main.ts` の `WRAPPER_BACKENDS.opencode = runWrapperOpencode` をここで足す（wrapper 実体と shim が揃う Step だから）
 - **分岐漏れを型で止める**: 現在の `completeMissingResponse` は `if (reportMode === 'structured') ... else completeReportMd(...)` で、union を増やしても `stdout_text` が `report_md` 側へ落ちたままコンパイルが通る。exhaustive な `switch` + `assertNever` に置き換えてから mode を追加する
 

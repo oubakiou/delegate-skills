@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { backendFor } from './backend.ts'
@@ -30,6 +30,7 @@ const BACKEND_SCRIPTS: Readonly<Partial<Record<string, string>>> = {
   codex: 'delegate-codex.sh',
   devin: 'delegate-devin.sh',
   cursor: 'delegate-cursor.sh',
+  opencode: 'delegate-opencode.sh',
 }
 
 export interface DispatchIo {
@@ -258,7 +259,7 @@ const startDispatch = (args: DispatchArgs, backend: string): void => {
 
 type BackendDispatchPlan = { script: string } | CliResult
 
-const backendDispatchPlan = (backend: string): BackendDispatchPlan => {
+const backendDispatchPlan = (backend: string, scriptsDir: string): BackendDispatchPlan => {
   if (backend === 'grok') {
     return {
       exitCode: 2,
@@ -275,12 +276,19 @@ const backendDispatchPlan = (backend: string): BackendDispatchPlan => {
       stdout: '',
     }
   }
+  if (backend === 'opencode' && !existsSync(path.join(scriptsDir, script))) {
+    return {
+      exitCode: 2,
+      stderr: `ERROR: backend '${backend}' is not registered; refusing dispatch\n`,
+      stdout: '',
+    }
+  }
   return { script }
 }
 
 const dispatchToWrapper = (args: DispatchArgs, env: Env, io: DispatchIo): CliResult => {
   const backend = backendFor(args.taskType, args.model)
-  const plan = backendDispatchPlan(backend)
+  const plan = backendDispatchPlan(backend, io.scriptsDir)
   if ('exitCode' in plan) {
     return plan
   }

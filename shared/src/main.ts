@@ -20,6 +20,7 @@ import { runWrapperCodex } from './wrapper-codex.ts'
 import { runWrapperCursor } from './wrapper-cursor.ts'
 import { runWrapperDevin } from './wrapper-devin.ts'
 import { runWrapperImagegen } from './wrapper-imagegen.ts'
+import { runWrapperOpencode } from './wrapper-opencode.ts'
 import { runWrapperXresearch } from './wrapper-xresearch.ts'
 
 // delegate-cli のバージョン。gh skill publish のリリースタグと同期させる運用は
@@ -130,6 +131,7 @@ const WRAPPER_BACKENDS: Readonly<
   cursor: runWrapperCursor,
   devin: runWrapperDevin,
   imagegen: runWrapperImagegen,
+  opencode: runWrapperOpencode,
   xresearch: runWrapperXresearch,
 }
 
