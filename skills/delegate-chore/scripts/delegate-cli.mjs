@@ -93,11 +93,13 @@ var parseHeadings = (markdown) => {
 		prevWasFenceBoundary: false
 	};
 	lines.reduce((state, line) => {
+		const fence = updateFenceState(line, state.fence);
+		const nextOffset = state.offset + line.length + 1;
 		return processLine(state, line, {
-			fence: updateFenceState(line, state.fence),
+			fence,
 			headings,
 			markdown,
-			nextOffset: state.offset + line.length + 1
+			nextOffset
 		});
 	}, initial);
 	return headings;
@@ -413,7 +415,7 @@ var runBuildRequest = (argv, env, stdin) => {
 };
 //#endregion
 //#region shared/src/build-response.ts
-var VALID_STATUSES = new Set([
+var VALID_STATUSES = /* @__PURE__ */ new Set([
 	"completed",
 	"partial",
 	"failed",
@@ -1033,7 +1035,7 @@ var isUsefulClaudeContent = (item) => {
 	return item.type === "text" && textLength(item.text) > 0;
 };
 var claudeFirstUseful = (events) => events.some((event) => event.type === "assistant" && contentItemsOf(event).some(isUsefulClaudeContent));
-var CODEX_TOOL_ITEM_TYPES = new Set([
+var CODEX_TOOL_ITEM_TYPES = /* @__PURE__ */ new Set([
 	"command_execution",
 	"local_shell_call",
 	"file_change",
@@ -1104,7 +1106,7 @@ var codexStreamCounts = (text) => {
 		source: "codex_json"
 	};
 };
-var CURSOR_EVENT_TYPES = new Set([
+var CURSOR_EVENT_TYPES = /* @__PURE__ */ new Set([
 	"system",
 	"user",
 	"assistant",
@@ -1876,7 +1878,7 @@ var runDispatch = (argv, env, io) => {
 };
 //#endregion
 //#region shared/src/observe-followup.ts
-var RESUMABLE_BACKENDS = new Set([
+var RESUMABLE_BACKENDS = /* @__PURE__ */ new Set([
 	"claude",
 	"codex",
 	"devin",
@@ -2054,32 +2056,32 @@ var invalid = (message) => ({
 	ok: false,
 	message
 });
-var CLAUDE_EFFORTS = new Set([
+var CLAUDE_EFFORTS = /* @__PURE__ */ new Set([
 	"low",
 	"medium",
 	"high",
 	"xhigh",
 	"max"
 ]);
-var CODEX_EFFORTS = new Set([...CLAUDE_EFFORTS, "ultra"]);
-var CURSOR_GLM_EFFORTS = new Set(["high", "max"]);
-var CURSOR_GROK_EFFORTS = new Set([
+var CODEX_EFFORTS = /* @__PURE__ */ new Set([...CLAUDE_EFFORTS, "ultra"]);
+var CURSOR_GLM_EFFORTS = /* @__PURE__ */ new Set(["high", "max"]);
+var CURSOR_GROK_EFFORTS = /* @__PURE__ */ new Set([
 	"low",
 	"medium",
 	"high"
 ]);
-var CURSOR_GROK_46_EFFORTS = new Set([
+var CURSOR_GROK_46_EFFORTS = /* @__PURE__ */ new Set([
 	"low",
 	"medium",
 	"high",
 	"xhigh"
 ]);
-var DEVIN_KIMI_K3_EFFORTS = new Set([
+var DEVIN_KIMI_K3_EFFORTS = /* @__PURE__ */ new Set([
 	"low",
 	"high",
 	"max"
 ]);
-var CURSOR_NAMED_MODEL_RULES = new Map([
+var CURSOR_NAMED_MODEL_RULES = /* @__PURE__ */ new Map([
 	["glm-5.2", {
 		allowed: CURSOR_GLM_EFFORTS,
 		allowedLabel: "high|max"
@@ -3840,7 +3842,8 @@ var buildResponseFromReportMd = (reportFile, target, env) => {
 	const parts = reportMdPartsOf(reportFile);
 	if (parts === null || !validProtocolStatus(parts.status) || parts.body === "") return false;
 	const base = path.basename(target.responseFile, ".json");
-	writeFileSync(path.join(target.runDir, `${base}_reportbody_${randomToken(5)}.md`), parts.body);
+	const bodyFile = path.join(target.runDir, `${base}_reportbody_${randomToken(5)}.md`);
+	writeFileSync(bodyFile, parts.body);
 	return assembleResponse({
 		...target,
 		status: parts.status
@@ -3920,7 +3923,7 @@ var quietly = (operation) => {
 		operation();
 	} catch {}
 };
-var HOOK_ENABLED_TASK_TYPES = new Set(["implement", "chore"]);
+var HOOK_ENABLED_TASK_TYPES = /* @__PURE__ */ new Set(["implement", "chore"]);
 var STDERR_TAIL_MAX_BYTES = 8192;
 var readTailBytes = (filePath, maxBytes) => {
 	try {

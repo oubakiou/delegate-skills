@@ -457,7 +457,8 @@ export const finalizeResponse = (context: WrapperContext, childStatus: number): 
   writeCompanionFromResponse(context.args.responseFile)
   const status = ((): string => {
     try {
-      return stringOf(getPath(JSON.parse(readFileOrEmpty(context.args.responseFile)), ['status']))
+      const parsed: unknown = JSON.parse(readFileOrEmpty(context.args.responseFile))
+      return stringOf(getPath(parsed, ['status']))
     } catch {
       return ''
     }

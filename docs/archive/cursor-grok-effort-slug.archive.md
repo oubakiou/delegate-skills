@@ -249,11 +249,11 @@ ERROR: inherited cursor model 'cursor-cursor-grok-4.5-medium' from the previous 
 
 `SLUG_PATTERN`（`/^[A-Za-z0-9._-]{1,64}$/`）が厳格なのは、抽出値が Markdown response へ転記される経路を塞ぐため（`failure-classify.ts:14-16`）。Cursor の拒否 model 名は bracket を含み得る（`grok-4.5[effort=medium]`）ので、そのままでは抽出に失敗する。
 
-| 候補                                                                 | 採用 | 理由                                                                                                                                    |
+| 候補 | 採用 | 理由 |
 | -------------------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| **bracket 込みの anchored allowlist を Cursor signature 専用に定義** | ✓    | `/^[A-Za-z0-9._-]{1,64}(\[[A-Za-z0-9._,=-]{1,64}\])?$/` のように anchor + 最大長を保つ。Markdown 制御文字（バッククォート、改行、`<`、` | `）を一切許さない |
-| 既存 `SLUG_PATTERN` のまま（bracket 名は `unknown` に落とす）        | ✗    | 本 issue のケース（bracket 付きで拒否される）がまさに分類できず、導入目的を満たさない                                                   |
-| model 名パターンを `.*` などへ緩める                                 | ✗    | 未信頼 stderr が response へ転記される境界を弱める。厳格化の理由（`:14-16`）に正面から反する                                            |
+| **bracket 込みの anchored allowlist を Cursor signature 専用に定義** | ✓ | `/^[A-Za-z0-9._-]{1,64}(\[[A-Za-z0-9._,=-]{1,64}\])?$/` のように anchor + 最大長を保つ。Markdown 制御文字（バッククォート、改行、`<`、`|`）を一切許さない |
+| 既存 `SLUG_PATTERN` のまま（bracket 名は `unknown` に落とす） | ✗ | 本 issue のケース（bracket 付きで拒否される）がまさに分類できず、導入目的を満たさない |
+| model 名パターンを `.*` などへ緩める | ✗ | 未信頼 stderr が response へ転記される境界を弱める。厳格化の理由（`:14-16`）に正面から反する |
 
 候補 CSV は `, ` で分割し、各要素は既存 `SLUG_PATTERN` で濾す（候補側に bracket は現れない）。1 つでも不適合なら以降を打ち切る既存の `collectCandidates` の作法に揃える。
 

@@ -254,11 +254,8 @@ if (import.meta.vitest) {
 
     it('keeps exactly 8 candidates without truncation', () => {
       const listed = listedModels(8)
-      expect(
-        classifyChildFailure(
-          devinInput(`Unknown model: 'kimi-k3-max'\nAvailable:\n${listed.join('\n')}\n`)
-        )
-      ).toEqual({
+      const stderrTail = `Unknown model: 'kimi-k3-max'\nAvailable:\n${listed.join('\n')}\n`
+      expect(classifyChildFailure(devinInput(stderrTail))).toEqual({
         kind: 'model_not_found',
         retryable: false,
         model: 'kimi-k3-max',
@@ -269,11 +266,8 @@ if (import.meta.vitest) {
 
     it('truncates 9 candidates to the first 8 with candidatesTruncated: true', () => {
       const listed = listedModels(9)
-      expect(
-        classifyChildFailure(
-          devinInput(`Unknown model: 'kimi-k3-max'\nAvailable:\n${listed.join('\n')}\n`)
-        )
-      ).toEqual({
+      const stderrTail = `Unknown model: 'kimi-k3-max'\nAvailable:\n${listed.join('\n')}\n`
+      expect(classifyChildFailure(devinInput(stderrTail))).toEqual({
         kind: 'model_not_found',
         retryable: false,
         model: 'kimi-k3-max',
@@ -302,13 +296,8 @@ if (import.meta.vitest) {
   describe('cursor one-line layout', () => {
     it('classifies the observed one-line comma-separated stderr as model_not_found with truncation', () => {
       const listed = listedModels(9)
-      expect(
-        classifyChildFailure(
-          cursorInput(
-            `Cannot use this model: grok-4.5[effort=medium]. Available models: ${listed.join(', ')}`
-          )
-        )
-      ).toEqual({
+      const stderrTail = `Cannot use this model: grok-4.5[effort=medium]. Available models: ${listed.join(', ')}`
+      expect(classifyChildFailure(cursorInput(stderrTail))).toEqual({
         kind: 'model_not_found',
         retryable: false,
         model: 'grok-4.5[effort=medium]',
