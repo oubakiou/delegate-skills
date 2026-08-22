@@ -26,6 +26,7 @@ const USAGE =
   'Usage: dispatch <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]\n'
 
 const BACKEND_SCRIPTS: Readonly<Partial<Record<string, string>>> = {
+  claude: 'delegate-claude.sh',
   codex: 'delegate-codex.sh',
   devin: 'delegate-devin.sh',
   cursor: 'delegate-cursor.sh',
@@ -255,9 +256,9 @@ const startDispatch = (args: DispatchArgs, backend: string): void => {
   }
 }
 
-const dispatchToWrapper = (args: DispatchArgs, env: Env, io: DispatchIo): CliResult => {
-  const startMs = monotonicMs()
-  const backend = backendFor(args.taskType, args.model)
+type BackendDispatchPlan = { script: string } | CliResult
+
+const backendDispatchPlan = (backend: string): BackendDispatchPlan => {
   if (backend === 'grok') {
     return {
       exitCode: 2,
@@ -266,9 +267,27 @@ const dispatchToWrapper = (args: DispatchArgs, env: Env, io: DispatchIo): CliRes
       stdout: '',
     }
   }
+  const script = BACKEND_SCRIPTS[backend]
+  if (typeof script === 'undefined') {
+    return {
+      exitCode: 2,
+      stderr: `ERROR: backend '${backend}' is not registered; refusing dispatch\n`,
+      stdout: '',
+    }
+  }
+  return { script }
+}
+
+const dispatchToWrapper = (args: DispatchArgs, env: Env, io: DispatchIo): CliResult => {
+  const backend = backendFor(args.taskType, args.model)
+  const plan = backendDispatchPlan(backend)
+  if ('exitCode' in plan) {
+    return plan
+  }
+  const startMs = monotonicMs()
   startDispatch(args, backend)
   const outcome = spawnWrapper({
-    script: path.join(io.scriptsDir, BACKEND_SCRIPTS[backend] ?? 'delegate-claude.sh'),
+    script: path.join(io.scriptsDir, plan.script),
     args: wrapperArgsOf(args),
     env,
     captureStderr: io.captureStderr === true,
@@ -292,8 +311,8 @@ if (import.meta.vitest) {
 
   const makeDispatchTestDir = (): string => createTestScratchDir('dispatch-test')
 
-  const makeFakeWrapper = (dir: string, script: string): void => {
-    const file = path.join(dir, 'delegate-claude.sh')
+  const makeFakeWrapper = (dir: string, script: string, name = 'delegate-claude.sh'): void => {
+    const file = path.join(dir, name)
     writeFileSync(file, script)
     chmodSync(file, 0o755)
   }
@@ -313,6 +332,47 @@ if (import.meta.vitest) {
       )
       expect(result.exitCode).toBe(2)
       expect(result.stderr).toContain('grok backend is not supported')
+    })
+
+    it('selects each registered backend wrapper without falling back', () => {
+      const dir = makeDispatchTestDir()
+      for (const [model, name, backend] of [
+        ['haiku', 'delegate-claude.sh', 'claude'],
+        ['gpt-5.5', 'delegate-codex.sh', 'codex'],
+        ['swe-1.7', 'delegate-devin.sh', 'devin'],
+        ['cursor-grok-4.5', 'delegate-cursor.sh', 'cursor'],
+      ] as const) {
+        makeFakeWrapper(
+          dir,
+          `#!/usr/bin/env bash\nprintf '{"backend":"${backend}"}' >"$4"\nexit 0\n`,
+          name
+        )
+        const responseFile = path.join(dir, `${backend}_res.json`)
+        const observeFile = path.join(dir, `${backend}_observe.json`)
+        const result = runDispatch(
+          [model, 'chore', path.join(dir, 'req.json'), responseFile, dir, observeFile],
+          { ...process.env },
+          { scriptsDir: dir, captureStderr: true }
+        )
+        expect(result.exitCode).toBe(0)
+        expect(readFileSync(responseFile, 'utf8')).toBe(`{"backend":"${backend}"}`)
+      }
+    })
+
+    it('fails closed with exit 2 for an unregistered backend', () => {
+      const dir = makeDispatchTestDir()
+      const result = runDispatch(
+        [
+          'opencode/opencode-go/glm-5.2',
+          'chore',
+          path.join(dir, 'req.json'),
+          path.join(dir, 'res.json'),
+        ],
+        { ...process.env },
+        { scriptsDir: dir, captureStderr: true }
+      )
+      expect(result.exitCode).toBe(2)
+      expect(result.stderr).toBe("ERROR: backend 'opencode' is not registered; refusing dispatch\n")
     })
 
     it('spawns the wrapper, records dispatch lifecycle, and passes the exit code through', () => {

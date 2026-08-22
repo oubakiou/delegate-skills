@@ -51,6 +51,62 @@ const BACKEND_EFFORT_RULES: Readonly<Partial<Record<string, BackendEffortRule>>>
   codex: { allowed: CODEX_EFFORTS, allowedLabel: 'low|medium|high|xhigh|max|ultra' },
 }
 
+const OPENCODE_SELECTOR = 'opencode/'
+const OPENCODE_COMPONENT_PATTERN = /^[A-Za-z0-9._-]+$/
+const OPENCODE_FORMAT = 'opencode/<provider>/<model>[@<effort>]'
+
+const invalidOpencodeModel = (
+  model: string,
+  reason: string,
+  source: 'requested' | 'followup'
+): EffortValidation => {
+  const guidance = `expected ${OPENCODE_FORMAT}; provider は \`opencode models\` の出力から取る`
+  if (source === 'followup') {
+    return invalid(
+      `ERROR: inherited opencode model '${model}' from the previous session is no longer valid; start a new resumable run with ${guidance}`
+    )
+  }
+  return invalid(`ERROR: invalid opencode model '${model}': ${reason}; ${guidance}`)
+}
+
+const validateOpencodeModel = (
+  model: string,
+  source: 'requested' | 'followup'
+): EffortValidation => {
+  const { base_model: base } = splitModelEffort(model)
+  if (!base.startsWith(OPENCODE_SELECTOR)) {
+    return invalidOpencodeModel(
+      model,
+      `the model must start with the '${OPENCODE_SELECTOR}' selector`,
+      source
+    )
+  }
+  const components = base.slice(OPENCODE_SELECTOR.length).split('/')
+  if (components.length !== 2) {
+    return invalidOpencodeModel(
+      model,
+      'the selector-stripped model must contain exactly one "/"',
+      source
+    )
+  }
+  const [provider = '', modelId = ''] = components
+  if (
+    provider.length === 0 ||
+    modelId.length === 0 ||
+    provider.length > 64 ||
+    modelId.length > 64 ||
+    !OPENCODE_COMPONENT_PATTERN.test(provider) ||
+    !OPENCODE_COMPONENT_PATTERN.test(modelId)
+  ) {
+    return invalidOpencodeModel(
+      model,
+      'provider and model must be non-empty, at most 64 characters, and match [A-Za-z0-9._-]+',
+      source
+    )
+  }
+  return { ok: true }
+}
+
 const cursorNamedModelValidation = (
   cursorModel: string,
   model: string,
@@ -115,15 +171,25 @@ interface EffortContext {
   effort: string
 }
 
+const validateConfiguredBackendEffort = (
+  context: EffortContext,
+  rule: BackendEffortRule
+): EffortValidation => {
+  if (rule.allowed.has(context.effort)) {
+    return { ok: true }
+  }
+  return invalid(
+    `ERROR: invalid effort '${context.effort}' for ${context.backend} backend model '${context.model}'; allowed: ${rule.allowedLabel}`
+  )
+}
+
 const validateBackendEffort = (context: EffortContext): EffortValidation => {
+  if (context.backend === 'opencode') {
+    return { ok: true }
+  }
   const rule = BACKEND_EFFORT_RULES[context.backend]
   if (typeof rule !== 'undefined') {
-    if (rule.allowed.has(context.effort)) {
-      return { ok: true }
-    }
-    return invalid(
-      `ERROR: invalid effort '${context.effort}' for ${context.backend} backend model '${context.model}'; allowed: ${rule.allowedLabel}`
-    )
+    return validateConfiguredBackendEffort(context, rule)
   }
   if (context.backend === 'cursor') {
     return validateCursorEffort(context.model, context.base, context.effort)
@@ -250,6 +316,16 @@ export const validateModelName = (
   model: string,
   source: 'requested' | 'followup'
 ): EffortValidation => {
+  if (backend === 'opencode') {
+    return validateOpencodeModel(model, source)
+  }
+  if (splitModelEffort(model).base_model.includes('/')) {
+    return invalidOpencodeModel(
+      model,
+      "a model containing '/' must use the 'opencode/' selector",
+      source
+    )
+  }
   if (backend !== 'cursor') {
     return { ok: true }
   }
@@ -534,6 +610,12 @@ if (import.meta.vitest) {
       expect(validateModelEffort('devin', 'devin-kimi-k3@max').ok).toBe(true)
     })
 
+    it('accepts arbitrary effort values for opencode', () => {
+      expect(
+        validateModelEffort('opencode', 'opencode/unknown-provider/some-model@bogus-effort-xyz')
+      ).toEqual({ ok: true })
+    })
+
     it('fails closed on invalid, doubled, or unsupported suffixes', () => {
       for (const [backend, model] of [
         ['claude', 'sonnet@ultra'],
@@ -562,6 +644,55 @@ if (import.meta.vitest) {
       const message = messageOf(validateModelEffort('cursor', 'cursor-unknown@low'))
       expect(message).toContain('cursor-grok-4.6@(low|medium|high|xhigh)')
       expect(message).toContain('cursor-grok-4.6-fast@(low|medium|high|xhigh)')
+    })
+  })
+
+  describe('validateOpencodeModelName', () => {
+    it('accepts valid opencode selectors without catalog allowlisting', () => {
+      expect(
+        validateModelName(
+          'opencode',
+          'opencode/unknown-provider/some_model.v1@bogus-effort-xyz',
+          'requested'
+        )
+      ).toEqual({ ok: true })
+    })
+
+    it('rejects malformed opencode selectors and non-selector slash models', () => {
+      for (const [backend, model] of [
+        ['opencode', 'opencode/glm-5.2'],
+        ['opencode', 'opencode//glm-5.2'],
+        ['opencode', 'opencode/opencode-go/'],
+        ['opencode', 'opencode/opencode/anthropic/claude-opus-4-5'],
+        ['opencode', 'opencode/opencode-go/model with space'],
+        ['claude', 'opencode-go/glm-5.2'],
+        ['claude', 'opencode:opencode-go/glm-5.2'],
+      ] as const) {
+        const message = messageOf(validateModelName(backend, model, 'requested'))
+        expect(message).toContain(OPENCODE_FORMAT)
+        expect(message).toContain('provider は `opencode models` の出力から取る')
+      }
+    })
+
+    it('does not treat a slash inside the effort suffix as a missing opencode selector', () => {
+      expect(validateModelName('claude', 'haiku@high/low', 'requested')).toEqual({ ok: true })
+    })
+
+    it('points follow-up failures at a new resumable run', () => {
+      const message = messageOf(validateModelName('opencode', 'opencode/glm-5.2', 'followup'))
+      expect(message).toContain('inherited opencode model')
+      expect(message).toContain('start a new resumable run')
+    })
+
+    it('rejects opencode provider and model components longer than 64 characters', () => {
+      const provider = 'p'.repeat(65)
+      const model = 'm'.repeat(65)
+      expect(validateModelName('opencode', `opencode/${provider}/model`, 'requested').ok).toBe(
+        false
+      )
+      expect(validateModelName('opencode', `opencode/provider/${model}`, 'requested').ok).toBe(
+        false
+      )
     })
   })
 

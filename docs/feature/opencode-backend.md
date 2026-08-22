@@ -312,6 +312,7 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 この Step だけで build とテストが通る範囲に閉じる（wrapper 本体が無い段階で registry へ登録しない）。ただし **登録前に安全側へ倒す変更を先に入れる**。
 
 - `shared/src/dispatch.ts`: 現在の `BACKEND_SCRIPTS[backend] ?? 'delegate-claude.sh'` は未登録 backend を Claude へ fallback させる。この Step では (1) `BACKEND_SCRIPTS` へ `claude: 'delegate-claude.sh'` を明示登録し、(2) その後で `?? 'delegate-claude.sh'` fallback を除去して未登録 backend を **fail-closed（exit 2）** にし、(3) 回帰テストを追加する。(1) を飛ばすと既定モデル（haiku / sonnet / opus / fable）を使う全 delegate が exit 2 で停止する
+- `shared/src/prepare.ts`: `resolve-model` の出力を `trimEnd()` していたため、利用者が指定した末尾空白まで消えて grammar 検証が正規化後の値に働いていた。契約として付く末尾 LF だけを除去し raw 入力を検証へ渡す（既存 4 backend の prepare 段階の判定は変わらない）
 - `shared/src/backend.ts`: `backendFromModel` に `opencode/` 分岐と in-source test を追加
 - `shared/src/observe-effort.ts`: selector 剥離と §3.1 の grammar 検証（`/` がちょうど 1 つ、provider / model が非空、空白・制御文字なし）、二重 selector の exit 6 と stderr 文言。effort は形式検証のみとし、`validateBackendEffort` で opencode を早期 `{ ok: true }` にする
 - `shared/src/observe-effort.ts`: `/` を含むのに `opencode/` で始まらないモデル名（selector 欠落の `opencode-go/glm-5.2`、区切り誤りの `opencode:opencode-go/glm-5.2` 等）は現状 `backendFromModel` の既定分岐で claude へ落ちる。既存 4 backend のモデル名に `/` は含まれないため、`/` を含むモデル名は opencode selector を要求すると定義し、grammar を満たさないものを exit 6 で拒否する。省略形・区切り誤りは exit 6 で拒否し、selector 付きで grammar を満たす未知 provider（`opencode/<unknown>/<model>`）は **dispatch して実行後分類に回す**（catalog を allowlist にしない §5.f と揃える）。両者の回帰テストを追加する

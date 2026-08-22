@@ -230,13 +230,17 @@ const modelSourceOf = (env: Env, typeEnv: string): string => {
   return 'default'
 }
 
+// resolve-model は契約として末尾に LF を 1 つ足す。trimEnd だと利用者が指定した末尾の
+// 空白まで消え、model 指定子の検証が raw 入力ではなく正規化後の値に対して働く
+const stripResolvedNewline = (stdout: string): string => stdout.replace(/\n$/, '')
+
 const resolveRequestedModel = (args: PrepareArgs, env: Env): ModelPhase | CliResult => {
   const modelSource = modelSourceOf(env, args.typeEnv)
   const resolved = runResolveModel([args.typeEnv, args.defaultModel], env)
   if (resolved.exitCode !== 0) {
     return resolved
   }
-  return { model: resolved.stdout.trimEnd(), modelSource, followup: null }
+  return { model: stripResolvedNewline(resolved.stdout), modelSource, followup: null }
 }
 
 const missingFollowupFailure = (previousObserveFile: string): CliResult => {
@@ -753,6 +757,22 @@ if (import.meta.vitest) {
           estimated_tokens: 7,
         },
       })
+    })
+  })
+
+  describe('runPrepare model specifiers', () => {
+    it('keeps user-supplied trailing whitespace so model grammar sees the raw value', () => {
+      const workDir = makePrepareTestWorkDir()
+      const result = runPrepare(
+        ['chore', 'DELEGATE_PREPARE_TEST_MODEL', 'haiku', '[]', 'sid-1'],
+        {
+          DELEGATE_WORK_DIR: workDir,
+          DELEGATE_PREPARE_TEST_MODEL: 'opencode/opencode-go/glm-5.2 ',
+        },
+        body
+      )
+      expect(result.exitCode).toBe(6)
+      expect(result.stderr).toContain("'opencode/opencode-go/glm-5.2 '")
     })
   })
 }

@@ -11,6 +11,9 @@ export const backendFromModel = (model: string): string => {
   if (model.startsWith('composer') || model.startsWith('cursor-')) {
     return 'cursor'
   }
+  if (model.startsWith('opencode/')) {
+    return 'opencode'
+  }
   return 'claude'
 }
 
@@ -33,6 +36,8 @@ if (import.meta.vitest) {
       expect(backendFromModel('devin-glm-5.2')).toBe('devin')
       expect(backendFromModel('composer-2.5')).toBe('cursor')
       expect(backendFromModel('cursor-grok-4.5')).toBe('cursor')
+      expect(backendFromModel('opencode/opencode-go/glm-5.2')).toBe('opencode')
+      expect(backendFromModel('opencode-go/glm-5.2')).toBe('claude')
       expect(backendFromModel('haiku')).toBe('claude')
       expect(backendFromModel('')).toBe('claude')
     })

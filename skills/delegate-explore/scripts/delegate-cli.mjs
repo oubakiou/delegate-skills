@@ -529,6 +529,7 @@ var backendFromModel = (model) => {
 	if (model.startsWith("gpt")) return "codex";
 	if (model.startsWith("swe") || model.startsWith("devin-")) return "devin";
 	if (model.startsWith("composer") || model.startsWith("cursor-")) return "cursor";
+	if (model.startsWith("opencode/")) return "opencode";
 	return "claude";
 };
 var backendFor = (taskType, model) => {
@@ -1695,6 +1696,7 @@ var appendDispatchMetrics = (input, env = process.env) => {
 //#region shared/src/dispatch.ts
 var USAGE$2 = "Usage: dispatch <model> <task_type> <request_file> <response_file> [run_dir] [observe_file] [session_mode] [resume_arg] [session_home]\n";
 var BACKEND_SCRIPTS = {
+	claude: "delegate-claude.sh",
 	codex: "delegate-codex.sh",
 	devin: "delegate-devin.sh",
 	cursor: "delegate-cursor.sh"
@@ -1844,17 +1846,28 @@ var startDispatch = (args, backend) => {
 		supersedeStalePrepared(args.observeFile, args.taskType);
 	} catch {}
 };
-var dispatchToWrapper = (args, env, io) => {
-	const startMs = monotonicMs();
-	const backend = backendFor(args.taskType, args.model);
+var backendDispatchPlan = (backend) => {
 	if (backend === "grok") return {
 		exitCode: 2,
 		stderr: "ERROR: grok backend is not supported by shared dispatch.sh; use the xresearch wrapper directly.\n",
 		stdout: ""
 	};
+	const script = BACKEND_SCRIPTS[backend];
+	if (typeof script === "undefined") return {
+		exitCode: 2,
+		stderr: `ERROR: backend '${backend}' is not registered; refusing dispatch\n`,
+		stdout: ""
+	};
+	return { script };
+};
+var dispatchToWrapper = (args, env, io) => {
+	const backend = backendFor(args.taskType, args.model);
+	const plan = backendDispatchPlan(backend);
+	if ("exitCode" in plan) return plan;
+	const startMs = monotonicMs();
 	startDispatch(args, backend);
 	const outcome = spawnWrapper({
-		script: path.join(io.scriptsDir, BACKEND_SCRIPTS[backend] ?? "delegate-claude.sh"),
+		script: path.join(io.scriptsDir, plan.script),
 		args: wrapperArgsOf(args),
 		env,
 		captureStderr: io.captureStderr === true
@@ -2109,6 +2122,23 @@ var BACKEND_EFFORT_RULES = {
 		allowedLabel: "low|medium|high|xhigh|max|ultra"
 	}
 };
+var OPENCODE_SELECTOR = "opencode/";
+var OPENCODE_COMPONENT_PATTERN = /^[A-Za-z0-9._-]+$/;
+var OPENCODE_FORMAT = "opencode/<provider>/<model>[@<effort>]";
+var invalidOpencodeModel = (model, reason, source) => {
+	const guidance = `expected ${OPENCODE_FORMAT}; provider は \`opencode models\` の出力から取る`;
+	if (source === "followup") return invalid(`ERROR: inherited opencode model '${model}' from the previous session is no longer valid; start a new resumable run with ${guidance}`);
+	return invalid(`ERROR: invalid opencode model '${model}': ${reason}; ${guidance}`);
+};
+var validateOpencodeModel = (model, source) => {
+	const { base_model: base } = splitModelEffort(model);
+	if (!base.startsWith(OPENCODE_SELECTOR)) return invalidOpencodeModel(model, `the model must start with the '${OPENCODE_SELECTOR}' selector`, source);
+	const components = base.slice(9).split("/");
+	if (components.length !== 2) return invalidOpencodeModel(model, "the selector-stripped model must contain exactly one \"/\"", source);
+	const [provider = "", modelId = ""] = components;
+	if (provider.length === 0 || modelId.length === 0 || provider.length > 64 || modelId.length > 64 || !OPENCODE_COMPONENT_PATTERN.test(provider) || !OPENCODE_COMPONENT_PATTERN.test(modelId)) return invalidOpencodeModel(model, "provider and model must be non-empty, at most 64 characters, and match [A-Za-z0-9._-]+", source);
+	return { ok: true };
+};
 var cursorNamedModelValidation = (cursorModel, model, effort) => {
 	const rule = CURSOR_NAMED_MODEL_RULES.get(cursorModel);
 	if (typeof rule === "undefined") return null;
@@ -2132,12 +2162,14 @@ var validateDevinEffort = (model, base, effort) => {
 	}
 	return invalid(`ERROR: effort suffix is not supported for devin model '${model}'; supported: devin-kimi-k3@(low|high|max)`);
 };
+var validateConfiguredBackendEffort = (context, rule) => {
+	if (rule.allowed.has(context.effort)) return { ok: true };
+	return invalid(`ERROR: invalid effort '${context.effort}' for ${context.backend} backend model '${context.model}'; allowed: ${rule.allowedLabel}`);
+};
 var validateBackendEffort = (context) => {
+	if (context.backend === "opencode") return { ok: true };
 	const rule = BACKEND_EFFORT_RULES[context.backend];
-	if (typeof rule !== "undefined") {
-		if (rule.allowed.has(context.effort)) return { ok: true };
-		return invalid(`ERROR: invalid effort '${context.effort}' for ${context.backend} backend model '${context.model}'; allowed: ${rule.allowedLabel}`);
-	}
+	if (typeof rule !== "undefined") return validateConfiguredBackendEffort(context, rule);
 	if (context.backend === "cursor") return validateCursorEffort(context.model, context.base, context.effort);
 	if (context.backend === "devin") return validateDevinEffort(context.model, context.base, context.effort);
 	return invalid(`ERROR: effort suffix is not supported for the ${context.backend} backend (model '${context.model}'); remove '@${context.effort}'`);
@@ -2197,6 +2229,8 @@ var invalidCursorModel = (model, source, reason) => {
 	return invalid(`ERROR: invalid cursor model '${model}': ${reason}; use ${guidance}`);
 };
 var validateModelName = (backend, model, source) => {
+	if (backend === "opencode") return validateOpencodeModel(model, source);
+	if (splitModelEffort(model).base_model.includes("/")) return invalidOpencodeModel(model, "a model containing '/' must use the 'opencode/' selector", source);
 	if (backend !== "cursor") return { ok: true };
 	const issue = cursorModelNameIssue(model);
 	if (issue === null) return { ok: true };
@@ -2481,12 +2515,13 @@ var modelSourceOf$1 = (env, typeEnv) => {
 	if ((env[typeEnv] ?? "") !== "") return "env";
 	return "default";
 };
+var stripResolvedNewline = (stdout) => stdout.replace(/\n$/, "");
 var resolveRequestedModel = (args, env) => {
 	const modelSource = modelSourceOf$1(env, args.typeEnv);
 	const resolved = runResolveModel([args.typeEnv, args.defaultModel], env);
 	if (resolved.exitCode !== 0) return resolved;
 	return {
-		model: resolved.stdout.trimEnd(),
+		model: stripResolvedNewline(resolved.stdout),
 		modelSource,
 		followup: null
 	};
