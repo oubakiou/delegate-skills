@@ -3,8 +3,8 @@ import path from "node:path";
 import os, { constants as constants$1 } from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
+import { randomUUID } from "node:crypto";
 //#region node_modules/md2idx/dist/md2idx.mjs
 var INACTIVE_FENCE = {
 	active: false,
@@ -831,8 +831,211 @@ var augmentCostEstimate = (usage, backend, table) => {
 		})
 	};
 };
-//#endregion
-//#region shared/src/observe-usage.ts
+var OPENCODE_CAPTURE_READ_BYTES = 65536;
+var OPENCODE_EVENT_TYPES = /* @__PURE__ */ new Set([
+	"step_start",
+	"text",
+	"tool_use",
+	"step_finish",
+	"error"
+]);
+var isNonNegativeSafeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+var isNonNegativeFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+var opencodeUsageAccumulator = () => ({
+	inputTokens: 0,
+	outputTokens: 0,
+	reasoningTokens: 0,
+	cacheReadTokens: 0,
+	cacheWriteTokens: 0,
+	costUsd: 0,
+	costComplete: true,
+	steps: 0
+});
+var opencodeCaptureAccumulator = () => ({
+	lastText: null,
+	sawTextEvent: false,
+	firstUseful: false,
+	recognized: 0,
+	stepFinishCount: 0,
+	toolUseCount: 0,
+	usage: opencodeUsageAccumulator(),
+	usageFailed: false
+});
+var opencodeCaptureState = () => ({
+	line: "",
+	lineBytes: 0,
+	accumulator: opencodeCaptureAccumulator()
+});
+var opencodeCaptureFragmentOf = (text, offset) => {
+	const newline = text.indexOf("\n", offset);
+	if (newline === -1) return {
+		text: text.slice(offset),
+		nextOffset: text.length,
+		hasNewline: false
+	};
+	return {
+		text: text.slice(offset, newline),
+		nextOffset: newline + 1,
+		hasNewline: true
+	};
+};
+var opencodeEventConsumer = { run: () => {} };
+var consumeOpencodeCaptureLine = (line, state) => {
+	const value = parseJsonLine$1(line);
+	if (isRecord$3(value)) opencodeEventConsumer.run(value, state.accumulator);
+};
+var opencodeCaptureFragmentBytes = (fragment) => {
+	let newlineBytes = 0;
+	if (fragment.hasNewline) newlineBytes = 1;
+	return Buffer.byteLength(fragment.text) + newlineBytes;
+};
+var finishOpencodeCaptureLine = (fragment, state) => {
+	if (!fragment.hasNewline) return;
+	consumeOpencodeCaptureLine(state.line, state);
+	state.line = "";
+	state.lineBytes = 0;
+};
+var consumeOpencodeCaptureFragment = (fragment, state) => {
+	state.lineBytes += opencodeCaptureFragmentBytes(fragment);
+	if (state.lineBytes > 1048576) return false;
+	state.line += fragment.text;
+	finishOpencodeCaptureLine(fragment, state);
+	return true;
+};
+var appendOpencodeCaptureText = (text, state) => {
+	for (let offset = 0; offset < text.length;) {
+		const fragment = opencodeCaptureFragmentOf(text, offset);
+		if (fragment.nextOffset <= offset) return false;
+		if (!consumeOpencodeCaptureFragment(fragment, state)) return false;
+		offset = fragment.nextOffset;
+	}
+	return true;
+};
+var opencodeCaptureSession = () => ({
+	state: opencodeCaptureState(),
+	decoder: new StringDecoder("utf8"),
+	offset: 0,
+	totalBytes: 0,
+	truncated: false,
+	finished: false
+});
+var captureSessions = /* @__PURE__ */ new Map();
+var closeOpencodeCapture = (fd) => {
+	if (fd === null) return;
+	try {
+		closeSync(fd);
+	} catch {}
+};
+var openOpencodeCaptureFd = (captureFile) => {
+	try {
+		return openSync(captureFile, "r");
+	} catch {
+		return null;
+	}
+};
+var readOpencodeCaptureChunk = (session, input) => {
+	const want = Math.min(input.buffer.length, input.size - session.offset);
+	if (want <= 0) return 0;
+	return readSync(input.fd, input.buffer, 0, want, session.offset);
+};
+var consumeOpencodeCaptureChunk = (session, chunk) => {
+	session.offset += chunk.length;
+	session.totalBytes += chunk.length;
+	if (session.totalBytes > 8388608) return false;
+	return appendOpencodeCaptureText(session.decoder.write(chunk), session.state);
+};
+var scanOpencodeCaptureChunks = (fd, session) => {
+	const buffer = Buffer.alloc(OPENCODE_CAPTURE_READ_BYTES);
+	const { size } = fstatSync(fd);
+	while (session.offset < size) {
+		const bytesRead = readOpencodeCaptureChunk(session, {
+			fd,
+			buffer,
+			size
+		});
+		if (bytesRead <= 0) {
+			session.offset = size;
+			return true;
+		}
+		if (!consumeOpencodeCaptureChunk(session, buffer.subarray(0, bytesRead))) return false;
+	}
+	return true;
+};
+var readOpencodeCaptureFd = (fd, session) => {
+	if (fstatSync(fd).size > 8388608) {
+		session.truncated = true;
+		return;
+	}
+	if (!scanOpencodeCaptureChunks(fd, session)) session.truncated = true;
+};
+var finishOpencodeCaptureSession = (session) => {
+	session.finished = true;
+	if (session.truncated) return;
+	if (!appendOpencodeCaptureText(session.decoder.end(), session.state)) {
+		session.truncated = true;
+		return;
+	}
+	if (session.state.line !== "") {
+		consumeOpencodeCaptureLine(session.state.line, session.state);
+		session.state.line = "";
+	}
+};
+var sessionOfOpencodeCapture = (captureFile) => {
+	const existing = captureSessions.get(captureFile);
+	if (existing) return existing;
+	const created = opencodeCaptureSession();
+	captureSessions.set(captureFile, created);
+	return created;
+};
+var readAndMaybeFinishCapture = (fd, session, finish) => {
+	if (!session.finished && !session.truncated) {
+		readOpencodeCaptureFd(fd, session);
+		if (finish) finishOpencodeCaptureSession(session);
+	}
+	return session;
+};
+var advanceOpencodeCaptureSession = (captureFile, finish) => {
+	const fd = openOpencodeCaptureFd(captureFile);
+	if (fd === null) return captureSessions.get(captureFile) ?? null;
+	try {
+		return readAndMaybeFinishCapture(fd, sessionOfOpencodeCapture(captureFile), finish);
+	} finally {
+		closeOpencodeCapture(fd);
+	}
+};
+var isUsefulOpencodeEvent = (event) => {
+	if (event.type === "tool_use") return true;
+	const text = getPath(event, ["part", "text"]);
+	return event.type === "text" && typeof text === "string" && text.length > 0;
+};
+var peekOpencodeFirstUseful = (session) => {
+	if (session.state.accumulator.firstUseful) return true;
+	const value = parseJsonLine$1(session.state.line);
+	if (!isRecord$3(value)) return false;
+	return isUsefulOpencodeEvent(value);
+};
+var summaryOfOpencodeSession = (session) => {
+	if (session.truncated) return null;
+	const { accumulator } = session.state;
+	return {
+		lastText: accumulator.lastText,
+		sawTextEvent: accumulator.sawTextEvent,
+		firstUseful: accumulator.firstUseful,
+		recognized: accumulator.recognized,
+		stepFinishCount: accumulator.stepFinishCount,
+		toolUseCount: accumulator.toolUseCount
+	};
+};
+var summarizeOpencodeCapture = (captureFile) => {
+	const session = advanceOpencodeCaptureSession(captureFile, true);
+	if (session === null) return null;
+	return summaryOfOpencodeSession(session);
+};
+var opencodeCaptureFirstUseful = (captureFile) => {
+	const session = advanceOpencodeCaptureSession(captureFile, false);
+	if (session === null) return false;
+	return peekOpencodeFirstUseful(session);
+};
 var joinableSection = (section) => {
 	if (typeof section === "string") return section;
 	if (section === null) return "";
@@ -904,6 +1107,181 @@ var usageItemFromEvent = (event) => {
 var sumOrNull = (left, right) => {
 	if (left !== null && right !== null) return left + right;
 	return null;
+};
+var addSafeInteger = (left, right) => {
+	const sum = left + right;
+	if (!Number.isSafeInteger(sum) || sum < 0) return null;
+	return sum;
+};
+var addFiniteNumber = (left, right) => {
+	const sum = left + right;
+	if (!Number.isFinite(sum) || sum < 0) return null;
+	return sum;
+};
+var requiredOpencodeToken = (value) => {
+	if (isNonNegativeSafeInteger(value)) return value;
+	return null;
+};
+var optionalOpencodeToken = (container, key) => {
+	if (!isRecord$3(container) || !Object.hasOwn(container, key)) return 0;
+	if (isNonNegativeSafeInteger(container[key])) return container[key];
+	return null;
+};
+var opencodeCacheTokens = (tokens) => {
+	if (!Object.hasOwn(tokens, "cache")) return {
+		read: 0,
+		write: 0
+	};
+	const { cache } = tokens;
+	if (!isRecord$3(cache)) return null;
+	const read = optionalOpencodeToken(cache, "read");
+	const write = optionalOpencodeToken(cache, "write");
+	if (read === null || write === null) return null;
+	return {
+		read,
+		write
+	};
+};
+var opencodeStepCost = (part) => {
+	if (!Object.hasOwn(part, "cost")) return {
+		costUsd: 0,
+		costComplete: false
+	};
+	if (isNonNegativeFiniteNumber(part.cost)) return {
+		costUsd: part.cost,
+		costComplete: true
+	};
+	return {
+		costUsd: 0,
+		costComplete: false
+	};
+};
+var optionalOpencodeTokensOf = (tokens) => {
+	const reasoningTokens = optionalOpencodeToken(tokens, "reasoning");
+	const cache = opencodeCacheTokens(tokens);
+	if (reasoningTokens === null || cache === null) return null;
+	return {
+		reasoningTokens,
+		cacheReadTokens: cache.read,
+		cacheWriteTokens: cache.write
+	};
+};
+var opencodeStepPartsOf = (event) => {
+	if (event.type !== "step_finish") return null;
+	const part = getPath(event, ["part"]);
+	const tokens = getPath(part, ["tokens"]);
+	if (!isRecord$3(part) || !isRecord$3(tokens)) return null;
+	return {
+		part,
+		tokens
+	};
+};
+var opencodeStepUsageRecord = (parts, inputTokens, outputTokens) => {
+	const optional = optionalOpencodeTokensOf(parts.tokens);
+	if (optional === null) return null;
+	return {
+		inputTokens,
+		outputTokens,
+		...optional,
+		...opencodeStepCost(parts.part)
+	};
+};
+var opencodeStepUsageOf = (event) => {
+	const parts = opencodeStepPartsOf(event);
+	if (parts === null) return null;
+	const inputTokens = requiredOpencodeToken(parts.tokens.input);
+	const outputTokens = requiredOpencodeToken(parts.tokens.output);
+	if (inputTokens === null || outputTokens === null) return null;
+	return opencodeStepUsageRecord(parts, inputTokens, outputTokens);
+};
+var addedOpencodeTokens = (accumulator, step) => {
+	const inputTokens = addSafeInteger(accumulator.inputTokens, step.inputTokens);
+	const outputTokens = addSafeInteger(accumulator.outputTokens, step.outputTokens);
+	const reasoningTokens = addSafeInteger(accumulator.reasoningTokens, step.reasoningTokens);
+	const cacheReadTokens = addSafeInteger(accumulator.cacheReadTokens, step.cacheReadTokens);
+	const cacheWriteTokens = addSafeInteger(accumulator.cacheWriteTokens, step.cacheWriteTokens);
+	if (inputTokens === null || outputTokens === null || reasoningTokens === null || cacheReadTokens === null || cacheWriteTokens === null) return null;
+	return {
+		inputTokens,
+		outputTokens,
+		reasoningTokens,
+		cacheReadTokens,
+		cacheWriteTokens
+	};
+};
+var addOpencodeCost = (accumulator, step) => {
+	accumulator.costComplete &&= step.costComplete;
+	if (!accumulator.costComplete) return;
+	const costUsd = addFiniteNumber(accumulator.costUsd, step.costUsd);
+	if (costUsd === null) {
+		accumulator.costComplete = false;
+		return;
+	}
+	accumulator.costUsd = costUsd;
+};
+var addOpencodeStep = (accumulator, step) => {
+	const added = addedOpencodeTokens(accumulator, step);
+	if (added === null) return false;
+	Object.assign(accumulator, added);
+	addOpencodeCost(accumulator, step);
+	accumulator.steps += 1;
+	return true;
+};
+var opencodeUsageRecord = (accumulator, context) => {
+	const totalTokens = addSafeInteger(accumulator.inputTokens, accumulator.outputTokens);
+	if (totalTokens === null) return null;
+	const usage = {
+		input_tokens: accumulator.inputTokens,
+		output_tokens: accumulator.outputTokens,
+		total_tokens: totalTokens,
+		cached_input_tokens: accumulator.cacheReadTokens,
+		cache_write_tokens: accumulator.cacheWriteTokens,
+		reasoning_tokens: accumulator.reasoningTokens,
+		measurement: "measured",
+		source: "opencode_step_finish",
+		model: context.model,
+		backend: context.backend
+	};
+	if (accumulator.costComplete) usage.cost_usd = accumulator.costUsd;
+	return usage;
+};
+var usageFromAccumulator = (accumulator, context) => {
+	if (accumulator.usageFailed || accumulator.usage.steps === 0) return null;
+	return opencodeUsageRecord(accumulator.usage, context);
+};
+var consumeOpencodeTimingEvent = (event, accumulator) => {
+	if (typeof event.type !== "string" || !OPENCODE_EVENT_TYPES.has(event.type)) return;
+	accumulator.recognized += 1;
+	if (event.type === "tool_use") accumulator.toolUseCount += 1;
+	if (event.type === "step_finish") accumulator.stepFinishCount += 1;
+	if (isUsefulOpencodeEvent(event)) accumulator.firstUseful = true;
+};
+var consumeOpencodeTextEvent = (event, accumulator) => {
+	if (event.type !== "text") return;
+	accumulator.sawTextEvent = true;
+	const text = getPath(event, ["part", "text"]);
+	if (typeof text === "string") {
+		accumulator.lastText = text;
+		return;
+	}
+	accumulator.lastText = null;
+};
+var consumeOpencodeUsageEvent = (event, accumulator) => {
+	if (event.type !== "step_finish" || accumulator.usageFailed) return;
+	const step = opencodeStepUsageOf(event);
+	if (step === null || !addOpencodeStep(accumulator.usage, step)) accumulator.usageFailed = true;
+};
+var consumeOpencodeCaptureEvent = (event, accumulator) => {
+	consumeOpencodeTimingEvent(event, accumulator);
+	consumeOpencodeTextEvent(event, accumulator);
+	consumeOpencodeUsageEvent(event, accumulator);
+};
+opencodeEventConsumer.run = consumeOpencodeCaptureEvent;
+var usageFromOpencodeCapture = (captureFile, context) => {
+	const session = advanceOpencodeCaptureSession(captureFile, true);
+	if (session === null) return null;
+	if (session.truncated) return null;
+	return usageFromAccumulator(session.state.accumulator, context);
 };
 var parseUsageEvents = (text, context) => {
 	const items = [];
@@ -1062,13 +1440,17 @@ var isUsefulCursorEvent = (event) => {
 	if (event.type === "tool_call" && event.subtype === "started") return true;
 	return event.type === "assistant" && cursorHasTextContent(event);
 };
-var firstUsefulSeen = (backend, stdoutCapture) => {
-	if (!hasFileContent(stdoutCapture)) return false;
-	const events = parseJsonObjects(readFileOrEmpty$1(stdoutCapture));
+var opencodeFirstUseful = (stdoutCapture) => opencodeCaptureFirstUseful(stdoutCapture);
+var firstUsefulForEvents = (backend, events) => {
 	if (backend === "claude") return claudeFirstUseful(events);
 	if (backend === "codex") return events.some(isUsefulCodexItem);
 	if (backend === "cursor") return events.some(isUsefulCursorEvent);
 	return false;
+};
+var firstUsefulSeen = (backend, stdoutCapture) => {
+	if (!hasFileContent(stdoutCapture)) return false;
+	if (backend === "opencode") return opencodeFirstUseful(stdoutCapture);
+	return firstUsefulForEvents(backend, parseJsonObjects(readFileOrEmpty$1(stdoutCapture)));
 };
 var UNAVAILABLE = {
 	model_turns: null,
@@ -1124,6 +1506,16 @@ var cursorStreamCounts = (text) => {
 		source: "cursor_stream_json"
 	};
 };
+var opencodeStreamCounts = (summary) => {
+	if (summary.recognized === 0) return null;
+	let modelTurns = null;
+	if (summary.stepFinishCount > 0) modelTurns = summary.stepFinishCount;
+	return {
+		model_turns: modelTurns,
+		tool_calls: summary.toolUseCount,
+		source: "opencode_json"
+	};
+};
 var devinStreamCounts = (devinExport) => {
 	if (!hasFileContent(devinExport)) return null;
 	let parsed = null;
@@ -1139,17 +1531,25 @@ var devinStreamCounts = (devinExport) => {
 		source: "devin_atif"
 	};
 };
-var timingStreamCounts = (input) => {
-	let counts = null;
-	if (input.backend === "devin") counts = devinStreamCounts(input.devinExport ?? "");
-	else if (hasFileContent(input.stdoutCapture)) {
-		const text = readFileOrEmpty$1(input.stdoutCapture);
-		if (input.backend === "claude") counts = claudeStreamCounts(text);
-		else if (input.backend === "codex") counts = codexStreamCounts(text);
-		else if (input.backend === "cursor") counts = cursorStreamCounts(text);
-	}
-	return counts ?? UNAVAILABLE;
+var opencodeTimingCounts = (captureFile) => {
+	const summary = summarizeOpencodeCapture(captureFile);
+	if (summary === null) return null;
+	return opencodeStreamCounts(summary);
 };
+var regularTimingCounts = (backend, captureFile) => {
+	if (!hasFileContent(captureFile)) return null;
+	const text = readFileOrEmpty$1(captureFile);
+	if (backend === "claude") return claudeStreamCounts(text);
+	if (backend === "codex") return codexStreamCounts(text);
+	if (backend === "cursor") return cursorStreamCounts(text);
+	return null;
+};
+var timingCountsFor = (input) => {
+	if (input.backend === "devin") return devinStreamCounts(input.devinExport ?? "");
+	if (input.backend === "opencode") return opencodeTimingCounts(input.stdoutCapture);
+	return regularTimingCounts(input.backend, input.stdoutCapture);
+};
+var timingStreamCounts = (input) => timingCountsFor(input) ?? UNAVAILABLE;
 //#endregion
 //#region shared/src/observe-store.ts
 var utcTimestamp = metricsTimestamp;
@@ -6140,9 +6540,6 @@ var runWrapperImagegen = async (argv, env, io) => {
 var OPENCODE_SELECTOR = "opencode/";
 var OPENCODE_VERSION_TIMEOUT_MS = 1e4;
 var OPENCODE_VERSION_MAX_BYTES = 16384;
-var OPENCODE_CAPTURE_MAX_BYTES = 8388608;
-var OPENCODE_CAPTURE_MAX_LINE_BYTES = 1048576;
-var OPENCODE_CAPTURE_READ_BYTES = 65536;
 var PURE_TASK_TYPES = /* @__PURE__ */ new Set([
 	"explore",
 	"review",
@@ -6205,114 +6602,36 @@ var opencodeCliArgs = (context, cliModel) => {
 	if (usePureMode(context)) args.push("--pure");
 	return args;
 };
-var stringOrNull = (value) => {
-	if (typeof value === "string") return value;
-	return null;
-};
-var textEventContent = (event) => {
-	if (!isRecord$3(event) || event.type !== "text") return {
-		isTextEvent: false,
-		text: null
-	};
-	return {
-		isTextEvent: true,
-		text: stringOrNull(getPath(event, ["part", "text"]))
-	};
-};
-var captureScanState = () => ({
-	line: "",
-	lineBytes: 0,
-	lastText: null,
-	sawTextEvent: false
-});
-var consumeCaptureLine = (line, state) => {
-	const content = textEventContent(parseJsonLine$1(line));
-	if (!content.isTextEvent) return;
-	state.sawTextEvent = true;
-	state.lastText = content.text;
-};
-var captureFragmentOf = (text, offset) => {
-	const newline = text.indexOf("\n", offset);
-	let end = text.length;
-	let nextOffset = text.length;
-	let hasNewline = false;
-	if (newline !== -1) {
-		end = newline;
-		nextOffset = newline + 1;
-		hasNewline = true;
-	}
-	return {
-		text: text.slice(offset, end),
-		nextOffset,
-		hasNewline
-	};
-};
-var captureFragmentWithinLimit = (fragment, state) => {
-	state.lineBytes += Buffer.byteLength(fragment.text);
-	if (fragment.hasNewline) state.lineBytes += 1;
-	return state.lineBytes <= OPENCODE_CAPTURE_MAX_LINE_BYTES;
-};
-var consumeCaptureFragment = (text, offset, state) => {
-	const fragment = captureFragmentOf(text, offset);
-	if (!captureFragmentWithinLimit(fragment, state)) return null;
-	state.line += fragment.text;
-	if (!fragment.hasNewline) return fragment.nextOffset;
-	consumeCaptureLine(state.line, state);
-	state.line = "";
-	state.lineBytes = 0;
-	return fragment.nextOffset;
-};
-var appendCaptureText = (text, state) => {
-	for (let offset = 0; offset < text.length;) {
-		const nextOffset = consumeCaptureFragment(text, offset, state);
-		if (nextOffset === null) return false;
-		offset = nextOffset;
-	}
-	return true;
-};
-var scanCaptureChunks = (fd, decoder, state) => {
-	const buffer = Buffer.alloc(OPENCODE_CAPTURE_READ_BYTES);
-	let totalBytes = 0;
-	while (true) {
-		const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
-		if (bytesRead === 0) return true;
-		totalBytes += bytesRead;
-		if (totalBytes > OPENCODE_CAPTURE_MAX_BYTES || !appendCaptureText(decoder.write(buffer.subarray(0, bytesRead)), state)) return false;
-	}
-};
-var finishCaptureScan = (decoder, state) => {
-	if (!appendCaptureText(decoder.end(), state)) return null;
-	if (state.line !== "") consumeCaptureLine(state.line, state);
-	if (!state.sawTextEvent) return null;
-	return state.lastText;
-};
-var scanCaptureFile = (fd) => {
-	if (fstatSync(fd).size > OPENCODE_CAPTURE_MAX_BYTES) return null;
-	const decoder = new StringDecoder("utf8");
-	const state = captureScanState();
-	if (!scanCaptureChunks(fd, decoder, state)) return null;
-	return finishCaptureScan(decoder, state);
-};
-var closeCaptureQuietly = (fd) => {
-	if (fd === null) return;
-	try {
-		closeSync(fd);
-	} catch {}
-};
 var lastTextFromCapture = (captureFile) => {
-	let fd = null;
-	try {
-		fd = openSync(captureFile, "r");
-		return scanCaptureFile(fd);
-	} catch {
-		return null;
-	} finally {
-		closeCaptureQuietly(fd);
-	}
+	const summary = summarizeOpencodeCapture(captureFile);
+	if (summary === null || !summary.sawTextEvent) return null;
+	return summary.lastText;
 };
 var opencodeCapturedText = (context, wait) => {
 	if (wait.childStatus !== 0) return null;
 	return lastTextFromCapture(context.stdoutCapture);
+};
+var OPENCODE_EMPTY_PRICE_TABLE = {
+	models: [],
+	aliases: []
+};
+var recordOpencodeUsage = (context) => {
+	quietly(() => {
+		recordUsage({
+			observeFile: context.args.observeFile,
+			runDir: context.workDir,
+			backend: context.backend,
+			model: context.args.originalModel,
+			requestFile: context.args.requestFile,
+			responseFile: context.args.responseFile,
+			source: "opencode_step_finish",
+			measured: usageFromOpencodeCapture(context.stdoutCapture, {
+				model: context.args.originalModel,
+				backend: context.backend
+			}),
+			pricesTable: OPENCODE_EMPTY_PRICE_TABLE
+		});
+	});
 };
 var opencodeChildEnv = (context) => ({
 	...context.env,
@@ -6401,7 +6720,9 @@ var finalizeOpencodeRun = (context, cliModel, wait) => {
 		reportMode: reportModeForBackend("opencode"),
 		collectStdoutText: () => opencodeCapturedText(context, wait)
 	}, wait);
-	return wrapperResult(context, finalizeResponse(context, wait.childStatus));
+	const outcome = finalizeResponse(context, wait.childStatus);
+	recordOpencodeUsage(context);
+	return wrapperResult(context, outcome);
 };
 var runOpencodeChild = async (context, launch) => {
 	const cliModel = stripOpencodeSelector(context.baseModel);

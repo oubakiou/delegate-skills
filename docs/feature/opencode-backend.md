@@ -99,6 +99,10 @@ Step 4 / 5 の parser とテスト fixture はこの構造を前提にする。�
 - `part.cost` は step 単位の値。合算が `export` の `info.cost` と一致することを fixture で固定する
 - `step_finish` が 1 件も取れない、または token フィールドが取れない場合は usage を `measured` として記録せず、既存 event `usage_parse_failed`（spec.md §6 で定義済み）を出して推定 fallback に落とす。全 0 の measured は estimated より質が悪く、backend 横断の集計を汚すため
 - `cost` は **キーが存在し数値である `step_finish` だけを合算**し、1 つでも欠落・非数値があれば `cost_usd` を省略する（token は measured のまま残す）。free モデルの正当な `cost` 0 と、欠落を 0 と読んだ結果を区別できなくなるため、0 埋めはしない
+- token は **非負の safe integer**、cost は **非負の finite number** として検証し、各加算の後も overflow と safe integer 超過を確認する。`JSON.stringify` は非有限値を `null` に変えるため、検証しないと `measured` を名乗る壊れた値が observe に残る
+- optional な token（`cache.read` / `cache.write` / `reasoning`）は **キーが欠落している場合だけ 0** とし、キーが存在して不正値なら `usage_parse_failed` へ倒す
+- capture は 1 回だけ逐次走査し、last text・usage 合計・timing count を同じ accumulator で更新する。response 組み立て・timing・usage は終了時の単一 summary を共有し、capture を再走査しない
+- `step_finish` が 0 件の capture では `model_turns` を `null` にする（既存 Codex 経路と揃える。0 を実測値として記録しない）
 - JSON として parse できない行は無視する（stdout に非 JSON 行が混ざり得る）
 - `tokens.cache` や `reasoning` が欠落した step は 0 として扱う
 - `timestamp` は **epoch ミリ秒の整数**（例 `1787360343099`）。`part.time` の `start` / `end` も同じ単位

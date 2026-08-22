@@ -1,10 +1,15 @@
 import { spawnSync } from 'node:child_process'
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 import path from 'node:path'
-import { StringDecoder } from 'node:string_decoder'
 import type { Env } from './build-request.ts'
 import type { CliResult } from './cli-result.ts'
-import { getPath, isRecord, parseJsonLine } from './jq-compat.ts'
+import { recordUsage } from './observe-store.ts'
+import {
+  OPENCODE_CAPTURE_MAX_BYTES,
+  OPENCODE_CAPTURE_MAX_LINE_BYTES,
+  estimatedUsage,
+  summarizeOpencodeCapture,
+  usageFromOpencodeCapture,
+} from './observe-usage.ts'
 import { promptConstraints } from './prompt-constraints.ts'
 import {
   completeResponse,
@@ -13,6 +18,7 @@ import {
   finalizeResponse,
   makeWrapperContext,
   parseWrapperArgs,
+  quietly,
   responderSessionIdOf,
   workerPrompt,
   wrapperResult,
@@ -32,9 +38,6 @@ import { executablePaths, spawnWorker, waitWithHeartbeat, type WaitResult } from
 const OPENCODE_SELECTOR = 'opencode/'
 const OPENCODE_VERSION_TIMEOUT_MS = 10_000
 const OPENCODE_VERSION_MAX_BYTES = 16_384
-const OPENCODE_CAPTURE_MAX_BYTES = 8 * 1024 * 1024
-const OPENCODE_CAPTURE_MAX_LINE_BYTES = 1 * 1024 * 1024
-const OPENCODE_CAPTURE_READ_BYTES = 64 * 1024
 const PURE_TASK_TYPES = new Set(['explore', 'review', 'htmldoc'])
 
 const opencodePromptTailLines = [
@@ -114,177 +117,12 @@ export const opencodeCliArgs = (context: WrapperContext, cliModel: string): stri
   return args
 }
 
-interface TextEventContent {
-  isTextEvent: boolean
-  text: string | null
-}
-
-const stringOrNull = (value: unknown): string | null => {
-  if (typeof value === 'string') {
-    return value
-  }
-  return null
-}
-
-const textEventContent = (event: unknown): TextEventContent => {
-  if (!isRecord(event) || event.type !== 'text') {
-    return { isTextEvent: false, text: null }
-  }
-  const text = getPath(event, ['part', 'text'])
-  return { isTextEvent: true, text: stringOrNull(text) }
-}
-
-interface CaptureScanState {
-  line: string
-  lineBytes: number
-  lastText: string | null
-  sawTextEvent: boolean
-}
-
-const captureScanState = (): CaptureScanState => ({
-  line: '',
-  lineBytes: 0,
-  lastText: null,
-  sawTextEvent: false,
-})
-
-const consumeCaptureLine = (line: string, state: CaptureScanState): void => {
-  const content = textEventContent(parseJsonLine(line))
-  if (!content.isTextEvent) {
-    return
-  }
-  state.sawTextEvent = true
-  state.lastText = content.text
-}
-
-interface CaptureFragment {
-  text: string
-  nextOffset: number
-  hasNewline: boolean
-}
-
-const captureFragmentOf = (text: string, offset: number): CaptureFragment => {
-  const newline = text.indexOf('\n', offset)
-  let end = text.length
-  let nextOffset = text.length
-  let hasNewline = false
-  if (newline !== -1) {
-    end = newline
-    nextOffset = newline + 1
-    hasNewline = true
-  }
-  return { text: text.slice(offset, end), nextOffset, hasNewline }
-}
-
-const captureFragmentWithinLimit = (
-  fragment: CaptureFragment,
-  state: CaptureScanState
-): boolean => {
-  state.lineBytes += Buffer.byteLength(fragment.text)
-  if (fragment.hasNewline) {
-    state.lineBytes += 1
-  }
-  return state.lineBytes <= OPENCODE_CAPTURE_MAX_LINE_BYTES
-}
-
-const consumeCaptureFragment = (
-  text: string,
-  offset: number,
-  state: CaptureScanState
-): number | null => {
-  const fragment = captureFragmentOf(text, offset)
-  if (!captureFragmentWithinLimit(fragment, state)) {
-    return null
-  }
-  state.line += fragment.text
-  if (!fragment.hasNewline) {
-    return fragment.nextOffset
-  }
-  consumeCaptureLine(state.line, state)
-  state.line = ''
-  state.lineBytes = 0
-  return fragment.nextOffset
-}
-
-const appendCaptureText = (text: string, state: CaptureScanState): boolean => {
-  for (let offset = 0; offset < text.length;) {
-    const nextOffset = consumeCaptureFragment(text, offset, state)
-    if (nextOffset === null) {
-      return false
-    }
-    offset = nextOffset
-  }
-  return true
-}
-
-const scanCaptureChunks = (
-  fd: number,
-  decoder: StringDecoder,
-  state: CaptureScanState
-): boolean => {
-  const buffer = Buffer.alloc(OPENCODE_CAPTURE_READ_BYTES)
-  let totalBytes = 0
-  while (true) {
-    const bytesRead = readSync(fd, buffer, 0, buffer.length, null)
-    if (bytesRead === 0) {
-      return true
-    }
-    totalBytes += bytesRead
-    if (
-      totalBytes > OPENCODE_CAPTURE_MAX_BYTES ||
-      !appendCaptureText(decoder.write(buffer.subarray(0, bytesRead)), state)
-    ) {
-      return false
-    }
-  }
-}
-
-const finishCaptureScan = (decoder: StringDecoder, state: CaptureScanState): string | null => {
-  if (!appendCaptureText(decoder.end(), state)) {
-    return null
-  }
-  if (state.line !== '') {
-    consumeCaptureLine(state.line, state)
-  }
-  if (!state.sawTextEvent) {
-    return null
-  }
-  return state.lastText
-}
-
-const scanCaptureFile = (fd: number): string | null => {
-  if (fstatSync(fd).size > OPENCODE_CAPTURE_MAX_BYTES) {
-    return null
-  }
-  const decoder = new StringDecoder('utf8')
-  const state = captureScanState()
-  if (!scanCaptureChunks(fd, decoder, state)) {
-    return null
-  }
-  return finishCaptureScan(decoder, state)
-}
-
-const closeCaptureQuietly = (fd: number | null): void => {
-  if (fd === null) {
-    return
-  }
-  try {
-    closeSync(fd)
-  } catch {
-    // capture cleanup is best-effort
-  }
-}
-
 export const lastTextFromCapture = (captureFile: string): string | null => {
-  let fd: number | null = null
-  try {
-    fd = openSync(captureFile, 'r')
-    return scanCaptureFile(fd)
-  } catch {
+  const summary = summarizeOpencodeCapture(captureFile)
+  if (summary === null || !summary.sawTextEvent) {
     return null
-  } finally {
-    closeCaptureQuietly(fd)
   }
+  return summary.lastText
 }
 
 const opencodeCapturedText = (context: WrapperContext, wait: WaitResult): string | null => {
@@ -292,6 +130,29 @@ const opencodeCapturedText = (context: WrapperContext, wait: WaitResult): string
     return null
   }
   return lastTextFromCapture(context.stdoutCapture)
+}
+
+// A missing provider cost is distinct from a free-model cost of zero, so the generic
+// price-table fallback must not add an estimate to opencode's measured usage.
+const OPENCODE_EMPTY_PRICE_TABLE = { models: [], aliases: [] }
+
+const recordOpencodeUsage = (context: WrapperContext): void => {
+  quietly(() => {
+    recordUsage({
+      observeFile: context.args.observeFile,
+      runDir: context.workDir,
+      backend: context.backend,
+      model: context.args.originalModel,
+      requestFile: context.args.requestFile,
+      responseFile: context.args.responseFile,
+      source: 'opencode_step_finish',
+      measured: usageFromOpencodeCapture(context.stdoutCapture, {
+        model: context.args.originalModel,
+        backend: context.backend,
+      }),
+      pricesTable: OPENCODE_EMPTY_PRICE_TABLE,
+    })
+  })
 }
 
 const opencodeChildEnv = (context: WrapperContext): Record<string, string | undefined> => ({
@@ -457,7 +318,9 @@ const finalizeOpencodeRun = (
     },
     wait
   )
-  return wrapperResult(context, finalizeResponse(context, wait.childStatus))
+  const outcome = finalizeResponse(context, wait.childStatus)
+  recordOpencodeUsage(context)
+  return wrapperResult(context, outcome)
 }
 
 const runOpencodeChild = async (
@@ -540,9 +403,41 @@ export const runWrapperOpencode = async (
   return wrapperOpencodeWithContext(context)
 }
 
+const usageForOpencodeObserveCase = (
+  files: { requestFile: string; responseFile: string },
+  input: { parseFailed: boolean; costUsd: number | null }
+): Record<string, unknown> => {
+  if (input.parseFailed) {
+    return estimatedUsage({
+      requestFile: files.requestFile,
+      responseFile: files.responseFile,
+      model: 'opencode/opencode-go/glm-5.2@high',
+      backend: 'opencode',
+      source: 'chars_4',
+    })
+  }
+  const usage: Record<string, unknown> = {
+    input_tokens: 10,
+    output_tokens: 2,
+    total_tokens: 12,
+    cached_input_tokens: 30,
+    cache_write_tokens: 2,
+    reasoning_tokens: 7,
+    measurement: 'measured',
+    source: 'opencode_step_finish',
+    model: 'opencode/opencode-go/glm-5.2@high',
+    backend: 'opencode',
+  }
+  if (input.costUsd !== null) {
+    usage.cost_usd = input.costUsd
+  }
+  return usage
+}
+
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
   const { chmodSync, existsSync, readFileSync, writeFileSync } = await import('node:fs')
+  const { isRecord } = await import('./jq-compat.ts')
   const { createTestScratchDir } = await import('./test-scratch.ts')
 
   const writeExecutable = (dir: string, name: string, source: string): string => {
@@ -553,6 +448,32 @@ if (import.meta.vitest) {
   }
 
   const readTestJson = (file: string): unknown => JSON.parse(readFileSync(file, 'utf8'))
+
+  const OPENCODE_OBSERVE_EPOCH_MS = 1_787_360_343_099
+
+  const opencodeObserveEvent = (type: string, part: Record<string, unknown>, offset = 0): string =>
+    JSON.stringify({ type, timestamp: OPENCODE_OBSERVE_EPOCH_MS + offset, part })
+
+  const opencodeObserveEventLines = (mode: string): string[] => {
+    const reportText = '---\nstatus: completed\n---\n# Summary\nlast'
+    const text = opencodeObserveEvent('text', { text: reportText })
+    const tool = opencodeObserveEvent('tool_use', {}, 1)
+    const tokens = { input: 10, output: 2, reasoning: 7, cache: { read: 30, write: 2 } }
+    if (mode === 'observe-missing-step') {
+      return [text, tool]
+    }
+    const part: Record<string, unknown> = { tokens }
+    if (mode === 'observe-measured') {
+      part.cost = 0.25
+    }
+    return [text, tool, opencodeObserveEvent('step_finish', part, 2)]
+  }
+
+  const expectMonotonicTimingField = (value: unknown): void => {
+    expect(value).toEqual(expect.any(Number))
+    expect(Number(value)).toBeGreaterThanOrEqual(0)
+    expect(Number(value)).toBeLessThan(OPENCODE_OBSERVE_EPOCH_MS)
+  }
 
   describe('opencodePureEnabled / opencodeConfigContent', () => {
     it('accepts only the documented pure values and injects permission selectively', () => {
@@ -651,33 +572,32 @@ if (import.meta.vitest) {
     })
   })
 
-  describe('runWrapperOpencode', () => {
-    interface FakeRunFixture {
-      argsFile: string
-      cli: string
-      configFile: string
-      dir: string
-      observeFile: string
-      promptFile: string
-      requestFile: string
-      responseFile: string
-    }
+  interface FakeRunFixture {
+    argsFile: string
+    cli: string
+    configFile: string
+    dir: string
+    observeFile: string
+    promptFile: string
+    requestFile: string
+    responseFile: string
+  }
 
-    const makeFakeRunFixture = (dir: string): FakeRunFixture => {
-      const files = {
-        argsFile: path.join(dir, 'args.log'),
-        configFile: path.join(dir, 'config.log'),
-        observeFile: path.join(dir, 'observe.json'),
-        promptFile: path.join(dir, 'prompt.log'),
-        requestFile: path.join(dir, 'request.json'),
-        responseFile: path.join(dir, 'response.json'),
-      }
-      const first = opencodeTextEvent('---\nstatus: completed\n---\n# Summary\nfirst')
-      const last = opencodeTextEvent('---\nstatus: completed\n---\n# Summary\nlast')
-      const cli = writeExecutable(
-        dir,
-        'opencode',
-        `#!/bin/sh
+  const makeFakeRunFixture = (dir: string): FakeRunFixture => {
+    const files = {
+      argsFile: path.join(dir, 'args.log'),
+      configFile: path.join(dir, 'config.log'),
+      observeFile: path.join(dir, 'observe.json'),
+      promptFile: path.join(dir, 'prompt.log'),
+      requestFile: path.join(dir, 'request.json'),
+      responseFile: path.join(dir, 'response.json'),
+    }
+    const first = opencodeTextEvent('---\nstatus: completed\n---\n# Summary\nfirst')
+    const last = opencodeTextEvent('---\nstatus: completed\n---\n# Summary\nlast')
+    const cli = writeExecutable(
+      dir,
+      'opencode',
+      `#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf '%s\\n' '1.0.0'
   exit 0
@@ -699,6 +619,10 @@ if [ "$OPENCODE_TEST_OUTPUT_MODE" = "oversized-capture" ]; then
   done
   exit 0
 fi
+if [ -n "$OPENCODE_TEST_EVENTS_FILE" ]; then
+  cat "$OPENCODE_TEST_EVENTS_FILE"
+  exit 0
+fi
 printf '%s\\n' '${first}'
 printf '%s\\n' '${last}'
 if [ "$OPENCODE_TEST_EXIT_MODE" = "signal" ]; then
@@ -708,38 +632,39 @@ if [ -n "$OPENCODE_TEST_EXIT_CODE" ]; then
   exit "$OPENCODE_TEST_EXIT_CODE"
 fi
 `
-      )
-      writeFileSync(
-        files.requestFile,
-        JSON.stringify({ task_type_chain: ['chore'], sections: ['# Objective\nDo this'] })
-      )
-      return { ...files, cli, dir }
-    }
+    )
+    writeFileSync(
+      files.requestFile,
+      JSON.stringify({ task_type_chain: ['chore'], sections: ['# Objective\nDo this'] })
+    )
+    return { ...files, cli, dir }
+  }
 
-    const runFake = async (
-      fixture: FakeRunFixture,
-      options: { env?: Env; sessionArgs?: readonly string[] } = {}
-    ): Promise<CliResult> =>
-      runWrapperOpencode(
-        [
-          'opencode/opencode-go/glm-5.2@high',
-          'chore',
-          fixture.requestFile,
-          fixture.responseFile,
-          fixture.dir,
-          fixture.observeFile,
-          ...(options.sessionArgs ?? []),
-        ],
-        {
-          PATH: `${fixture.dir}:${process.env.PATH ?? ''}`,
-          OPENCODE_TEST_ARGS: fixture.argsFile,
-          OPENCODE_TEST_PROMPT: fixture.promptFile,
-          OPENCODE_TEST_CONFIG: fixture.configFile,
-          ...options.env,
-        },
-        { scriptsDir: fixture.dir }
-      )
+  const runFake = async (
+    fixture: FakeRunFixture,
+    options: { env?: Env; sessionArgs?: readonly string[] } = {}
+  ): Promise<CliResult> =>
+    runWrapperOpencode(
+      [
+        'opencode/opencode-go/glm-5.2@high',
+        'chore',
+        fixture.requestFile,
+        fixture.responseFile,
+        fixture.dir,
+        fixture.observeFile,
+        ...(options.sessionArgs ?? []),
+      ],
+      {
+        PATH: `${fixture.dir}:${process.env.PATH ?? ''}`,
+        OPENCODE_TEST_ARGS: fixture.argsFile,
+        OPENCODE_TEST_PROMPT: fixture.promptFile,
+        OPENCODE_TEST_CONFIG: fixture.configFile,
+        ...options.env,
+      },
+      { scriptsDir: fixture.dir }
+    )
 
+  describe('runWrapperOpencode', () => {
     const expectFailedResponse = (fixture: FakeRunFixture): void => {
       const response = readTestJson(fixture.responseFile)
       expect(response).toMatchObject({ status: 'failed' })
@@ -817,6 +742,110 @@ fi
       expect(result.exitCode).toBe(1)
       expect(response).toContain('request を分割する')
       expect(response).toContain('他 backend')
+    })
+  })
+
+  describe('runWrapperOpencode observe JSON', () => {
+    const expectedObserveEvents = (
+      fixture: FakeRunFixture,
+      parseFailed: boolean
+    ): Record<string, unknown>[] => {
+      const created = {
+        kind: 'run_created',
+        ts: expect.any(String),
+        run_dir: fixture.dir,
+        request_file: fixture.requestFile,
+        response_file: fixture.responseFile,
+      }
+      if (!parseFailed) {
+        return [created]
+      }
+      return [
+        created,
+        {
+          kind: 'usage_parse_failed',
+          ts: expect.any(String),
+          backend: 'opencode',
+          source: 'opencode_step_finish',
+          message: 'measured usage was not available',
+        },
+      ]
+    }
+
+    const expectPinnedObserve = (
+      fixture: FakeRunFixture,
+      input: { usage: Record<string, unknown>; modelTurns: number | null; parseFailed: boolean }
+    ): void => {
+      const doc = readTestJson(fixture.observeFile)
+      expect(doc).toEqual({
+        schema_version: 1,
+        run: {
+          task_type: 'chore',
+          model: 'opencode/opencode-go/glm-5.2@high',
+          backend: 'opencode',
+          request_file: fixture.requestFile,
+          response_file: fixture.responseFile,
+          run_dir: fixture.dir,
+          requester_session_id: '',
+        },
+        state: {
+          phase: 'prepared',
+          dispatcher_pid: null,
+          started_at: null,
+          ended_at: null,
+          exit_code: null,
+          duration_ms: null,
+          response_present: false,
+        },
+        heartbeat: {
+          ts: expect.any(String),
+          backend: 'opencode',
+          child_pid: expect.any(Number),
+          stdout_bytes: expect.any(Number),
+          stderr_bytes: 0,
+          last_stream_change_at: expect.any(String),
+        },
+        events: expectedObserveEvents(fixture, input.parseFailed),
+        streams: {
+          stdout: {
+            bytes: expect.any(Number),
+            truncated: false,
+            content: expect.stringContaining('"type":"text"'),
+          },
+          stderr: { bytes: 0, truncated: false, content: '' },
+        },
+        timing: {
+          total_ms: expect.any(Number),
+          time_to_first_useful_event_ms: expect.any(Number),
+          report_ready_at_ms: expect.any(Number),
+          model_turns: input.modelTurns,
+          tool_calls: 1,
+          structured_output_parse: null,
+          measurement_source: 'opencode_json',
+        },
+        usage: input.usage,
+      })
+      if (!isRecord(doc) || !isRecord(doc.timing)) {
+        throw new Error('observe timing is missing')
+      }
+      expectMonotonicTimingField(doc.timing.total_ms)
+      expectMonotonicTimingField(doc.timing.time_to_first_useful_event_ms)
+      expectMonotonicTimingField(doc.timing.report_ready_at_ms)
+    }
+
+    it.each([
+      { mode: 'observe-measured', modelTurns: 1, parseFailed: false, costUsd: 0.25 },
+      { mode: 'observe-missing-cost', modelTurns: 1, parseFailed: false, costUsd: null },
+      { mode: 'observe-missing-step', modelTurns: null, parseFailed: true, costUsd: null },
+    ])('pins the observe JSON for $mode', async ({ mode, modelTurns, parseFailed, costUsd }) => {
+      const dir = createTestScratchDir(`wrapper-opencode-${mode}-test`)
+      const fixture = makeFakeRunFixture(dir)
+      const eventsFile = path.join(dir, 'observe-events.jsonl')
+      writeFileSync(eventsFile, `${opencodeObserveEventLines(mode).join('\n')}\n`)
+      const result = await runFake(fixture, { env: { OPENCODE_TEST_EVENTS_FILE: eventsFile } })
+      expect(result.exitCode).toBe(0)
+      const usage = usageForOpencodeObserveCase(fixture, { parseFailed, costUsd })
+      expectPinnedObserve(fixture, { usage, modelTurns, parseFailed })
     })
   })
 }

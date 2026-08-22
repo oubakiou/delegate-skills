@@ -7,6 +7,11 @@ import {
   parseJsonObjects,
   readFileOrEmpty,
 } from './jq-compat.ts'
+import {
+  opencodeCaptureFirstUseful,
+  summarizeOpencodeCapture,
+  type OpencodeCaptureSummary,
+} from './observe-usage.ts'
 
 // bash 版 observe-json.sh の timing 系関数と同一契約
 // (等価性は scripts/observe-parity.test.ts が bash 実装との突き合わせで検証する)。
@@ -113,14 +118,10 @@ const isUsefulCursorEvent = (event: Record<string, unknown>): boolean => {
   return event.type === 'assistant' && cursorHasTextContent(event)
 }
 
-// 「最初の有用イベント」= 最初の tool 実行または本文 delta。event type の文字列一致
-// だけだと空 assistant・reasoning-only の行でも確定して系統的に短い値を記録するため、
-// stream の構造まで見て判定する。非対応 backend（text 出力の devin / grok）は false
-export const firstUsefulSeen = (backend: string, stdoutCapture: string): boolean => {
-  if (!hasFileContent(stdoutCapture)) {
-    return false
-  }
-  const events = parseJsonObjects(readFileOrEmpty(stdoutCapture))
+const opencodeFirstUseful = (stdoutCapture: string): boolean =>
+  opencodeCaptureFirstUseful(stdoutCapture)
+
+const firstUsefulForEvents = (backend: string, events: Record<string, unknown>[]): boolean => {
   if (backend === 'claude') {
     return claudeFirstUseful(events)
   }
@@ -131,6 +132,19 @@ export const firstUsefulSeen = (backend: string, stdoutCapture: string): boolean
     return events.some(isUsefulCursorEvent)
   }
   return false
+}
+
+// 「最初の有用イベント」= 最初の tool 実行または本文 delta。event type の文字列一致
+// だけだと空 assistant・reasoning-only の行でも確定して系統的に短い値を記録するため、
+// stream の構造まで見て判定する。非対応 backend（text 出力の devin / grok）は false
+export const firstUsefulSeen = (backend: string, stdoutCapture: string): boolean => {
+  if (!hasFileContent(stdoutCapture)) {
+    return false
+  }
+  if (backend === 'opencode') {
+    return opencodeFirstUseful(stdoutCapture)
+  }
+  return firstUsefulForEvents(backend, parseJsonObjects(readFileOrEmpty(stdoutCapture)))
 }
 
 export interface StreamCounts {
@@ -203,6 +217,21 @@ const cursorStreamCounts = (text: string): StreamCounts | null => {
   return { model_turns: null, tool_calls: toolCalls, source: 'cursor_stream_json' }
 }
 
+const opencodeStreamCounts = (summary: OpencodeCaptureSummary): StreamCounts | null => {
+  if (summary.recognized === 0) {
+    return null
+  }
+  let modelTurns: number | null = null
+  if (summary.stepFinishCount > 0) {
+    modelTurns = summary.stepFinishCount
+  }
+  return {
+    model_turns: modelTurns,
+    tool_calls: summary.toolUseCount,
+    source: 'opencode_json',
+  }
+}
+
 const devinStreamCounts = (devinExport: string): StreamCounts | null => {
   if (!hasFileContent(devinExport)) {
     return null
@@ -225,28 +254,51 @@ export interface TimingCountsInput {
   devinExport?: string
 }
 
+const opencodeTimingCounts = (captureFile: string): StreamCounts | null => {
+  const summary = summarizeOpencodeCapture(captureFile)
+  if (summary === null) {
+    return null
+  }
+  return opencodeStreamCounts(summary)
+}
+
+const regularTimingCounts = (backend: string, captureFile: string): StreamCounts | null => {
+  if (!hasFileContent(captureFile)) {
+    return null
+  }
+  const text = readFileOrEmpty(captureFile)
+  if (backend === 'claude') {
+    return claudeStreamCounts(text)
+  }
+  if (backend === 'codex') {
+    return codexStreamCounts(text)
+  }
+  if (backend === 'cursor') {
+    return cursorStreamCounts(text)
+  }
+  return null
+}
+
+const timingCountsFor = (input: TimingCountsInput): StreamCounts | null => {
+  if (input.backend === 'devin') {
+    return devinStreamCounts(input.devinExport ?? '')
+  }
+  if (input.backend === 'opencode') {
+    return opencodeTimingCounts(input.stdoutCapture)
+  }
+  return regularTimingCounts(input.backend, input.stdoutCapture)
+}
+
 // stream capture から model_turns / tool_calls を抽出する。取得できない項目は null、
 // 認識できるイベントが 1 つも無い capture は source: "unavailable" に倒す（fail-soft）。
 // devin は stdout が text のため ATIF export の steps 数を model_turns として使う
-export const timingStreamCounts = (input: TimingCountsInput): StreamCounts => {
-  let counts: StreamCounts | null = null
-  if (input.backend === 'devin') {
-    counts = devinStreamCounts(input.devinExport ?? '')
-  } else if (hasFileContent(input.stdoutCapture)) {
-    const text = readFileOrEmpty(input.stdoutCapture)
-    if (input.backend === 'claude') {
-      counts = claudeStreamCounts(text)
-    } else if (input.backend === 'codex') {
-      counts = codexStreamCounts(text)
-    } else if (input.backend === 'cursor') {
-      counts = cursorStreamCounts(text)
-    }
-  }
-  return counts ?? UNAVAILABLE
-}
+export const timingStreamCounts = (input: TimingCountsInput): StreamCounts =>
+  timingCountsFor(input) ?? UNAVAILABLE
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  const { writeFileSync } = await import('node:fs')
+  const { createTestScratchFile } = await import('./test-scratch.ts')
   describe('timingStreamCounts', () => {
     it('falls back to unavailable for unsupported backends or unreadable captures', () => {
       expect(timingStreamCounts({ backend: 'grok', stdoutCapture: '/nonexistent.jsonl' })).toEqual({
@@ -258,6 +310,44 @@ if (import.meta.vitest) {
         model_turns: null,
         tool_calls: null,
         source: 'unavailable',
+      })
+    })
+
+    it('counts opencode model turns and tool calls from JSONL event types', () => {
+      const captureFile = createTestScratchFile('observe-timing-opencode-test', 'stdout.jsonl')
+      writeFileSync(
+        captureFile,
+        [
+          '{"type":"text","timestamp":1787360343099,"part":{"text":""}}',
+          '{"type":"tool_use","timestamp":1787360343100,"part":{}}',
+          '{"type":"step_finish","timestamp":1787360343101,"part":{}}',
+          'not-json',
+          '{"type":"tool_use","timestamp":1787360343102,"part":{}}',
+          '{"type":"step_finish","timestamp":1787360343103,"part":{}}',
+          '{"type":"text","timestamp":1787360343104,"part":{"text":"useful"}}',
+        ].join('\n')
+      )
+      expect(timingStreamCounts({ backend: 'opencode', stdoutCapture: captureFile })).toEqual({
+        model_turns: 2,
+        tool_calls: 2,
+        source: 'opencode_json',
+      })
+      expect(firstUsefulSeen('opencode', captureFile)).toBe(true)
+    })
+
+    it('records null model_turns when opencode capture has no step_finish', () => {
+      const captureFile = createTestScratchFile('observe-timing-opencode-no-step', 'stdout.jsonl')
+      writeFileSync(
+        captureFile,
+        [
+          '{"type":"text","timestamp":1787360343099,"part":{"text":"useful"}}',
+          '{"type":"tool_use","timestamp":1787360343100,"part":{}}',
+        ].join('\n')
+      )
+      expect(timingStreamCounts({ backend: 'opencode', stdoutCapture: captureFile })).toEqual({
+        model_turns: null,
+        tool_calls: 1,
+        source: 'opencode_json',
       })
     })
   })
