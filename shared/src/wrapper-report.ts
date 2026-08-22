@@ -10,9 +10,14 @@ import { randomToken, writeCompanionMarkdown } from './protocol.ts'
 // bash 版 observe-json.sh の report / prompt 系 helper と同一契約。
 // wrapper（backend 起動ラッパ）だけが使う関数群で、Step 4b から繰り越して移植した。
 
-export const reportModeForBackend = (backend: string): 'structured' | 'report_md' => {
+export type ReportMode = 'structured' | 'report_md' | 'stdout_text'
+
+export const reportModeForBackend = (backend: string): ReportMode => {
   if (backend === 'claude' || backend === 'codex') {
     return 'structured'
+  }
+  if (backend === 'opencode') {
+    return 'stdout_text'
   }
   return 'report_md'
 }
@@ -269,46 +274,63 @@ interface ReportMdParts {
   body: string
 }
 
-const reportMdStatusOf = (lines: readonly string[]): string => {
-  for (const line of lines.slice(1)) {
-    if (/^---[\t\v\f\r ]*$/.test(line)) {
-      return ''
-    }
+const frontMatterDelimiter = /^---[\t\v\f\r ]*$/
+
+const trimProtocolWhitespace = (value: string): string =>
+  value.replace(/^[\t\v\f\r ]+/, '').replace(/[\t\v\f\r ]+$/, '')
+
+const withoutLineEnding = (line: string): string => {
+  if (line.endsWith('\r')) {
+    return line.slice(0, -1)
+  }
+  return line
+}
+
+const statusOfFrontMatter = (lines: readonly string[]): string => {
+  for (const line of lines) {
     const match = /^status:[\t\v\f\r ]*(?<value>.*)$/.exec(line)
     if (match !== null && typeof match.groups !== 'undefined') {
-      return match.groups.value.replaceAll(/[\t\n\v\f\r ]/g, '')
+      return trimProtocolWhitespace(match.groups.value)
     }
   }
   return ''
 }
 
-const reportMdBodyOf = (lines: readonly string[]): string => {
-  let dashCount = 0
-  const body: string[] = []
-  for (const line of lines) {
-    if (dashCount >= 2) {
-      body.push(`${line}\n`)
-    } else if (/^---[\t\v\f\r ]*$/.test(line)) {
-      dashCount += 1
-    }
-  }
-  return body.join('')
-}
-
-const reportMdPartsOf = (reportFile: string): ReportMdParts | null => {
-  const content = readFileOrEmpty(reportFile)
-  if (content === '') {
-    return null
-  }
-  const lines = content.split('\n')
+const normalizedReportLines = (content: string): string[] => {
+  const lines = content.split('\n').map(withoutLineEnding)
   if (lines[lines.length - 1] === '') {
     lines.pop()
   }
-  if (lines[0] !== '---') {
+  return lines
+}
+
+const reportBodyOf = (lines: readonly string[], closingIndex: number): string =>
+  lines
+    .slice(closingIndex + 1)
+    .map((line) => `${line}\n`)
+    .join('')
+
+const reportPartsOfContent = (content: string): ReportMdParts | null => {
+  if (content === '') {
     return null
   }
-  return { status: reportMdStatusOf(lines), body: reportMdBodyOf(lines) }
+  const lines = normalizedReportLines(content)
+  if (lines.length === 0 || !frontMatterDelimiter.test(lines[0])) {
+    return null
+  }
+  const closingOffset = lines.slice(1).findIndex((line) => frontMatterDelimiter.test(line))
+  if (closingOffset === -1) {
+    return null
+  }
+  const closingIndex = closingOffset + 1
+  return {
+    status: statusOfFrontMatter(lines.slice(1, closingIndex)),
+    body: reportBodyOf(lines, closingIndex),
+  }
 }
+
+const reportMdPartsOf = (reportFile: string): ReportMdParts | null =>
+  reportPartsOfContent(readFileOrEmpty(reportFile))
 
 // report.md 方式: front-matter「---\nstatus: <値>\n---」付き Markdown から status と
 // 本文を取り出して protocol response を組み立てる。front-matter 欠落・status 語彙外・
@@ -319,7 +341,7 @@ export const buildResponseFromReportMd = (
   env: Env
 ): boolean => {
   const parts = reportMdPartsOf(reportFile)
-  if (parts === null || !validProtocolStatus(parts.status) || parts.body === '') {
+  if (parts === null || !validProtocolStatus(parts.status) || isWhitespaceOnly(parts.body)) {
     return false
   }
   const base = path.basename(target.responseFile, '.json')
@@ -327,6 +349,117 @@ export const buildResponseFromReportMd = (
   writeFileSync(bodyFile, parts.body)
   return assembleResponse({ ...target, status: parts.status }, parts.body, env)
 }
+
+export const isMarkdownSectionHeading = (line: string, name: string): boolean => {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
+  return new RegExp(`^#+\\s*${escapedName}\\s*$`).test(line)
+}
+
+interface FenceMarker {
+  marker: '`' | '~'
+  length: number
+  rest: string
+}
+
+const fenceMarkerTypeOf = (marker: string): '`' | '~' => {
+  if (marker.startsWith('`')) {
+    return '`'
+  }
+  return '~'
+}
+
+const fenceMarkerOf = (line: string): FenceMarker | null => {
+  const match = /^[ \t]{0,3}(?<marker>`{3,}|~{3,})(?<rest>.*)$/.exec(line)
+  if (match === null || typeof match.groups === 'undefined') {
+    return null
+  }
+  return {
+    marker: fenceMarkerTypeOf(match.groups.marker),
+    length: match.groups.marker.length,
+    rest: match.groups.rest,
+  }
+}
+
+const closesFence = (line: string, fence: FenceMarker): boolean => {
+  const marker = fenceMarkerOf(line)
+  if (marker === null || marker.marker !== fence.marker || marker.length < fence.length) {
+    return false
+  }
+  return /^[ \t]*$/.test(marker.rest)
+}
+
+interface SummaryLineResult {
+  fence: FenceMarker | null
+  hasSummary: boolean
+}
+
+const summaryLineResult = (line: string, fence: FenceMarker | null): SummaryLineResult => {
+  if (fence !== null) {
+    if (closesFence(line, fence)) {
+      return { fence: null, hasSummary: false }
+    }
+    return { fence, hasSummary: false }
+  }
+  const marker = fenceMarkerOf(line)
+  if (marker !== null) {
+    return { fence: marker, hasSummary: false }
+  }
+  return { fence: null, hasSummary: isMarkdownSectionHeading(line, 'Summary') }
+}
+
+export const hasSummaryHeading = (body: string): boolean => {
+  let fence: FenceMarker | null = null
+  for (const line of body.split('\n')) {
+    const { fence: nextFence, hasSummary } = summaryLineResult(line, fence)
+    fence = nextFence
+    if (hasSummary) {
+      return true
+    }
+  }
+  return false
+}
+
+const normalizeStdoutSummary = (body: string): string => {
+  if (hasSummaryHeading(body)) {
+    return body
+  }
+  return `# Summary\n\n${body}`
+}
+
+export const buildResponseFromStdoutText = (
+  text: string,
+  target: Omit<AssembleTarget, 'status'>,
+  env: Env
+): boolean => {
+  const parts = reportPartsOfContent(text)
+  if (parts === null || !validProtocolStatus(parts.status) || isWhitespaceOnly(parts.body)) {
+    return false
+  }
+  return assembleResponse(
+    { ...target, status: parts.status },
+    normalizeStdoutSummary(parts.body),
+    env
+  )
+}
+
+export const STDOUT_TEXT_FRONT_MATTER_ERROR = 'The final response was missing valid front-matter.'
+
+export const buildFailedResponseFromStdoutText = (
+  target: Omit<AssembleTarget, 'status'>,
+  env: Env
+): boolean =>
+  assembleResponse(
+    { ...target, status: 'failed' },
+    [
+      '# Summary',
+      'Child CLI failed or did not write a response.',
+      '',
+      '# Error',
+      STDOUT_TEXT_FRONT_MATTER_ERROR,
+      '',
+    ].join('\n'),
+    env
+  )
 
 // response JSON の sections から companion .md を派生させる（失敗は握りつぶす）
 export const writeCompanionFromResponse = (responseFile: string): void => {
@@ -415,13 +548,36 @@ if (import.meta.vitest) {
 
   const makeReportTestDir = (): string => createTestScratchDir('wrapper-report-test')
 
+  type ReportInputMode = 'report_md' | 'stdout_text'
+
+  const buildReportForMode = (input: {
+    dir: string
+    mode: ReportInputMode
+    name: string
+    content: string
+  }): { ok: boolean; responseFile: string } => {
+    const { dir, mode, name, content } = input
+    const responseFile = path.join(dir, `delegate_chore_${mode}_${name}_res.json`)
+    const target = {
+      responderSessionId: `${mode}:test:${name}`,
+      responseFile,
+      runDir: dir,
+    }
+    if (mode === 'report_md') {
+      const reportFile = writeTempFile(dir, `${mode}_${name}.md`, content)
+      return { ok: buildResponseFromReportMd(reportFile, target, {}), responseFile }
+    }
+    return { ok: buildResponseFromStdoutText(content, target, {}), responseFile }
+  }
+
   describe('reportModeForBackend', () => {
-    it('uses structured for claude/codex and report_md otherwise', () => {
+    it('uses the backend-specific report mode', () => {
       expect(reportModeForBackend('claude')).toBe('structured')
       expect(reportModeForBackend('codex')).toBe('structured')
       expect(reportModeForBackend('cursor')).toBe('report_md')
       expect(reportModeForBackend('devin')).toBe('report_md')
       expect(reportModeForBackend('grok')).toBe('report_md')
+      expect(reportModeForBackend('opencode')).toBe('stdout_text')
     })
   })
 
@@ -520,48 +676,172 @@ if (import.meta.vitest) {
     })
   })
 
-  describe('buildResponseFromReportMd', () => {
-    it('parses the front-matter status and body into a response', () => {
+  describe('front-matter parser', () => {
+    const statusCases = [
+      { name: 'normal', value: 'completed', accepted: true },
+      { name: 'trimmed', value: '\t completed \t', accepted: true },
+      { name: 'internal-space', value: 'com pleted', accepted: false },
+      { name: 'internal-tab', value: 'com\tpleted', accepted: false },
+      { name: 'uppercase', value: 'COMPLETED', accepted: false },
+      { name: 'unknown', value: 'bogus', accepted: false },
+      { name: 'empty', value: '', accepted: false },
+    ] as const
+
+    it.each(statusCases)('validates status values for both inputs: $name', (testCase) => {
       const dir = makeReportTestDir()
-      const reportFile = writeTempFile(
-        dir,
-        'report.md',
-        '---\nstatus: completed\n---\n# Summary\nreport md ok\n'
-      )
-      const responseFile = path.join(dir, 'delegate_chore_y_res.json')
-      const ok = buildResponseFromReportMd(
-        reportFile,
-        { responderSessionId: 'cursor:m:y', responseFile, runDir: dir },
-        {}
-      )
-      expect(ok).toBe(true)
-      expect(JSON.parse(readFileOrEmpty(responseFile))).toMatchObject({ status: 'completed' })
+      for (const mode of ['report_md', 'stdout_text'] as const) {
+        const content = `---\nstatus:${testCase.value}\n---\n# Summary\nstatus test\n`
+        const result = buildReportForMode({ dir, mode, name: testCase.name, content })
+        expect(result.ok).toBe(testCase.accepted)
+      }
     })
 
-    it('fails closed on missing front matter, bad status, or an empty body', () => {
-      const dir = makeReportTestDir()
-      const target = {
-        responderSessionId: 's',
-        responseFile: path.join(dir, 'r.json'),
-        runDir: dir,
+    const frontMatterCases = [
+      {
+        name: 'lf',
+        content: '---\nstatus: completed\n---\n# Summary\nlf\n',
+        accepted: true,
+        status: 'completed',
+        keepsBodyDelimiter: false,
+      },
+      {
+        name: 'crlf',
+        content: '---\r\nstatus: completed\r\n---\r\n# Summary\r\ncrlf\r\n',
+        accepted: true,
+        status: 'completed',
+        keepsBodyDelimiter: false,
+      },
+      {
+        name: 'extra-key',
+        content: '---\nstatus: partial\nmeta: ignored\n---\n# Summary\nextra\n',
+        accepted: true,
+        status: 'partial',
+        keepsBodyDelimiter: false,
+      },
+      {
+        name: 'late-closing',
+        content: '---\nmeta: ignored\nstatus: needs_input\nnotes: ignored\n---\n# Summary\nlate\n',
+        accepted: true,
+        status: 'needs_input',
+        keepsBodyDelimiter: false,
+      },
+      {
+        name: 'missing-opening',
+        content: 'status: completed\n---\n# Summary\nno\n',
+        accepted: false,
+      },
+      {
+        name: 'missing-closing',
+        content: '---\nstatus: completed\n# Summary\nno\n',
+        accepted: false,
+      },
+      {
+        name: 'body-delimiter',
+        content: '---\nstatus: completed\n---\n# Findings\nbefore\n---\nafter\n',
+        accepted: true,
+        status: 'completed',
+        keepsBodyDelimiter: true,
+      },
+    ] as const
+
+    it.each(frontMatterCases)(
+      'parses front-matter boundaries for both inputs: $name',
+      (testCase) => {
+        const dir = makeReportTestDir()
+        for (const mode of ['report_md', 'stdout_text'] as const) {
+          const result = buildReportForMode({
+            dir,
+            mode,
+            name: testCase.name,
+            content: testCase.content,
+          })
+          expect(result.ok).toBe(testCase.accepted)
+          if (testCase.accepted) {
+            const parsed: unknown = JSON.parse(readFileOrEmpty(result.responseFile))
+            expect(parsed).toMatchObject({ status: testCase.status })
+            if (testCase.keepsBodyDelimiter) {
+              expect(JSON.stringify(parsed)).toContain('---')
+            }
+          }
+        }
       }
+    )
+
+    it('does not normalize a report_md body', () => {
+      const dir = makeReportTestDir()
+      const result = buildReportForMode({
+        dir,
+        mode: 'report_md',
+        name: 'report-body',
+        content: '---\nstatus: completed\n---\n# Findings\nreport body\n',
+      })
+      expect(result.ok).toBe(true)
+      const parsed: unknown = JSON.parse(readFileOrEmpty(result.responseFile))
+      expect(parsed).toMatchObject({ sections: ['# Findings\nreport body'] })
+    })
+  })
+
+  describe('stdout Summary normalization', () => {
+    const summaryCases = [
+      { name: 'h1', body: '# Summary\nexplicit\n# Findings\nok\n', headings: 1 },
+      { name: 'h2', body: '## Summary\nexplicit\n# Findings\nok\n', headings: 1 },
+      {
+        name: 'backtick-fence',
+        body: '```\n# Summary\n```\n# Findings\nok\n',
+        headings: 1,
+      },
+      {
+        name: 'tilde-fence',
+        body: '~~~\n## Summary\n~~~\n# Findings\nok\n',
+        headings: 1,
+      },
+      {
+        name: 'mismatched-fence',
+        body: '```\n# Summary\n~~~\n# Summary\n```\n# Findings\nok\n',
+        headings: 1,
+      },
+      { name: 'absent', body: '# Findings\nok\n', headings: 1 },
+      {
+        name: 'multiple',
+        body: '# Summary\nfirst\n## Summary\nsecond\n# Findings\nok\n',
+        headings: 2,
+      },
+    ] as const
+
+    it.each(summaryCases)('matches Summary headings outside fences: $name', (testCase) => {
+      const dir = makeReportTestDir()
+      const result = buildReportForMode({
+        dir,
+        mode: 'stdout_text',
+        name: testCase.name,
+        content: `---\nstatus: completed\n---\n${testCase.body}`,
+      })
+      expect(result.ok).toBe(true)
+      const parsed: unknown = JSON.parse(readFileOrEmpty(result.responseFile))
+      if (!isRecord(parsed) || !Array.isArray(parsed.sections)) {
+        throw new Error('response sections missing')
+      }
+      const sections = parsed.sections.filter(
+        (section): section is string => typeof section === 'string'
+      )
+      const summarySections = sections.filter((section) =>
+        isMarkdownSectionHeading(section.split('\n')[0], 'Summary')
+      )
+      expect(summarySections).toHaveLength(testCase.headings)
+    })
+
+    it('writes a fixed front-matter error for failed stdout collection', () => {
+      const dir = makeReportTestDir()
+      const responseFile = path.join(dir, 'stdout_failure_res.json')
       expect(
-        buildResponseFromReportMd(writeTempFile(dir, 'a.md', '# no front matter\n'), target, {})
-      ).toBe(false)
-      expect(
-        buildResponseFromReportMd(
-          writeTempFile(dir, 'b.md', '---\nstatus: bogus\n---\nbody\n'),
-          target,
+        buildFailedResponseFromStdoutText(
+          { responderSessionId: 'opencode:model:failure', responseFile, runDir: dir },
           {}
         )
-      ).toBe(false)
-      expect(
-        buildResponseFromReportMd(
-          writeTempFile(dir, 'c.md', '---\nstatus: completed\n---\n'),
-          target,
-          {}
-        )
-      ).toBe(false)
+      ).toBe(true)
+      const parsed: unknown = JSON.parse(readFileOrEmpty(responseFile))
+      expect(JSON.stringify(parsed)).toContain(STDOUT_TEXT_FRONT_MATTER_ERROR)
+      expect(parsed).toMatchObject({ status: 'failed' })
     })
   })
 

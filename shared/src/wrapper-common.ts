@@ -26,8 +26,10 @@ import {
   updateRunContext,
 } from './observe-store.ts'
 import {
+  buildFailedResponseFromStdoutText,
   buildResponseFromReportMd,
   buildResponseFromStructured,
+  buildResponseFromStdoutText,
   writeCompanionFromResponse,
 } from './wrapper-report.ts'
 import type { WaitResult } from './wrapper-wait.ts'
@@ -135,6 +137,7 @@ export interface WrapperContext {
   repoRoot: string
   baseModel: string
   effort: string
+  completionFailed: boolean
 }
 
 const gitRepoRoot = (): string => {
@@ -167,6 +170,7 @@ export const makeWrapperContext = (
     repoRoot: gitRepoRoot(),
     baseModel: split.base_model,
     effort: split.effort ?? '',
+    completionFailed: false,
   }
   writeFileSync(context.stdoutCapture, '')
   writeFileSync(context.stderrCapture, '')
@@ -298,11 +302,12 @@ export const writePromptFile = (context: WrapperContext, prompt: string): string
 
 export interface CompletionConfig {
   responderSessionId: string
-  reportMode: 'structured' | 'report_md'
+  reportMode: 'structured' | 'report_md' | 'stdout_text'
   // structured モード: capture / last-message から構造化出力を取り出す
   collectStructured?: () => Record<string, unknown> | null
   // report_md モード: worker が書く report.md のパス
   reportFile?: string
+  collectStdoutText?: () => string | null
   devinExport?: string
 }
 
@@ -363,15 +368,72 @@ const completeReportMd = (
   return outcome
 }
 
+const collectedStdoutText = (config: CompletionConfig): string | null => {
+  const collect = config.collectStdoutText
+  if (typeof collect === 'undefined') {
+    return null
+  }
+  return collect()
+}
+
+const stdoutFailureTarget = (
+  context: WrapperContext
+): {
+  responderSessionId: string
+  responseFile: string
+  runDir: string
+} => ({
+  responderSessionId: `wrapper:${context.backend}:${path.basename(context.args.responseFile, '.json')}`,
+  responseFile: context.args.responseFile,
+  runDir: context.workDir,
+})
+
+const completeStdoutText = (
+  context: WrapperContext,
+  config: CompletionConfig,
+  wait: WaitResult
+): CompletionOutcome => {
+  const target = {
+    responderSessionId: config.responderSessionId,
+    responseFile: context.args.responseFile,
+    runDir: context.workDir,
+  }
+  const text = collectedStdoutText(config)
+  const assembled = text !== null && buildResponseFromStdoutText(text, target, context.env)
+  if (!assembled) {
+    context.completionFailed = true
+    buildFailedResponseFromStdoutText(stdoutFailureTarget(context), context.env)
+  }
+  const outcome: CompletionOutcome = { reportReadyMs: wait.reportReadyMs, structuredParse: null }
+  if (assembled && hasFileContent(context.args.responseFile)) {
+    outcome.reportReadyMs ??= wait.totalMs
+  }
+  return outcome
+}
+
+const assertNever = (value: never): never => {
+  throw new Error(`Unsupported report mode: ${String(value)}`)
+}
+
 const completeMissingResponse = (
   context: WrapperContext,
   config: CompletionConfig,
   wait: WaitResult
 ): CompletionOutcome => {
-  if (config.reportMode === 'structured') {
-    return completeStructured(context, config, wait)
+  switch (config.reportMode) {
+    case 'structured': {
+      return completeStructured(context, config, wait)
+    }
+    case 'report_md': {
+      return completeReportMd(context, config, wait)
+    }
+    case 'stdout_text': {
+      return completeStdoutText(context, config, wait)
+    }
+    default: {
+      return assertNever(config.reportMode)
+    }
   }
-  return completeReportMd(context, config, wait)
 }
 
 // 構造化最終応答 / report.md の回収 → wrapper 側で response を組み立てる。
@@ -405,6 +467,13 @@ export interface ResponseOutcome {
   responseStatus: number
   responseAllowsResume: boolean
   stderrTail: string
+}
+
+const responseStatusOf = (context: WrapperContext, status: string, childStatus: number): number => {
+  if (context.completionFailed && status === 'failed' && childStatus === 0) {
+    return 1
+  }
+  return childStatus
 }
 
 const failedResponseOutcome = (context: WrapperContext, childStatus: number): ResponseOutcome => {
@@ -464,7 +533,7 @@ export const finalizeResponse = (context: WrapperContext, childStatus: number): 
     }
   })()
   return {
-    responseStatus: childStatus,
+    responseStatus: responseStatusOf(context, status, childStatus),
     responseAllowsResume: status !== '' && status !== 'failed',
     stderrTail: '',
   }
@@ -819,6 +888,44 @@ if (import.meta.vitest) {
       expect(prompt).toContain('task_type=chore')
       expect(prompt).toContain('構造化出力 {status, report_markdown}')
       expect(prompt.endsWith('\n')).toBe(false)
+    })
+  })
+
+  describe('stdout_text completion', () => {
+    it('collects final text, keeps structuredParse null, and normalizes Summary', () => {
+      const context = makeCommonTestContext('opencode')
+      const outcome = completeResponse(
+        context,
+        {
+          responderSessionId: 'opencode:model:stdout',
+          reportMode: 'stdout_text',
+          collectStdoutText: () => '---\nstatus: completed\n---\n# Findings\nok\n',
+        },
+        { childStatus: 0, totalMs: 12, firstUsefulMs: null, reportReadyMs: null }
+      )
+      expect(outcome.structuredParse).toBeNull()
+      expect(JSON.parse(readFileSync(context.args.responseFile, 'utf8'))).toMatchObject({
+        status: 'completed',
+        sections: ['# Summary', '# Findings\nok'],
+      })
+    })
+
+    it('writes a failed response with a fixed front-matter error', () => {
+      const context = makeCommonTestContext('opencode')
+      const outcome = completeResponse(
+        context,
+        {
+          responderSessionId: 'opencode:model:invalid',
+          reportMode: 'stdout_text',
+          collectStdoutText: () => '# Summary\nmissing front matter\n',
+        },
+        { childStatus: 0, totalMs: 12, firstUsefulMs: null, reportReadyMs: null }
+      )
+      expect(outcome.structuredParse).toBeNull()
+      const response: unknown = JSON.parse(readFileSync(context.args.responseFile, 'utf8'))
+      expect(response).toMatchObject({ status: 'failed' })
+      expect(JSON.stringify(response)).toContain('front-matter')
+      expect(finalizeResponse(context, 0).responseStatus).toBe(1)
     })
   })
 }

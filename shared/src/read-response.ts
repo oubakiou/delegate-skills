@@ -19,6 +19,7 @@ import {
   selectorOrDefault,
   type ProtocolDoc,
 } from './read-request.ts'
+import { isMarkdownSectionHeading } from './wrapper-report.ts'
 
 // bash 版 read-response.sh と同一契約 (protocol v1)。
 // Usage: read-response <response_file> [status|auto|decision|index|meta|all|<N>]
@@ -41,9 +42,8 @@ interface SectionEntry {
 }
 
 const entryFor = (doc: ProtocolDoc, name: string): SectionEntry | null => {
-  const pattern = new RegExp(`^#+\\s*${name}\\s*$`)
   for (const [key, value] of doc.sections.entries()) {
-    if (pattern.test(value.split('\n')[0])) {
+    if (isMarkdownSectionHeading(value.split('\n')[0], name)) {
       return { key, value }
     }
   }
@@ -301,6 +301,12 @@ if (import.meta.vitest) {
       const auto = runReadResponse([file, 'auto'], {})
       expect(auto.stdout).toBe('status: completed\n===== section[0] =====\n# Summary\n\nok\n')
       expect(runReadResponse([file, 'decision'], {}).stdout).toBe(auto.stdout)
+    })
+
+    it('recognizes level-two Summary headings', () => {
+      const file = writeFixture(['## Summary\n\nh2 summary'])
+      const result = runReadResponse([file, 'auto'], { DELEGATE_RESPONSE_INLINE_MAX: '0' })
+      expect(result.stdout).toContain('(Summary) =====\n## Summary\n\nh2 summary')
     })
 
     it('returns the Summary section and clipped Findings for large responses', () => {
