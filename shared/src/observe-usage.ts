@@ -44,6 +44,7 @@ interface OpencodeCaptureAccumulator {
   recognized: number
   stepFinishCount: number
   toolUseCount: number
+  sessionID: string | null
   usage: OpencodeUsageAccumulator
   usageFailed: boolean
 }
@@ -66,6 +67,7 @@ const opencodeCaptureAccumulator = (): OpencodeCaptureAccumulator => ({
   recognized: 0,
   stepFinishCount: 0,
   toolUseCount: 0,
+  sessionID: null,
   usage: opencodeUsageAccumulator(),
   usageFailed: false,
 })
@@ -326,6 +328,7 @@ export interface OpencodeCaptureSummary {
   recognized: number
   stepFinishCount: number
   toolUseCount: number
+  sessionID: string | null
 }
 
 const summaryOfOpencodeSession = (
@@ -342,6 +345,7 @@ const summaryOfOpencodeSession = (
     recognized: accumulator.recognized,
     stepFinishCount: accumulator.stepFinishCount,
     toolUseCount: accumulator.toolUseCount,
+    sessionID: accumulator.sessionID,
   }
 }
 
@@ -791,6 +795,18 @@ const consumeOpencodeUsageEvent = (
   }
 }
 
+const consumeOpencodeSessionEvent = (
+  event: Record<string, unknown>,
+  accumulator: OpencodeCaptureAccumulator
+): void => {
+  if (accumulator.sessionID !== null) {
+    return
+  }
+  if (typeof event.sessionID === 'string' && event.sessionID !== '') {
+    accumulator.sessionID = event.sessionID
+  }
+}
+
 const consumeOpencodeCaptureEvent = (
   event: Record<string, unknown>,
   accumulator: OpencodeCaptureAccumulator
@@ -798,6 +814,7 @@ const consumeOpencodeCaptureEvent = (
   consumeOpencodeTimingEvent(event, accumulator)
   consumeOpencodeTextEvent(event, accumulator)
   consumeOpencodeUsageEvent(event, accumulator)
+  consumeOpencodeSessionEvent(event, accumulator)
 }
 
 opencodeEventConsumer.run = consumeOpencodeCaptureEvent

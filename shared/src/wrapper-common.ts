@@ -308,6 +308,7 @@ export interface CompletionConfig {
   // report_md モード: worker が書く report.md のパス
   reportFile?: string
   collectStdoutText?: () => string | null
+  summaryWarning?: string
   devinExport?: string
 }
 
@@ -388,22 +389,35 @@ const stdoutFailureTarget = (
   runDir: context.workDir,
 })
 
+const assembleStdoutResponse = (
+  context: WrapperContext,
+  config: CompletionConfig,
+  text: string | null
+): boolean => {
+  const warning = config.summaryWarning ?? ''
+  const target = {
+    responderSessionId: config.responderSessionId,
+    responseFile: context.args.responseFile,
+    runDir: context.workDir,
+    summaryWarning: warning,
+  }
+  if (text !== null && buildResponseFromStdoutText(text, target, context.env)) {
+    return true
+  }
+  context.completionFailed = true
+  buildFailedResponseFromStdoutText(
+    { ...stdoutFailureTarget(context), summaryWarning: warning },
+    context.env
+  )
+  return false
+}
+
 const completeStdoutText = (
   context: WrapperContext,
   config: CompletionConfig,
   wait: WaitResult
 ): CompletionOutcome => {
-  const target = {
-    responderSessionId: config.responderSessionId,
-    responseFile: context.args.responseFile,
-    runDir: context.workDir,
-  }
-  const text = collectedStdoutText(config)
-  const assembled = text !== null && buildResponseFromStdoutText(text, target, context.env)
-  if (!assembled) {
-    context.completionFailed = true
-    buildFailedResponseFromStdoutText(stdoutFailureTarget(context), context.env)
-  }
+  const assembled = assembleStdoutResponse(context, config, collectedStdoutText(config))
   const outcome: CompletionOutcome = { reportReadyMs: wait.reportReadyMs, structuredParse: null }
   if (assembled && hasFileContent(context.args.responseFile)) {
     outcome.reportReadyMs ??= wait.totalMs

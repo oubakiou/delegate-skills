@@ -565,6 +565,91 @@ export const effortFromCursorConfig = (model: string, cliConfig: string): Effect
   return buildCursorEffort(effort, firstParamValue(params, ['fast']))
 }
 
+export const OPENCODE_EFFORT_UNSUPPORTED_WARNING =
+  'Warning: requested effort is not listed in the model catalog variants.'
+
+export const opencodeVariantsInclude = (
+  variants: Record<string, unknown>,
+  requested: string
+): boolean => Object.hasOwn(variants, requested)
+
+const UTF8_BOM = '\uFEFF'
+
+const withoutUtf8Bom = (text: string): string => {
+  if (text.startsWith(UTF8_BOM)) {
+    return text.slice(UTF8_BOM.length)
+  }
+  return text
+}
+
+const exportLineBreakAt = (text: string): { index: number; width: number } | null => {
+  const lf = text.indexOf('\n')
+  const cr = text.indexOf('\r')
+  if (lf === -1 && cr === -1) {
+    return null
+  }
+  if (cr !== -1 && cr + 1 === lf) {
+    return { index: cr, width: 2 }
+  }
+  if (cr !== -1 && (lf === -1 || cr < lf)) {
+    return { index: cr, width: 1 }
+  }
+  return { index: lf, width: 1 }
+}
+
+const firstExportLine = (text: string): { line: string; rest: string } => {
+  const br = exportLineBreakAt(text)
+  if (br === null) {
+    return { line: text, rest: '' }
+  }
+  return { line: text.slice(0, br.index), rest: text.slice(br.index + br.width) }
+}
+
+// Canonical banner is `Exporting session: <id>` with a space after the colon.
+const isExportBannerLine = (line: string): boolean => /^Exporting session: \S.*$/.test(line)
+
+const jsonAfterExportBanner = (stdout: string): string => {
+  let remaining = withoutUtf8Bom(stdout)
+  while (remaining !== '') {
+    const { line, rest } = firstExportLine(remaining)
+    if (line.trim() !== '') {
+      if (isExportBannerLine(line)) {
+        return rest
+      }
+      return remaining
+    }
+    remaining = rest
+  }
+  return remaining
+}
+
+const exportVariantOf = (parsed: unknown): string | null => {
+  if (!isRecord(parsed) || !isRecord(parsed.info) || !isRecord(parsed.info.model)) {
+    return null
+  }
+  const { variant } = parsed.info.model
+  if (typeof variant !== 'string' || variant === '') {
+    return null
+  }
+  return variant
+}
+
+const parseExportJson = (stdout: string): unknown => {
+  try {
+    return JSON.parse(jsonAfterExportBanner(stdout))
+  } catch {
+    return null
+  }
+}
+
+export const effortFromOpencodeExport = (stdout: string): EffectiveEffort | null => {
+  const variant = exportVariantOf(parseExportJson(stdout))
+  if (variant === null) {
+    return null
+  }
+  return { value: variant, source: 'opencode_export' }
+}
+
 // in-source test 専用 helper (bundle からは treeshake で除去される)
 const messageOf = (result: EffortValidation): string => {
   if (result.ok) {
@@ -877,6 +962,58 @@ if (import.meta.vitest) {
         source: 'measured',
         fast: true,
       })
+    })
+  })
+
+  describe('opencode catalog variants and export effort', () => {
+    it('treats a missing requested key as unsupported, including empty variants', () => {
+      expect(opencodeVariantsInclude({ high: {}, max: {} }, 'high')).toBe(true)
+      expect(opencodeVariantsInclude({ high: {}, max: {} }, 'low')).toBe(false)
+      expect(opencodeVariantsInclude({}, 'high')).toBe(false)
+    })
+
+    it('reads info.model.variant from export JSON after the banner line', () => {
+      const stdout = [
+        'Exporting session: ses_fd90596b4ffelwStgDfFGz1b3a',
+        JSON.stringify({
+          info: {
+            model: { id: 'glm-5.2', providerID: 'opencode-go', variant: 'bogus-effort-xyz' },
+          },
+          messages: [],
+        }),
+      ].join('\n')
+      const effective = effortFromOpencodeExport(stdout)
+      expect(effective).toEqual({
+        value: 'bogus-effort-xyz',
+        source: 'opencode_export',
+      })
+      expect(effective).not.toMatchObject({ source: 'measured' })
+    })
+
+    it('strips an optional BOM and leading blank lines before an anchored banner', () => {
+      const payload = JSON.stringify({
+        info: { model: { id: 'glm-5.2', providerID: 'opencode-go', variant: 'high' } },
+        messages: [],
+      })
+      const expected = { value: 'high', source: 'opencode_export' }
+      expect(effortFromOpencodeExport(`\uFEFFExporting session: ses_bom\n${payload}`)).toEqual(
+        expected
+      )
+      expect(effortFromOpencodeExport(`\n\nExporting session: ses_blanks\n${payload}`)).toEqual(
+        expected
+      )
+      expect(effortFromOpencodeExport(`\r\nExporting session: ses_crlf\r\n${payload}`)).toEqual(
+        expected
+      )
+    })
+
+    it('does not treat a non-canonical Exporting session prefix as a banner', () => {
+      const payload = JSON.stringify({
+        info: { model: { id: 'glm-5.2', providerID: 'opencode-go', variant: 'high' } },
+        messages: [],
+      })
+      expect(effortFromOpencodeExport(`Exporting session:not-canonical\n${payload}`)).toBeNull()
+      expect(effortFromOpencodeExport(`Exporting session:\n${payload}`)).toBeNull()
     })
   })
 }

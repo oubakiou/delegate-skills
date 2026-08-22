@@ -426,9 +426,29 @@ const normalizeStdoutSummary = (body: string): string => {
   return `# Summary\n\n${body}`
 }
 
+const spliceWarningAfterSummary = (lines: string[], warning: string, body: string): string => {
+  let fence: FenceMarker | null = null
+  for (let index = 0; index < lines.length; index += 1) {
+    const { fence: nextFence, hasSummary } = summaryLineResult(lines[index], fence)
+    fence = nextFence
+    if (hasSummary) {
+      lines.splice(index + 1, 0, warning)
+      return lines.join('\n')
+    }
+  }
+  return `# Summary\n${warning}\n\n${body}`
+}
+
+const insertSummaryWarning = (body: string, warning: string): string => {
+  if (warning === '') {
+    return body
+  }
+  return spliceWarningAfterSummary(body.split('\n'), warning, body)
+}
+
 export const buildResponseFromStdoutText = (
   text: string,
-  target: Omit<AssembleTarget, 'status'>,
+  target: Omit<AssembleTarget, 'status'> & { summaryWarning?: string },
   env: Env
 ): boolean => {
   const parts = reportPartsOfContent(text)
@@ -437,19 +457,15 @@ export const buildResponseFromStdoutText = (
   }
   return assembleResponse(
     { ...target, status: parts.status },
-    normalizeStdoutSummary(parts.body),
+    insertSummaryWarning(normalizeStdoutSummary(parts.body), target.summaryWarning ?? ''),
     env
   )
 }
 
 export const STDOUT_TEXT_FRONT_MATTER_ERROR = 'The final response was missing valid front-matter.'
 
-export const buildFailedResponseFromStdoutText = (
-  target: Omit<AssembleTarget, 'status'>,
-  env: Env
-): boolean =>
-  assembleResponse(
-    { ...target, status: 'failed' },
+const failedStdoutReportBody = (warning: string): string =>
+  insertSummaryWarning(
     [
       '# Summary',
       'Child CLI failed or did not write a response.',
@@ -458,6 +474,16 @@ export const buildFailedResponseFromStdoutText = (
       STDOUT_TEXT_FRONT_MATTER_ERROR,
       '',
     ].join('\n'),
+    warning
+  )
+
+export const buildFailedResponseFromStdoutText = (
+  target: Omit<AssembleTarget, 'status'> & { summaryWarning?: string },
+  env: Env
+): boolean =>
+  assembleResponse(
+    { ...target, status: 'failed' },
+    failedStdoutReportBody(target.summaryWarning ?? ''),
     env
   )
 
@@ -830,6 +856,30 @@ if (import.meta.vitest) {
       expect(summarySections).toHaveLength(testCase.headings)
     })
 
+    it('inserts a warning after the first Summary heading', () => {
+      const dir = makeReportTestDir()
+      const warning = 'Warning: requested effort is not listed in the model catalog variants.'
+      const result = buildResponseFromStdoutText(
+        '---\nstatus: completed\n---\n# Summary\nfirst\n## Summary\nsecond\n# Findings\nok\n',
+        {
+          responderSessionId: 'opencode:model:warning',
+          responseFile: path.join(dir, 'stdout_warning_res.json'),
+          runDir: dir,
+          summaryWarning: warning,
+        },
+        {}
+      )
+      expect(result).toBe(true)
+      const parsed: unknown = JSON.parse(readFileOrEmpty(path.join(dir, 'stdout_warning_res.json')))
+      if (!isRecord(parsed) || !Array.isArray(parsed.sections)) {
+        throw new Error('response sections missing')
+      }
+      expect(JSON.stringify(parsed.sections)).toContain(warning)
+      expect(JSON.stringify(parsed.sections).indexOf(warning)).toBeLessThan(
+        JSON.stringify(parsed.sections).indexOf('first')
+      )
+    })
+
     it('writes a fixed front-matter error for failed stdout collection', () => {
       const dir = makeReportTestDir()
       const responseFile = path.join(dir, 'stdout_failure_res.json')
@@ -842,6 +892,26 @@ if (import.meta.vitest) {
       const parsed: unknown = JSON.parse(readFileOrEmpty(responseFile))
       expect(JSON.stringify(parsed)).toContain(STDOUT_TEXT_FRONT_MATTER_ERROR)
       expect(parsed).toMatchObject({ status: 'failed' })
+    })
+
+    it('inserts a warning into the failed stdout fallback report', () => {
+      const dir = makeReportTestDir()
+      const responseFile = path.join(dir, 'stdout_failure_warning_res.json')
+      const warning = 'Warning: requested effort is not listed in the model catalog variants.'
+      expect(
+        buildFailedResponseFromStdoutText(
+          {
+            responderSessionId: 'opencode:model:failure-warning',
+            responseFile,
+            runDir: dir,
+            summaryWarning: warning,
+          },
+          {}
+        )
+      ).toBe(true)
+      const parsed: unknown = JSON.parse(readFileOrEmpty(responseFile))
+      expect(JSON.stringify(parsed)).toContain(warning)
+      expect(JSON.stringify(parsed)).toContain(STDOUT_TEXT_FRONT_MATTER_ERROR)
     })
   })
 

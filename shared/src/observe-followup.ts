@@ -215,6 +215,17 @@ const classifiedReportLines = (failure: ChildFailure): string[] => {
       'Retryable: yes',
     ]
   }
+  if (failure.kind === 'model_catalog_miss') {
+    return [
+      '# Summary',
+      `Child CLI failed: model '${failure.model}' is not listed in the backend catalog. Catalog matching is reference information, not an allowlist.`,
+      '',
+      '# Error',
+      'Cause: model_catalog_miss',
+      `Model: ${failure.model}`,
+      'Retryable: yes',
+    ]
+  }
   if (failure.kind === 'model_not_found') {
     return [
       '# Summary',
@@ -313,6 +324,30 @@ if (import.meta.vitest) {
           '',
         ].join('\n')
       )
+    })
+
+    it('records model_catalog_miss as retryable without instructing an automatic retry', () => {
+      const { report, observeFile } = writeFailedReport({
+        kind: 'model_catalog_miss',
+        retryable: true,
+        model: 'opencode-go/glm-5.2',
+      })
+      expect(report).toBe(
+        [
+          '# Summary',
+          "Child CLI failed: model 'opencode-go/glm-5.2' is not listed in the backend catalog. Catalog matching is reference information, not an allowlist.",
+          '',
+          '# Error',
+          'Cause: model_catalog_miss',
+          'Model: opencode-go/glm-5.2',
+          'Retryable: yes',
+          `See observe JSON: ${observeFile}`,
+          'Exit code: 1',
+          '',
+        ].join('\n')
+      )
+      expect(report).not.toContain('may succeed on retry')
+      expect(report).not.toContain('automatic retry')
     })
 
     it('marks model_catalog_unavailable as retryable without an Available line', () => {

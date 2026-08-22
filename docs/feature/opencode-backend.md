@@ -353,6 +353,10 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 - `shared/src/observe-effort.ts`: `opencode export` は effort 指定がある run でのみ `opencode export <sessionID>` を 1 回呼び、`run.effort.effective = { value, source: "opencode_export" }` を記録する。未指定 run では呼ばず `run.effort` を記録しない（catalog 取得と同じく、成功パスかつ effort 未指定の run にオーバーヘッドを乗せない）。無効値もそのまま入るため有効性判定には使わず、`source` を `measured` にしない
 - effort 指定がある run では catalog の `variants` と照合し、requested が含まれなければ observe event `effort_unsupported` を出し、response の Summary 先頭へ警告行を挿入する（§3.4）
 - `shared/src/observe-followup.ts`: `classifiedReportLines()` は kind ごとに専用の Summary / Error 文言を持ち、未知 kind は generic failure へ落ちる。`model_catalog_miss` の分岐と固定文言（原因・model・retryable の 3 行）を追加する
+- **補助 subprocess も child と同じ隔離境界で起動する**: `models --verbose` / `export` は child run と同じ sanitized env（呼び出し元の `OPENCODE_CONFIG_CONTENT` を破棄）、`cwd: REPO_ROOT`、`--pure` の付与条件で呼ぶ。caller の config や別 cwd の catalog で分類を誤らないため
+- **catalog を authoritative とする条件を厳格化する**: 見出し行 → JSON ブロックの pair が 1 件以上そろっていることを要求し、見出しの無い単独 JSON・空出力・末尾の不完全ブロックは authoritative にしない。stdout が出力上限に達していたら parse 結果によらず `model_catalog_unavailable` に倒す
+- **effort 指定時は常に `recordEffort` を 1 回呼ぶ**: session ID 欠落・export 失敗・parse 失敗でも `run.effort.requested` を残し、effective は既存値 `{ value: null, source: "not_exposed" }` に倒す
+- **警告は failed response にも載せる**: 分類文と固定警告を単一の response 組み立てへ渡し、非 0 終了や front-matter 不正の fallback response でも Summary 先頭に警告行が入るようにする（後から書き戻さない）
 - **opencode 用 post-run classifier を新設する**: 既存の `classifyChildFailure({ backend, stderrTail })` は pure 関数で stdout も requested model も受け取らないため、そのままでは使えない。入力（exit code / stdout tail / requested model / catalog 取得結果）、`/` を含む model 文字列の正規化、`failedResponseOutcome` への受け渡しを実装する。catalog miss は `ChildFailure` の新 kind `model_catalog_miss`（`retryable: true`）として記録する。`unknown` のままでは `recordChildFailure()` が early return して `error` が保存されない（§5.f）
 - 各モジュールの in-source test に JSONL fixture を追加する
 - spec.md §6 に additive field（`usage.cache_write_tokens` / `usage.reasoning_tokens` / `usage.source` の新値 / `events[].kind = "effort_unsupported"` / `error.kind = "model_catalog_miss"`）を定義する

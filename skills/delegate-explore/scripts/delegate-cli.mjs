@@ -858,6 +858,7 @@ var opencodeCaptureAccumulator = () => ({
 	recognized: 0,
 	stepFinishCount: 0,
 	toolUseCount: 0,
+	sessionID: null,
 	usage: opencodeUsageAccumulator(),
 	usageFailed: false
 });
@@ -1023,7 +1024,8 @@ var summaryOfOpencodeSession = (session) => {
 		firstUseful: accumulator.firstUseful,
 		recognized: accumulator.recognized,
 		stepFinishCount: accumulator.stepFinishCount,
-		toolUseCount: accumulator.toolUseCount
+		toolUseCount: accumulator.toolUseCount,
+		sessionID: accumulator.sessionID
 	};
 };
 var summarizeOpencodeCapture = (captureFile) => {
@@ -1271,10 +1273,15 @@ var consumeOpencodeUsageEvent = (event, accumulator) => {
 	const step = opencodeStepUsageOf(event);
 	if (step === null || !addOpencodeStep(accumulator.usage, step)) accumulator.usageFailed = true;
 };
+var consumeOpencodeSessionEvent = (event, accumulator) => {
+	if (accumulator.sessionID !== null) return;
+	if (typeof event.sessionID === "string" && event.sessionID !== "") accumulator.sessionID = event.sessionID;
+};
 var consumeOpencodeCaptureEvent = (event, accumulator) => {
 	consumeOpencodeTimingEvent(event, accumulator);
 	consumeOpencodeTextEvent(event, accumulator);
 	consumeOpencodeUsageEvent(event, accumulator);
+	consumeOpencodeSessionEvent(event, accumulator);
 };
 opencodeEventConsumer.run = consumeOpencodeCaptureEvent;
 var usageFromOpencodeCapture = (captureFile, context) => {
@@ -2418,6 +2425,15 @@ var classifiedReportLines = (failure) => {
 		`Model: ${failure.model}`,
 		"Retryable: yes"
 	];
+	if (failure.kind === "model_catalog_miss") return [
+		"# Summary",
+		`Child CLI failed: model '${failure.model}' is not listed in the backend catalog. Catalog matching is reference information, not an allowlist.`,
+		"",
+		"# Error",
+		"Cause: model_catalog_miss",
+		`Model: ${failure.model}`,
+		"Retryable: yes"
+	];
 	if (failure.kind === "model_not_found") return [
 		"# Summary",
 		`Child CLI failed: the backend does not expose model '${failure.model}'. This is not transient; pick a model the backend lists.`,
@@ -2778,6 +2794,75 @@ var effortFromCursorConfig = (model, cliConfig) => {
 	let effort = firstParamValue(params, ["effort", "reasoning"]);
 	if (slugEffort !== "") effort = slugEffort;
 	return buildCursorEffort(effort, firstParamValue(params, ["fast"]));
+};
+var OPENCODE_EFFORT_UNSUPPORTED_WARNING = "Warning: requested effort is not listed in the model catalog variants.";
+var opencodeVariantsInclude = (variants, requested) => Object.hasOwn(variants, requested);
+var UTF8_BOM = "﻿";
+var withoutUtf8Bom = (text) => {
+	if (text.startsWith(UTF8_BOM)) return text.slice(1);
+	return text;
+};
+var exportLineBreakAt = (text) => {
+	const lf = text.indexOf("\n");
+	const cr = text.indexOf("\r");
+	if (lf === -1 && cr === -1) return null;
+	if (cr !== -1 && cr + 1 === lf) return {
+		index: cr,
+		width: 2
+	};
+	if (cr !== -1 && (lf === -1 || cr < lf)) return {
+		index: cr,
+		width: 1
+	};
+	return {
+		index: lf,
+		width: 1
+	};
+};
+var firstExportLine = (text) => {
+	const br = exportLineBreakAt(text);
+	if (br === null) return {
+		line: text,
+		rest: ""
+	};
+	return {
+		line: text.slice(0, br.index),
+		rest: text.slice(br.index + br.width)
+	};
+};
+var isExportBannerLine = (line) => /^Exporting session: \S.*$/.test(line);
+var jsonAfterExportBanner = (stdout) => {
+	let remaining = withoutUtf8Bom(stdout);
+	while (remaining !== "") {
+		const { line, rest } = firstExportLine(remaining);
+		if (line.trim() !== "") {
+			if (isExportBannerLine(line)) return rest;
+			return remaining;
+		}
+		remaining = rest;
+	}
+	return remaining;
+};
+var exportVariantOf = (parsed) => {
+	if (!isRecord$1(parsed) || !isRecord$1(parsed.info) || !isRecord$1(parsed.info.model)) return null;
+	const { variant } = parsed.info.model;
+	if (typeof variant !== "string" || variant === "") return null;
+	return variant;
+};
+var parseExportJson = (stdout) => {
+	try {
+		return JSON.parse(jsonAfterExportBanner(stdout));
+	} catch {
+		return null;
+	}
+};
+var effortFromOpencodeExport = (stdout) => {
+	const variant = exportVariantOf(parseExportJson(stdout));
+	if (variant === null) return null;
+	return {
+		value: variant,
+		source: "opencode_export"
+	};
 };
 //#endregion
 //#region shared/src/resolve-model.ts
@@ -3717,26 +3802,43 @@ var normalizeStdoutSummary = (body) => {
 	if (hasSummaryHeading(body)) return body;
 	return `# Summary\n\n${body}`;
 };
+var spliceWarningAfterSummary = (lines, warning, body) => {
+	let fence = null;
+	for (let index = 0; index < lines.length; index += 1) {
+		const { fence: nextFence, hasSummary } = summaryLineResult(lines[index], fence);
+		fence = nextFence;
+		if (hasSummary) {
+			lines.splice(index + 1, 0, warning);
+			return lines.join("\n");
+		}
+	}
+	return `# Summary\n${warning}\n\n${body}`;
+};
+var insertSummaryWarning = (body, warning) => {
+	if (warning === "") return body;
+	return spliceWarningAfterSummary(body.split("\n"), warning, body);
+};
 var buildResponseFromStdoutText = (text, target, env) => {
 	const parts = reportPartsOfContent(text);
 	if (parts === null || !validProtocolStatus(parts.status) || isWhitespaceOnly(parts.body)) return false;
 	return assembleResponse({
 		...target,
 		status: parts.status
-	}, normalizeStdoutSummary(parts.body), env);
+	}, insertSummaryWarning(normalizeStdoutSummary(parts.body), target.summaryWarning ?? ""), env);
 };
 var STDOUT_TEXT_FRONT_MATTER_ERROR = "The final response was missing valid front-matter.";
-var buildFailedResponseFromStdoutText = (target, env) => assembleResponse({
-	...target,
-	status: "failed"
-}, [
+var failedStdoutReportBody = (warning) => insertSummaryWarning([
 	"# Summary",
 	"Child CLI failed or did not write a response.",
 	"",
 	"# Error",
 	STDOUT_TEXT_FRONT_MATTER_ERROR,
 	""
-].join("\n"), env);
+].join("\n"), warning);
+var buildFailedResponseFromStdoutText = (target, env) => assembleResponse({
+	...target,
+	status: "failed"
+}, failedStdoutReportBody(target.summaryWarning ?? ""), env);
 var writeCompanionFromResponse = (responseFile) => {
 	try {
 		const parsed = JSON.parse(readFileOrEmpty$1(responseFile));
@@ -4358,6 +4460,11 @@ ${report}`;
 //#endregion
 //#region shared/src/failure-classify.ts
 var SLUG_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+var OPENCODE_FAILURE_MODEL_PATTERN = /^[A-Za-z0-9._-]{1,64}\/[A-Za-z0-9._-]{1,64}$/;
+var sanitizeFailureModel = (model) => {
+	if (SLUG_PATTERN.test(model) || OPENCODE_FAILURE_MODEL_PATTERN.test(model)) return model;
+	return null;
+};
 var CURSOR_MODEL_PATTERN = /^[A-Za-z0-9._-]{1,64}(?:\[[A-Za-z0-9._,=-]{1,64}\])?$/;
 var MAX_CANDIDATES = 8;
 var signatures = {
@@ -4676,18 +4783,24 @@ var stdoutFailureTarget = (context) => ({
 	responseFile: context.args.responseFile,
 	runDir: context.workDir
 });
-var completeStdoutText = (context, config, wait) => {
+var assembleStdoutResponse = (context, config, text) => {
+	const warning = config.summaryWarning ?? "";
 	const target = {
 		responderSessionId: config.responderSessionId,
 		responseFile: context.args.responseFile,
-		runDir: context.workDir
+		runDir: context.workDir,
+		summaryWarning: warning
 	};
-	const text = collectedStdoutText(config);
-	const assembled = text !== null && buildResponseFromStdoutText(text, target, context.env);
-	if (!assembled) {
-		context.completionFailed = true;
-		buildFailedResponseFromStdoutText(stdoutFailureTarget(context), context.env);
-	}
+	if (text !== null && buildResponseFromStdoutText(text, target, context.env)) return true;
+	context.completionFailed = true;
+	buildFailedResponseFromStdoutText({
+		...stdoutFailureTarget(context),
+		summaryWarning: warning
+	}, context.env);
+	return false;
+};
+var completeStdoutText = (context, config, wait) => {
+	const assembled = assembleStdoutResponse(context, config, collectedStdoutText(config));
 	const outcome = {
 		reportReadyMs: wait.reportReadyMs,
 		structuredParse: null
@@ -6540,11 +6653,167 @@ var runWrapperImagegen = async (argv, env, io) => {
 var OPENCODE_SELECTOR = "opencode/";
 var OPENCODE_VERSION_TIMEOUT_MS = 1e4;
 var OPENCODE_VERSION_MAX_BYTES = 16384;
+var OPENCODE_AUX_TIMEOUT_MS = 1e4;
+var OPENCODE_MODELS_MAX_BYTES = 262144;
+var OPENCODE_EXPORT_MAX_BYTES = 2097152;
+var OPENCODE_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 var PURE_TASK_TYPES = /* @__PURE__ */ new Set([
 	"explore",
 	"review",
 	"htmldoc"
 ]);
+var catalogParseState = () => ({
+	pending: "",
+	awaitingBlock: false,
+	models: /* @__PURE__ */ new Map()
+});
+var tryParseJson = (text) => {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return null;
+	}
+};
+var catalogModelOf = (value) => {
+	if (!isRecord$3(value) || !isRecord$3(value.variants)) return null;
+	if (typeof value.id !== "string" || typeof value.providerID !== "string") return null;
+	const id = sanitizeFailureModel(`${value.providerID}/${value.id}`);
+	if (id === null) return null;
+	return {
+		id,
+		variants: value.variants
+	};
+};
+var finishCatalogBlock = (state) => {
+	const parsed = tryParseJson(state.pending);
+	if (parsed === null) return true;
+	const model = catalogModelOf(parsed);
+	if (model === null) return false;
+	state.models.set(model.id, model);
+	state.pending = "";
+	state.awaitingBlock = false;
+	return true;
+};
+var startCatalogJson = (line, state) => {
+	state.pending = line;
+	return finishCatalogBlock(state);
+};
+var consumeCatalogHeading = (state) => {
+	if (state.awaitingBlock) return false;
+	state.awaitingBlock = true;
+	return true;
+};
+var consumeCatalogJsonStart = (line, state) => {
+	if (!state.awaitingBlock) return false;
+	state.awaitingBlock = false;
+	return startCatalogJson(line, state);
+};
+var consumeCatalogStart = (trimmed, line, state) => {
+	if (trimmed === "") return true;
+	if (trimmed.startsWith("{")) return consumeCatalogJsonStart(line, state);
+	return consumeCatalogHeading(state);
+};
+var consumeCatalogLine = (line, state) => {
+	if (state.pending === "") return consumeCatalogStart(line.trim(), line, state);
+	state.pending = `${state.pending}\n${line}`;
+	return finishCatalogBlock(state);
+};
+var parseOpencodeModelsVerbose = (stdout) => {
+	const state = catalogParseState();
+	for (const line of stdout.split("\n")) if (!consumeCatalogLine(line, state)) return { ok: false };
+	if (state.pending !== "" || state.awaitingBlock || state.models.size === 0) return { ok: false };
+	return {
+		ok: true,
+		models: state.models
+	};
+};
+var classifyOpencodeCatalogFailure = (model, catalog) => {
+	if (!catalog.ok) return {
+		kind: "model_catalog_unavailable",
+		retryable: true,
+		model
+	};
+	if (!catalog.models.has(model)) return {
+		kind: "model_catalog_miss",
+		retryable: true,
+		model
+	};
+	return { kind: "unknown" };
+};
+var classifyOpencodeChildFailure = (input) => {
+	if (input.exitCode === 0) return { kind: "unknown" };
+	const model = sanitizeFailureModel(input.requestedModel);
+	if (model === null) return { kind: "unknown" };
+	return classifyOpencodeCatalogFailure(model, input.catalog);
+};
+var auxLimitsOf = (limits, fallback) => {
+	const resolved = { ...fallback };
+	if (typeof limits.timeoutMs === "number") resolved.timeoutMs = limits.timeoutMs;
+	if (typeof limits.maxBytes === "number") resolved.maxBytes = limits.maxBytes;
+	return resolved;
+};
+var opencodeAuxArgs = (args, pure) => {
+	if (pure) return [...args, "--pure"];
+	return [...args];
+};
+var runOpencodeAux = (input) => {
+	const result = spawnSync(input.command, [...input.args], {
+		encoding: "utf8",
+		env: { ...input.env },
+		cwd: input.cwd,
+		killSignal: "SIGKILL",
+		maxBuffer: input.limits.maxBytes,
+		stdio: [
+			"ignore",
+			"pipe",
+			"pipe"
+		],
+		timeout: input.limits.timeoutMs
+	});
+	const stdout = result.stdout ?? "";
+	const stdoutBytes = Buffer.byteLength(stdout);
+	if (result.error || result.status !== 0 || result.signal !== null) return {
+		ok: false,
+		stdout: "",
+		stdoutBytes: 0
+	};
+	return {
+		ok: true,
+		stdout,
+		stdoutBytes
+	};
+};
+var auxResultAuthoritative = (result, maxBytes) => result.ok && result.stdoutBytes < maxBytes;
+var fetchOpencodeCatalog = (command, env, options = {}) => {
+	const limits = auxLimitsOf(options, {
+		timeoutMs: OPENCODE_AUX_TIMEOUT_MS,
+		maxBytes: OPENCODE_MODELS_MAX_BYTES
+	});
+	const result = runOpencodeAux({
+		command,
+		args: opencodeAuxArgs(["models", "--verbose"], options.pure === true),
+		env,
+		cwd: options.cwd,
+		limits
+	});
+	if (!auxResultAuthoritative(result, limits.maxBytes)) return { ok: false };
+	return parseOpencodeModelsVerbose(result.stdout);
+};
+var fetchOpencodeExport = (input) => {
+	const limits = auxLimitsOf(input.limits ?? {}, {
+		timeoutMs: OPENCODE_AUX_TIMEOUT_MS,
+		maxBytes: OPENCODE_EXPORT_MAX_BYTES
+	});
+	const result = runOpencodeAux({
+		command: input.command,
+		args: opencodeAuxArgs(["export", input.sessionID], input.pure === true),
+		env: input.env,
+		cwd: input.cwd,
+		limits
+	});
+	if (!auxResultAuthoritative(result, limits.maxBytes)) return null;
+	return result.stdout;
+};
 var opencodePromptTailLines = [
 	"3. 作業完了後、最終応答として front-matter 付き Markdown だけを返す。先頭に",
 	"   ---",
@@ -6709,16 +6978,176 @@ var prepareOpencodeLaunch = (context) => {
 		requestStep
 	};
 };
-var finalizeOpencodeRun = (context, cliModel, wait) => {
-	if (wait.childStatus !== 0) buildFailedResponseFromStdoutText({
-		responderSessionId: responderSessionIdOf(context, cliModel),
-		responseFile: context.args.responseFile,
-		runDir: context.workDir
-	}, context.env);
+var opencodeAuxLaunchOf = (context) => ({
+	env: opencodeChildEnv(context),
+	cwd: context.repoRoot,
+	pure: usePureMode(context)
+});
+var catalogIfNeeded = (command, context, childStatus) => {
+	if (childStatus === 0 && context.effort === "") return null;
+	const aux = opencodeAuxLaunchOf(context);
+	return fetchOpencodeCatalog(command, aux.env, {
+		cwd: aux.cwd,
+		pure: aux.pure
+	});
+};
+var catalogForClassify = (catalog) => {
+	if (catalog === null) return { ok: false };
+	return catalog;
+};
+var sessionIdFromCapture = (captureFile) => {
+	const summary = summarizeOpencodeCapture(captureFile);
+	if (summary === null || summary.sessionID === null) return null;
+	if (!OPENCODE_SESSION_ID_PATTERN.test(summary.sessionID)) return null;
+	return summary.sessionID;
+};
+var recordOpencodeChildFailure = (context, failure) => {
+	quietly(() => {
+		recordChildFailure(context.args.observeFile, context.workDir, {
+			backend: context.backend,
+			failure
+		});
+	});
+};
+var catalogUnavailableLines = (model) => [
+	"# Summary",
+	`Child CLI failed: backend could not resolve model '${model}'. The backend returned no model catalog, so this is likely transient and may succeed on retry.`,
+	"",
+	"# Error",
+	"Cause: model_catalog_unavailable",
+	`Model: ${model}`,
+	"Retryable: yes"
+];
+var catalogMissLines = (model) => [
+	"# Summary",
+	`Child CLI failed: model '${model}' is not listed in the backend catalog. Catalog matching is reference information, not an allowlist.`,
+	"",
+	"# Error",
+	"Cause: model_catalog_miss",
+	`Model: ${model}`,
+	"Retryable: yes"
+];
+var classifiedFailureBody = (failure) => {
+	if (failure.kind === "model_catalog_unavailable") return catalogUnavailableLines(failure.model);
+	if (failure.kind === "model_catalog_miss") return catalogMissLines(failure.model);
+	return [
+		"# Summary",
+		"Child CLI failed or did not write a response.",
+		"",
+		"# Error"
+	];
+};
+var failedExitCode = (childStatus) => {
+	if (childStatus === 0) return 1;
+	return childStatus;
+};
+var classifiedFailureReport = (context, failure, childStatus) => [
+	"---",
+	"status: failed",
+	"---",
+	...classifiedFailureBody(failure),
+	`See observe JSON: ${context.args.observeFile}`,
+	`Exit code: ${failedExitCode(childStatus)}`,
+	""
+].join("\n");
+var classifyOpencodeRunFailure = (input) => classifyOpencodeChildFailure({
+	exitCode: input.childStatus,
+	stdoutTail: readTailBytes(input.context.stdoutCapture, STDERR_TAIL_MAX_BYTES),
+	requestedModel: input.cliModel,
+	catalog: catalogForClassify(input.catalog)
+});
+var recordFailureIfNeeded = (context, childStatus, failure) => {
+	if (childStatus !== 0) recordOpencodeChildFailure(context, failure);
+};
+var variantsOfCatalogModel = (catalog, cliModel) => {
+	if (!catalog.ok) return null;
+	const entry = catalog.models.get(cliModel);
+	if (typeof entry === "undefined") return null;
+	return entry.variants;
+};
+var emitEffortUnsupported = (context, cliModel, variants) => {
+	quietly(() => {
+		appendObserveEvent(context.args.observeFile, context.workDir, {
+			kind: "effort_unsupported",
+			ts: metricsTimestamp(),
+			requested: context.effort,
+			model: cliModel,
+			variants: Object.keys(variants)
+		});
+	});
+};
+var opencodeEffortWarning = (context, cliModel, catalog) => {
+	if (context.effort === "" || catalog === null) return "";
+	const variants = variantsOfCatalogModel(catalog, cliModel);
+	if (variants === null || opencodeVariantsInclude(variants, context.effort)) return "";
+	emitEffortUnsupported(context, cliModel, variants);
+	return OPENCODE_EFFORT_UNSUPPORTED_WARNING;
+};
+var notExposedEffort = () => ({
+	value: null,
+	source: "not_exposed"
+});
+var effectiveFromExport = (exported) => {
+	if (exported === null) return notExposedEffort();
+	return effortFromOpencodeExport(exported) ?? notExposedEffort();
+};
+var recordOpencodeEffortObservation = (context, effective) => {
+	quietly(() => {
+		recordEffort(context.args.observeFile, context.workDir, {
+			requested: context.effort,
+			effective: { ...effective }
+		});
+	});
+};
+var recordOpencodeExportEffort = (context, command, sessionID) => {
+	if (sessionID === null) {
+		recordOpencodeEffortObservation(context, notExposedEffort());
+		return;
+	}
+	const aux = opencodeAuxLaunchOf(context);
+	recordOpencodeEffortObservation(context, effectiveFromExport(fetchOpencodeExport({
+		command,
+		sessionID,
+		env: aux.env,
+		cwd: aux.cwd,
+		pure: aux.pure
+	})));
+};
+var applyOpencodeEffort = (input) => {
+	if (input.context.effort === "") return "";
+	const warning = opencodeEffortWarning(input.context, input.cliModel, input.catalog);
+	recordOpencodeExportEffort(input.context, input.command, sessionIdFromCapture(input.context.stdoutCapture));
+	return warning;
+};
+var opencodeStdoutText = (input) => {
+	if (input.wait.childStatus !== 0) return classifiedFailureReport(input.context, input.failure, input.wait.childStatus);
+	return opencodeCapturedText(input.context, input.wait);
+};
+var finalizeOpencodeRun = (input) => {
+	const { context, launch, cliModel, wait } = input;
+	const catalog = catalogIfNeeded(launch.command, context, wait.childStatus);
+	const failure = classifyOpencodeRunFailure({
+		context,
+		cliModel,
+		childStatus: wait.childStatus,
+		catalog
+	});
+	recordFailureIfNeeded(context, wait.childStatus, failure);
+	const summaryWarning = applyOpencodeEffort({
+		context,
+		command: launch.command,
+		cliModel,
+		catalog
+	});
 	completeResponse(context, {
 		responderSessionId: responderSessionIdOf(context, cliModel),
 		reportMode: reportModeForBackend("opencode"),
-		collectStdoutText: () => opencodeCapturedText(context, wait)
+		collectStdoutText: () => opencodeStdoutText({
+			context,
+			wait,
+			failure
+		}),
+		summaryWarning
 	}, wait);
 	const outcome = finalizeResponse(context, wait.childStatus);
 	recordOpencodeUsage(context);
@@ -6739,16 +7168,21 @@ var runOpencodeChild = async (context, launch) => {
 		stdoutCapture: context.stdoutCapture,
 		stderrCapture: context.stderrCapture
 	});
-	return finalizeOpencodeRun(context, cliModel, await waitWithHeartbeat({
-		observeFile: context.args.observeFile,
-		runDir: context.workDir,
-		backend: context.backend,
-		worker,
-		stdoutCapture: context.stdoutCapture,
-		stderrCapture: context.stderrCapture,
-		responseFile: context.args.responseFile,
-		env: context.env
-	}));
+	return finalizeOpencodeRun({
+		context,
+		launch,
+		cliModel,
+		wait: await waitWithHeartbeat({
+			observeFile: context.args.observeFile,
+			runDir: context.workDir,
+			backend: context.backend,
+			worker,
+			stdoutCapture: context.stdoutCapture,
+			stderrCapture: context.stderrCapture,
+			responseFile: context.args.responseFile,
+			env: context.env
+		})
+	});
 };
 var wrapperOpencodeWithContext = async (context) => {
 	const launch = prepareOpencodeLaunch(context);

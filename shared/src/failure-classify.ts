@@ -1,6 +1,7 @@
 export type ChildFailure =
   | { kind: 'unknown' }
   | { kind: 'model_catalog_unavailable'; retryable: true; model: string }
+  | { kind: 'model_catalog_miss'; retryable: true; model: string }
   | {
       kind: 'model_not_found'
       retryable: false
@@ -14,6 +15,17 @@ export type ChildFailure =
 // slug と候補名を厳格な文字種・長さに制限するのは、stderr の任意テキストが
 // response (Markdown) へ転記される経路を塞ぐため
 const SLUG_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
+
+// opencode の CLI モデルは provider/model。既存 slug は `/` を拒否するため、
+// failure に載せる表示値だけ provider/model を同じ強度で別許可する
+const OPENCODE_FAILURE_MODEL_PATTERN = /^[A-Za-z0-9._-]{1,64}\/[A-Za-z0-9._-]{1,64}$/
+
+export const sanitizeFailureModel = (model: string): string | null => {
+  if (SLUG_PATTERN.test(model) || OPENCODE_FAILURE_MODEL_PATTERN.test(model)) {
+    return model
+  }
+  return null
+}
 
 // Cursor は `grok-4.5[effort=medium]` のように bracket 込みの model 名を拒否する。
 // 抽出値は Markdown へ転記されるため、bracket 内も含めて文字種と長さを閉じる
@@ -465,6 +477,26 @@ if (import.meta.vitest) {
       expect(
         classifyChildFailure(devinInput("Available:\ngpt-5\nUnknown model: 'kimi-k3-max'\n"))
       ).toEqual({ kind: 'unknown' })
+    })
+  })
+
+  describe('sanitizeFailureModel', () => {
+    it('accepts a provider/model identifier and existing slugs', () => {
+      expect(sanitizeFailureModel('opencode-go/glm-5.2')).toBe('opencode-go/glm-5.2')
+      expect(sanitizeFailureModel('kimi-k3-max')).toBe('kimi-k3-max')
+    })
+
+    it('rejects slash models that would break Markdown or the component grammar', () => {
+      for (const model of [
+        'opencode-go/glm-5.2@high',
+        'a/b/c',
+        'opencode-go/glm 5.2',
+        'opencode-go/glm-5.2`x`',
+        '/glm-5.2',
+        'opencode-go/',
+      ]) {
+        expect(sanitizeFailureModel(model)).toBeNull()
+      }
     })
   })
 }
