@@ -18,7 +18,7 @@
 | [MUST] 失敗の検知と通知                       | 未           | catalog に無いモデルでの失敗が `error.kind = "model_catalog_miss"` に記録され、failed response の Error section 経由で main へ届く（effort 警告は effort を実装する場合の条件として SHOULD 側に置く）                                                    |          | 未着手 |
 | [MUST] session lifecycle                      | 未           | session ID を取得できた通常 run が session store を残さず、取得できなかった run は `session_delete_skipped`、削除失敗は `session_delete_failed`、削除の timeout は `session_delete_failed` として必ず observe に残る（残留を許すのは記録された場合だけ） |          | 未着手 |
 | [SHOULD] session reuse                        | 未           | resumable で `sessionID` を回収し、follow-up が `-s <sessionID>` で継続する golden が通る                                                                                                                                                                |          | 未着手 |
-| [SHOULD] MCP 注入                             | 未           | 親 MCP 設定を config の `mcp` セクションへ変換注入し、observe に server 名のみ記録する                                                                                                                                                                   |          | 未着手 |
+| [SHOULD] MCP 注入                             | 未           | `DELEGATE_OPENCODE_MCP_SOURCE` 指定時に親 MCP 設定を config の `mcp` セクションへ変換注入し observe に server 名のみ記録する。未指定時は `source: "none"` を記録する                                                                                     |          | 未着手 |
 | [SHOULD] effort（`--variant`）対応            | 未           | `@<effort>` が形式検証のみで `--variant` へ渡り、`run.effort.requested` / `effective` が記録される。**実装する場合は**未対応値の `effort_unsupported` event と Summary 警告行の到達まで含めて完了とする                                                  |          | 未着手 |
 | [SHOULD] 価格表エントリ                       | 未           | `shared/model-token-prices.json` に opencode の pricing source と主要モデルを追加し、チャートを再生成する                                                                                                                                                |          | 未着手 |
 
@@ -239,6 +239,48 @@ catalog を引くのは「失敗したとき」と「effort を指定したと�
 
 SKILL.md には、run 結果が `failed` なら Error section を、`completed` でも Summary 先頭に警告行があればその旨を main がユーザーへ伝えるよう明記する。警告は response 本体に載るので、`read-response.sh` の selector（`auto` / `decision`）に関わらず Summary とともに必ず返る。
 
+### 3.5 config の構築と継承境界
+
+worker へ渡す config は wrapper が全体を構築し、`OPENCODE_CONFIG_CONTENT` へ JSON 文字列として載せる。呼び出し元の環境に同名の変数があっても**継承せず破棄する**。permission を締める保証を呼び出し元の env で外せないようにするためで、merge しない。
+
+wrapper が構築する config の中身:
+
+| キー         | 内容                               | 条件                                                         |
+| ------------ | ---------------------------------- | ------------------------------------------------------------ |
+| `permission` | §3.2 の task_type 別 permission    | read-only 種別のみ。implement / chore / htmldoc では載せない |
+| `mcp`        | 親設定から抽出した MCP server 定義 | `DELEGATE_OPENCODE_MCP_SOURCE` が指定されたときだけ          |
+
+対象リポジトリの `opencode.json` / `.opencode/` の扱い:
+
+| 設定                                                 | 扱い                                                                                                                                                                        | 根拠                                                                                                                                                                     |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `permission`                                         | explore / review では遮断（注入した `edit: "deny"` が merge 順で勝つ）。implement / chore / htmldoc では wrapper が注入しないため project の設定がそのまま効く              | §2.2 実測 / §3.2                                                                                                                                                         |
+| `mcp`                                                | 同名 server は注入側が勝ち、他は継承                                                                                                                                        | merge 順で後段のキーが勝つ（公式 config docs）                                                                                                                           |
+| `instructions` / `agent` / `command` / `lsp`         | 継承                                                                                                                                                                        | 委譲先リポジトリの作業文脈であり、遮断すると worker の挙動が repository の想定と乖離する                                                                                 |
+| plugin（`.opencode/plugins/` と config の `plugin`） | `implement` / `chore` でのみ継承し、`explore` / `review` / `htmldoc` では `--pure` を付けて無効化する。`DELEGATE_OPENCODE_PURE` が有効なら全 task type で `--pure` を付ける | Codex の project hooks と同じ allowlist（spec.md §5）。plugin も任意コード実行であり、read-only 種別と限定書き込み種別では prompt 制約を迂回してリポジトリを書き換え得る |
+
+`DELEGATE_OPENCODE_PURE` は `1` / `true` / `yes`（大小文字無視、前後の空白は無視）で有効とし、未設定・空文字・その他の値は無効とする。不正値で停止はしない（`DELEGATE_CODEX_HOOKS` と同じく寛容に扱う）。
+
+MCP の入力元は実行時に自動判別できない。protocol v1 の request は requester backend を持たず、wrapper 引数にも無く、`WrapperContext.backend` は worker model 由来だからである。したがって `DELEGATE_OPENCODE_MCP_SOURCE`（`claude` / `cursor` / `codex`）で明示する。抽出は既存 extractor をそのまま使い、renderer だけ opencode 用を新設する（Step 6）。env の値と抽出結果の組み合わせは次の表で確定させ、実装に判断を残さない。
+
+| `DELEGATE_OPENCODE_MCP_SOURCE`                                                          | 抽出   | config の `mcp` | `mcp_config.source` | `mcp_config.servers`         |
+| --------------------------------------------------------------------------------------- | ------ | --------------- | ------------------- | ---------------------------- |
+| 未設定 / 空文字                                                                         | しない | 載せない        | `shared`            | `[]`                         |
+| `claude` / `cursor` / `codex`、1 件以上を変換できた                                     | する   | 載せる          | `injected`          | 載せた server 名             |
+| 同上、変換できた entry が 0 件（設定不在 / JSON 不正 / CLI 失敗 / 全 entry が変換不能） | する   | 載せない        | `none`              | `[]`                         |
+| 上記以外の値                                                                            | —      | —               | —                   | child 起動前に exit 3 で停止 |
+
+`shared` と `none` の使い分けは spec.md §6 の既存語義に従う。未指定は「wrapper が MCP 構成を所有せず実行環境の設定をそのまま使う」状態なので `shared` とする（project config の `mcp` は継承されるため、worker が MCP を使うことはあり得る）。指定したうえで server が見つからなかった場合だけ `none` とする。
+
+抽出と変換の規則:
+
+- 設定の探索順は既存 wrapper と同じにする。`claude` は `CLAUDE_CONFIG_DIR/.claude.json`、無ければ `HOME/.claude.json`。`cursor` は `CURSOR_CONFIG_DIR` → `XDG_CONFIG_HOME/cursor` → `HOME/.cursor` の順で決めた directory の `mcp.json`。`codex` は `CODEX_HOME`（未設定なら `HOME/.codex`）で `codex mcp list --json`
+- `codex` source は subprocess を起動するため、補助 subprocess と同じ bounded helper（timeout・出力上限・SIGKILL）経由で呼ぶ。既存 `mcpExtractCodexUser` は timeout を持たないので helper でラップする。失敗は空の抽出結果として扱い、run は失敗させない
+- canonical entry の変換は `{command, args, env}` → `{ type: "local", command: [command, ...args], environment: env }`、`{url}` → `{ type: "remote", url, headers }`。どちらにも当てはまらない entry は捨て、`servers` にも載せない
+- `enabled` は書かない（既定の有効を使う）
+- `servers` に記録するのは実際に config へ載せた名前だけで、command / env / headers / 認証情報は記録しない
+- `--pure` と MCP 注入は独立に効く。plugin を無効化した run でも MCP は注入する
+
 ## 4. 実装ステップ
 
 ### Step 1: (完了済み) 設計判断の確定と残 PoC
@@ -253,16 +295,17 @@ SKILL.md には、run 結果が `failed` なら Error section を、`completed` 
 
 成果物: §2.2 の PoC 結果表。§5.b は `stdout_text` 方式で確定し、prompt の stdin 必須と cwd 外アクセスの非対称を §3.2 へ反映した
 
-### Step 2: (未着手) config 契約と MCP 入力元の確定
+### Step 2: (完了済み) config 契約と MCP 入力元の確定
 
-Step 4 以降の実装に先行して決める。ここが未定だと wrapper の config 構築を実装者判断で埋めることになる。**各項目は「検討する」ではなく契約として書き切る**こと。
+契約は §3.5 に、判断根拠は §5.i / §5.j に書いた。確定したのは次の 4 点。
 
-- **`OPENCODE_CONFIG_CONTENT` の構築規則**: 呼び出し元の環境に既に同変数がある場合、置換するか merge するか。permission を締める保証を壊さないため、既存値を無視して wrapper が全体を構築する案を第一候補とする
-- **project config の継承範囲**: 対象リポジトリの `opencode.json` / `.opencode/` のうち permission は override されない（§2.2 実測）が、`instructions` / `agent` / `command` / `plugin` / `lsp` / `mcp` は worker に効く。信頼境界として何を許し何を遮断するかを決める（plugin を `--pure` で無効化するかを含む）
-- **MCP の入力元**: 抽出結果の表現は既存の共通型 `McpCanonical`（`delegate-mcp.ts`、server 名 → `{command, args, env}` または `{url}`）をそのまま使える。決めるべきは**どの親設定から抽出するか**で、既存 extractor は入力元別に分かれている（`mcpExtractClaudeUser` / `mcpExtractCursorGlobal` / `mcpExtractCodexUser`）。protocol v1 の request には requester backend の情報が無く `requester_session_id` しか渡らないため、**実行時に自動判別はできない**。固定（例: Claude user 設定を正本にする）か、環境変数で明示するかを決める
-- **名前衝突**: 注入した MCP server 名が project config の同名 server と衝突したときの優先順位
+- `OPENCODE_CONFIG_CONTENT` は wrapper が全体を構築し、呼び出し元の同名変数は継承せず破棄する
+- permission と plugin は read-only 種別（explore / review、plugin は htmldoc も）で遮断し、write 系では project の設定を継承する。`DELEGATE_OPENCODE_PURE` で全 task type の plugin を無効化できる
+- `instructions` / `agent` / `command` / `lsp` は継承する
+- MCP の入力元は `DELEGATE_OPENCODE_MCP_SOURCE`（`claude` / `cursor` / `codex`）で明示する。env の値 × 抽出結果の全組み合わせを §3.5 の決定表で確定した（未指定は `shared`、指定して 0 件は `none`、不正値は exit 3）
+- 注入した MCP server 名が project config と衝突した場合は注入側が勝つ
 
-成果物: 何を注入し・何を継承し・何を遮断するかの契約が決まり、Step 4 と Step 6 が判断なしに書ける
+成果物: Step 4 と Step 6 が実装者判断なしに書ける config 契約
 
 ### Step 3: (未着手) モデル解決と selector 検証
 
@@ -280,7 +323,7 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
 - `shared/src/wrapper-opencode.ts` を新規作成し、`wrapper-cursor.ts` の構造（`parseWrapperArgs` → `makeWrapperContext` → 子 CLI 起動 → `waitWithHeartbeat` → finalize）を踏襲する
   - CLI 解決: PATH 上の `opencode` を `--version` で検証
   - argv: `run --format json -m <provider/model> [--variant <effort>] [-s <sessionID>]`。prompt は **必ず stdin**（positional に置くと `---` でハングする。§2.2）
-  - config 注入: `OPENCODE_CONFIG_CONTENT` へ permission（§3.2）を載せる
+  - config 注入: §3.5 の規則で config を構築して `OPENCODE_CONFIG_CONTENT` へ載せる（呼び出し元の同名変数は破棄する）。`explore` / `review` / `htmldoc` では `--pure` を argv に足し、`DELEGATE_OPENCODE_PURE` が有効なら全 task type で足す（§3.5）
   - cwd は `REPO_ROOT`
 - **共通層に第 3 の report mode を通す**（現在の `CompletionConfig.reportMode` は `structured | report_md` の union で、`completeMissingResponse` も 2 分岐しかない）
   - `wrapper-common.ts`: `reportMode` に `'stdout_text'` を追加し、対応する completion branch と collector を実装する。`CompletionOutcome.structuredParse` は **`null` を維持する**。spec.md §6 の `timing.structured_output_parse` は「Claude / Codex の schema 強制出力の parse 成否」と定義されており、front-matter parse の成否をここへ入れると既存 consumer の解釈が変わる。front-matter parse の成否を観測したい場合は、方式非依存の新 field（例 `response_parse`）を spec に足してから使う
@@ -288,7 +331,7 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
 - `prompt-constraints.ts`: 現在の `promptConstraints(taskType, responseFile)` は explore / review / htmldoc で「`${responseFile}` への報告生成は可」と明示しており、cwd 外へ書けない stdout mode と矛盾する。report target を意識した形に変え、stdout mode では response path を渡さず「最終応答として front-matter 付き Markdown を返す」制約に差し替える。既存 4 backend 向けの制約文言は変えない（prompt は stdin / argv に載るため既存 golden を壊す）。report target が stdout の場合の分岐だけを足す
 - **request inline gate 超過の扱いを決める**（protocol v1 は 256KB 超過時に worker が cwd 外の request file を `read-request.sh` で読む前提だが、opencode worker は cwd 外を読めない）
   - 採用: `DELEGATE_REQUEST_INLINE_MAX` 超過を child 起動前に fail-closed とし、wrapper が failed response を書いて Error section に理由と回避策（request を分割する / 他 backend を使う）を載せる。exit code は 1（`spec.md` §10 の「その他の実行失敗」）。stderr のみの通知は main へ届かないため使わない。cwd 内 staging は cleanup 責任とリポジトリ汚染を招くため採らない
-- **補助 subprocess を helper に集約する**: `--version` は bounded timeout 付きの fail-closed preflight とし、CLI 不在・応答なしは exit 3（前提条件不足）で停止する。`export` / `models --verbose` / `session delete` を timeout・出力上限・SIGKILL 付き helper 経由の fail-soft にし、失敗は telemetry 欠落として run を止めない
+- **補助 subprocess を helper に集約する**: `--version` は bounded timeout 付きの fail-closed preflight とし、CLI 不在・応答なしは exit 3（前提条件不足）で停止する。`DELEGATE_OPENCODE_MCP_SOURCE=codex` の抽出（`codex mcp list --json`）も同じ helper 経由にする。`export` / `models --verbose` / `session delete` を timeout・出力上限・SIGKILL 付き helper 経由の fail-soft にし、失敗は telemetry 欠落として run を止めない
 - `shared/delegate-opencode.sh` shim を追加する（既存 shim と同構造。`sync-shared.ts` は `.sh` を自動列挙するため設定変更は不要）
 - **配線**: `shared/src/dispatch.ts` の `BACKEND_SCRIPTS.opencode = 'delegate-opencode.sh'` と `shared/src/main.ts` の `WRAPPER_BACKENDS.opencode = runWrapperOpencode` をここで足す（wrapper 実体と shim が揃う Step だから）
 - **分岐漏れを型で止める**: 現在の `completeMissingResponse` は `if (reportMode === 'structured') ... else completeReportMd(...)` で、union を増やしても `stdout_text` が `report_md` 側へ落ちたままコンパイルが通る。exhaustive な `switch` + `assertNever` に置き換えてから mode を追加する
@@ -319,13 +362,13 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
   - session ID を取得できなかった run では削除を試みず `session_delete_skipped` event を残す（`session list` 差分による推測削除は並列 run の session を誤削除するため採らない）
   - child failure・signal 受信・response parse 失敗の各経路でも削除する（成功パスだけで削除しない）
   - **削除失敗は telemetry 欠落ではなく状態の残留**なので、observe event（`session_delete_failed`）として記録する。delegate 本体は失敗させないが、記録は必ず残す
-- **project config の継承境界を決める**: 対象リポジトリの `opencode.json` / `.opencode/` は `OPENCODE_CONFIG_CONTENT` より優先度が低いが、permission 以外の設定（`instructions` / `agent` / `lsp` 等）は worker に効く。継承を許す範囲を明文化する
+- project config の継承境界は §3.5 の契約に従う（permission だけ遮断し、plugin は `DELEGATE_OPENCODE_PURE` で opt-out）
 - MCP: opencode 用の renderer（`mcpRenderOpencodeConfig` 相当）を新設する。入力は既存の共通型 `McpCanonical` で、renderer だけが backend 別（`mcpRenderClaudeMcpConfig` / `mcpRenderCursorMcpJson` / `mcpRenderCodexToml`）
-  - 入力元: Step 2 で確定した extractor を使う（自動判別はできない）
+  - 入力元: `DELEGATE_OPENCODE_MCP_SOURCE` が選ぶ既存 extractor を使う。未指定なら抽出も注入もしない（§3.5）
   - 変換: canonical → opencode の `mcp` セクション（local は `type: "local"` + `command` 配列 + `environment`、remote は `type: "remote"` + `url` + `headers`）
   - observe: `mcp_config.source` は `injected`、`servers` はサーバー名のみ。command / env / headers / 認証情報は記録しない
   - 寿命: 初回・follow-up とも run ごとに親設定から再生成する（Cursor と同じ）
-  - fixture: local / remote / env 付き / headers 付き / 無効 entry
+  - fixture: local / remote / env 付き / headers 付き / 変換不能 entry（捨てられて `servers` にも載らないこと）。`enabled` を書き出さないこと
   - **本環境では実効性を実測できない**（親の `~/.claude.json` に MCP サーバーが無く、既存 backend も同条件）。変換は fixture テストで固定し、実効性の確認は MCP 設定がある環境に回す。未確認のまま SHOULD を完了扱いにしない
 
 成果物: review / fix ループで session が継続し、通常 run が session を残さず、親の MCP 設定が worker から使える
@@ -347,13 +390,13 @@ CLI 契約の変更と公開文書の更新を同じ Step に置く。
   - §4 モデル解決（`opencode/` selector）
   - §5「実行系の四分岐」→「五分岐」へ改題し、opencode 起動節を追加、permission 節（全開放に統一する理由）を改訂
   - §6 observe JSON の backend 列挙と additive field（Step 5 で定義したもの、session lifecycle の `session_delete_skipped` / `session_delete_failed` event を含む）
-  - §7 セッション再利用・MCP の対応表（通常 run の session 非永続性を含む）
+  - §7 セッション再利用・MCP の対応表。`mcp_config.source` の `shared` / `none` を opencode がどう使い分けるか（未指定＝`shared`、指定して 0 件＝`none`）を §6 の語義説明へ追記する（通常 run の session 非永続性を含む）
   - §10 exit code / §11 リポジトリ構成（shim 追加）
-  - §12 環境変数 / §13 脅威モデル（cwd 外アクセスが permission で拒否される点）
+  - §12 環境変数（`DELEGATE_OPENCODE_PURE` / `DELEGATE_OPENCODE_MCP_SOURCE`）/ §13 脅威モデル（cwd 外アクセスの非対称と、read-only 抑止が管理者設定のない環境を前提とする点）
   - request inline gate 超過時の backend 別例外（`read-request.sh` fallback は cwd 外を読めない opencode では成立しないため fail-closed）
 - 見出し変更は既存リンクを壊すため、`docs/` 配下から旧アンカー（`実行系の四分岐` 等）への参照を洗って追随させる
 - `README.md` / `README_ja.md`: prerequisites、How it works の backend 表、Skills 表の env、Supported model names 表、resumable 対応。Effort handling 節では opencode を「delegate は検証せず素通し」と書き分け、既存の「Invalid values and unsupported combinations stop before dispatch」が opencode の effort には当てはまらないことを明記する。cwd 外へ書けない制約、request inline gate 超過時の backend 別例外（`read-request.sh` fallback は cwd 外を読めない opencode では成立しないため fail-closed）、管理者設定のない環境を前提とすること、catalog 照合は参考情報であり allowlist ではなく `retryable` は分類のヒントであって自動リトライの指示ではないことも記載する
-- `skills/*/SKILL.md`: 対象は **generic な 5 skill**（explore / implement / chore / review / htmldoc）だけ。`delegate-imagegen`（Codex 固定）と `delegate-x-research`（Grok 固定）は backend が固定でスコープ外なので触らない。実行系分岐・CLI prerequisite・session 対応に加え、§3.4 の通知（failed の Error section / Summary 先頭の警告行）を main がユーザーへ伝える手順、cwd 外アクセスの制約（direct edit / write と明示パス読み取りは拒否され、bash のリダイレクトは通る。出力先を cwd 外に指定する htmldoc / implement は成功が保証されない）と、request inline gate 超過時の fail-closed、管理者設定のない環境を前提とすることを書く
+- `skills/*/SKILL.md`: 対象は **generic な 5 skill**（explore / implement / chore / review / htmldoc）だけ。`delegate-imagegen`（Codex 固定）と `delegate-x-research`（Grok 固定）は backend が固定でスコープ外なので触らない。実行系分岐・CLI prerequisite・session 対応に加え、§3.4 の通知（failed の Error section / Summary 先頭の警告行）を main がユーザーへ伝える手順、cwd 外アクセスの制約（direct edit / write と明示パス読み取りは拒否され、bash のリダイレクトは通る。出力先を cwd 外に指定する htmldoc / implement は成功が保証されない）、`DELEGATE_OPENCODE_PURE` / `DELEGATE_OPENCODE_MCP_SOURCE` の意味と、request inline gate 超過時の fail-closed、管理者設定のない環境を前提とすることを書く
 - `shared/model-token-prices.json`: 次の checklist を検証可能な形で実施する。対象モデル集合は `opencode models --verbose` で `cost` が取れるモデルのうち documented model に載せるもの、`pricing_sources` への source 追加、`retrieved_at` の更新、`pricing_status` の明示、価格チャート 2 枚の再生成、`metrics:baseline:check` の通過とし、該当なしの項目も理由付きで記録する。単価は `opencode models --verbose` の `cost`（input / output / cache read / write）を一次ソースにする
 - `docs/design/development.md`: 正本 / 配布 tree、backend 一覧、モデル追加手順に opencode の catalog drift 確認節（`opencode models --verbose`）を追加
 - backend 数の増加は **generic な target backend だけ**に効く。requester（delegate を起動する側）は Claude / Codex / Devin / Cursor の 4 種のままなので、「4 → 5」の一律置換をしない。文字列検索でヒットした箇所ごとに requester の話か target の話かを判別する
@@ -464,6 +507,21 @@ front-matter の出力はプロンプト依存になるため、front-matter を
 
 既存 4 backend は状態の置き場所を run_dir 配下へ向け、run 後に丸ごと捨てることで非永続性を担保している（Claude は `workDir/claude-config`、Codex は `CODEX_HOME`、Cursor は `CURSOR_CONFIG_DIR`。Devin は session が cloud 側にあり local store を持たない）。opencode で同じ手を採れないのは §5.e で config 注入に env を選び、session store の置き場所が実 HOME のままになるためで、e と h はトレードオフの関係にある。削除方式は session ID を取得できた run にしか効かず、event 到達前の失敗では対象を特定できない穴が残る（隔離方式ならこの穴自体が生じない）。
 
+### i. MCP の入力元
+
+| 候補                                   | 採用 | 理由                                                                                                                                                                        |
+| -------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **env で明示し、未指定なら注入しない** | ✓    | requester backend は wrapper から判別できないため、固定すると requester が使っていない設定を worker へ渡すことになる。Devin が MCP を注入せず `shared` を記録する先例もある |
+| Claude user 設定に固定                 | ✗    | 設定不要になる代わりに、Codex / Cursor requester からの委譲で無関係な server 定義を注入する。4 requester を等しく扱う前提と合わない                                         |
+| requester を実行時に自動判別           | ✗    | protocol v1 の request にも wrapper 引数にも requester backend が無く、実装できない                                                                                         |
+
+### j. project config の継承境界
+
+| 候補                                                                                                                     | 採用 | 理由                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------ | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **read-only 種別で permission と plugin を遮断し、write 系では継承。`DELEGATE_OPENCODE_PURE` で全 task type を opt-out** | ✓    | Codex の project hooks と同じ allowlist（`implement` / `chore` のみ有効、read-only 種別と htmldoc では prompt 制約の迂回を避けて無効）。委譲先は requester が作業中のリポジトリなので、書き込み種別では信頼する |
+| 全 task type で `--pure` を付けて plugin を無効化                                                                        | ✗    | plugin 前提のセットアップをした repository では、実装・雑務の worker だけ挙動が変わる。Codex が同種の hook を write 系で有効にしている以上、opencode だけ全面禁止する根拠が無い                                 |
+
 ## 6. テスト方針
 
 ### 自動テスト
@@ -487,6 +545,9 @@ fake CLI で再現できるのは argv・env・stdout の形だけで、stdin EO
   - `stdout_text` branch: 複数 `text` イベントからの最終応答選択、front-matter の剥がし、front-matter 欠落・不正 status で failed response、`error` イベントのみの応答
 - `scripts/delegate-wrapper-session.test.ts`（fake `opencode` CLI）
   - argv（prompt が positional に無いこと）/ stdin prompt / 3 session mode / handle 欠落の fail-closed / response 欠落時の failed response / child error / child signal / `OPENCODE_CONFIG_CONTENT` の permission 内容（task_type ごとの差）
+  - config 契約（§3.5）: 呼び出し元の `OPENCODE_CONFIG_CONTENT` が破棄されること
+  - `--pure` が `explore` / `review` / `htmldoc` で付き `implement` / `chore` では付かないこと、`DELEGATE_OPENCODE_PURE` 有効時は全 task type で付くこと、`0` / 空文字 / 不正値では付かないこと
+  - §3.5 の MCP 決定表 4 行（未指定＝`mcp` 無し + `source: "shared"`、抽出成功＝`mcp` 有り + `injected` + server 名、抽出 0 件＝`mcp` 無し + `none`、不正な env 値＝child 起動前に exit 3）
   - 5 task type（explore / implement / chore / review / htmldoc）× `stdout_text` の protocol matrix
   - request が inline gate を超えたとき child 起動前に fail-closed すること
   - 既存 4 backend の argv / response mode に回帰が無いこと（`structured` / `report_md` の既存ケースを無改変で通す）
@@ -509,7 +570,7 @@ fake CLI で再現できるのは argv・env・stdout の形だけで、stdin EO
 | 生成物の同期と配布             | —                                                                                  | —                                                                            | `build:check` / `sync-shared:check`                                        |
 | session reuse                  | `observe-followup.ts` の resumable 判定                                            | 3 session mode                                                               | resumable → follow-up の 2 段                                              |
 | session lifecycle              | 削除の呼び出し順と失敗時 fail-soft                                                 | 通常 run で delete が呼ばれ、resumable では呼ばれない                        | 通常 run 後に `session list` へ残らない                                    |
-| MCP 注入                       | canonical → opencode config の変換 fixture                                         | 生成された config の `mcp` セクション                                        | **本環境では不可**（§8）                                                   |
+| MCP 注入                       | canonical → opencode config の変換 fixture、入力元 env の解決                      | 生成された config の `mcp` セクション、env 未指定時の `source: "none"`       | **本環境では不可**（§8）                                                   |
 | effort 対応                    | `variants` 照合、モデル行欠落時の判定不能                                          | `effort_unsupported` event と Summary 警告行（欠落・重複時の生成規則を含む） | 未対応 effort の警告到達                                                   |
 | 補助 subprocess の頑健性       | timeout / 出力上限 / SIGKILL / fail-soft                                           | 応答しない fake `models` での timeout                                        | —                                                                          |
 | 価格表エントリ                 | —（`observe-cost.ts` は変更しない）                                                | —                                                                            | `opencode models --verbose` の `cost` と表の一致を目視                     |
@@ -576,4 +637,4 @@ gate の規則:
 - [spec.md](../design/spec.md)
 - [development.md](../design/development.md)
 - [protocol-v1.md](../design/protocol-v1.md)
-- opencode docs: <https://opencode.ai/docs/>（cli / config / permissions / agents / models / providers / mcp-servers）
+- opencode docs: <https://opencode.ai/docs/>（cli / config / permissions / agents / models / providers / mcp-servers / plugins）
