@@ -6,21 +6,21 @@
 
 ## 1. 対応スコープ
 
-| 要件                                          | 開始時の状態 | 完了条件                                                                                                                                                                                                | 最終状態 | 状態   |
-| --------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------ |
-| [MUST] opencode を 5 番目の実行系へ分岐       | 未           | `backendFromModel('opencode/...')` が `opencode` を返し、dispatch が `delegate-opencode.sh` を起動する in-source test が通る                                                                            |          | 未着手 |
-| [MUST] 通常 run の protocol v1 往復           | 未           | explore / implement / chore / review / htmldoc の 5 種別で fake CLI golden が通り、実 CLI で 2 種別以上が `completed` を返す                                                                            |          | 未着手 |
-| [MUST] read-only 種別の direct edit-tool 抑止 | 未           | explore / review で worker が `edit` / `write` ツールを呼べないことを実機で確認する（Claude パスの denylist と同等の範囲。bash 経由・task 経由の書き込みは抑止対象外）                                  |          | 未着手 |
-| [MUST] measured usage / cost の記録           | 未           | observe JSON の `usage.measurement` が `measured`、`source` が `opencode_step_finish`、token 内訳と `cost_usd` が `step_finish` 由来                                                                    |          | 未着手 |
-| [MUST] 不正なモデル記法の fail-closed         | 未           | provider 省略形と二重 selector が dispatch 前に exit 6 で停止し、stderr に許容形式を列挙する                                                                                                            |          | 未着手 |
-| [MUST] 生成物の同期と配布                     | 未           | `npm run build` → `sync-shared` の後、`build:check` / `sync-shared:check` / `check-no-jq-md2idx` / `vp check` / `npm test` が通る                                                                       |          | 未着手 |
-| [MUST] 補助 subprocess の頑健性               | 未           | `export` / `models --verbose` が応答しない場合でも run 全体が hang せず、timeout・出力上限・SIGKILL で打ち切られる                                                                                      |          | 未着手 |
-| [MUST] 失敗の検知と通知                       | 未           | catalog に無いモデルでの失敗が `error.kind = "model_catalog_miss"` に記録され、failed response の Error section 経由で main へ届く（effort 警告は effort を実装する場合の条件として SHOULD 側に置く）   |          | 未着手 |
-| [SHOULD] session reuse                        | 未           | resumable で `sessionID` を回収し、follow-up が `-s <sessionID>` で継続する golden が通る                                                                                                               |          | 未着手 |
-| [SHOULD] MCP 注入                             | 未           | 親 MCP 設定を config の `mcp` セクションへ変換注入し、observe に server 名のみ記録する                                                                                                                  |          | 未着手 |
-| [SHOULD] effort（`--variant`）対応            | 未           | `@<effort>` が形式検証のみで `--variant` へ渡り、`run.effort.requested` / `effective` が記録される。**実装する場合は**未対応値の `effort_unsupported` event と Summary 警告行の到達まで含めて完了とする |          | 未着手 |
-| [SHOULD] session lifecycle                    | 未           | 通常 run が session store を残さず、削除失敗が `session_delete_failed` event に残る                                                                                                                     |          | 未着手 |
-| [SHOULD] 価格表エントリ                       | 未           | `shared/model-token-prices.json` に opencode の pricing source と主要モデルを追加し、チャートを再生成する                                                                                               |          | 未着手 |
+| 要件                                          | 開始時の状態 | 完了条件                                                                                                                                                                                                                                                 | 最終状態 | 状態   |
+| --------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------ |
+| [MUST] opencode を 5 番目の実行系へ分岐       | 未           | `backendFromModel('opencode/...')` が `opencode` を返し、dispatch が `delegate-opencode.sh` を起動する in-source test が通る                                                                                                                             |          | 未着手 |
+| [MUST] 通常 run の protocol v1 往復           | 未           | explore / implement / chore / review / htmldoc の 5 種別で fake CLI golden が通り、実 CLI で 2 種別以上が `completed` を返し、その Summary が request の対象を指している（テンプレート文字列の反復でない）ことを目視確認する                             |          | 未着手 |
+| [MUST] read-only 種別の direct edit-tool 抑止 | 未           | explore / review で worker が `edit` / `write` ツールを呼べないことを実機で確認する（Claude パスの denylist と同等の範囲。bash 経由・task 経由の書き込みは抑止対象外）                                                                                   |          | 未着手 |
+| [MUST] measured usage / cost の記録           | 未           | observe JSON の `usage.measurement` が `measured`、`source` が `opencode_step_finish`、token 内訳と `cost_usd` が `step_finish` 由来                                                                                                                     |          | 未着手 |
+| [MUST] 不正なモデル記法の fail-closed         | 未           | provider 省略形と二重 selector が dispatch 前に exit 6 で停止し、stderr に許容形式を列挙する                                                                                                                                                             |          | 未着手 |
+| [MUST] 生成物の同期と配布                     | 未           | `npm run build` → `sync-shared` の後、`build:check` / `sync-shared:check` / `check-no-jq-md2idx` / `vp check` / `npm test` が通る                                                                                                                        |          | 未着手 |
+| [MUST] 補助 subprocess の頑健性               | 未           | `export` / `models --verbose` が応答しない場合でも run 全体が hang せず、timeout・出力上限・SIGKILL で打ち切られる。`--version` の失敗は exit 3 で停止し、`export` / `models --verbose` の失敗は telemetry 欠落として run を止めない                     |          | 未着手 |
+| [MUST] 失敗の検知と通知                       | 未           | catalog に無いモデルでの失敗が `error.kind = "model_catalog_miss"` に記録され、failed response の Error section 経由で main へ届く（effort 警告は effort を実装する場合の条件として SHOULD 側に置く）                                                    |          | 未着手 |
+| [MUST] session lifecycle                      | 未           | session ID を取得できた通常 run が session store を残さず、取得できなかった run は `session_delete_skipped`、削除失敗は `session_delete_failed`、削除の timeout は `session_delete_failed` として必ず observe に残る（残留を許すのは記録された場合だけ） |          | 未着手 |
+| [SHOULD] session reuse                        | 未           | resumable で `sessionID` を回収し、follow-up が `-s <sessionID>` で継続する golden が通る                                                                                                                                                                |          | 未着手 |
+| [SHOULD] MCP 注入                             | 未           | 親 MCP 設定を config の `mcp` セクションへ変換注入し、observe に server 名のみ記録する                                                                                                                                                                   |          | 未着手 |
+| [SHOULD] effort（`--variant`）対応            | 未           | `@<effort>` が形式検証のみで `--variant` へ渡り、`run.effort.requested` / `effective` が記録される。**実装する場合は**未対応値の `effort_unsupported` event と Summary 警告行の到達まで含めて完了とする                                                  |          | 未着手 |
+| [SHOULD] 価格表エントリ                       | 未           | `shared/model-token-prices.json` に opencode の pricing source と主要モデルを追加し、チャートを再生成する                                                                                                                                                |          | 未着手 |
 
 スコープ外:
 
@@ -42,39 +42,42 @@
 
 ### 2.1 実機検証で確定した事実（opencode v1.18.21）
 
-| 項目                         | 結果                                                                                                                                                                                                                                           |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run --format json` の出力   | JSONL。イベント種別と各フィールドは §2.3 を正とする（§2.1 では列挙しない）                                                                                                                                                                     |
-| session ID                   | 全イベントの `sessionID` に含まれる（例 `ses_fd90596b4ffelwStgDfFGz1b3a`）                                                                                                                                                                     |
-| usage                        | `step_finish` の `part.tokens` = `{total, input, output, reasoning, cache:{write,read}}`                                                                                                                                                       |
-| cost                         | `step_finish` の `part.cost`（数値）                                                                                                                                                                                                           |
-| prompt の渡し方              | stdin パイプで受理する（positional / `--prompt` 以外の経路が使える）                                                                                                                                                                           |
-| session resume               | `-s <sessionID>` で会話継続を確認。応答イベントにも同じ `sessionID` が入る                                                                                                                                                                     |
-| 無効モデル                   | exit 1、stdout に `{"type":"error","error":{"name":"UnknownError",...}}`、stderr は空                                                                                                                                                          |
-| 無効 variant                 | **exit 0**（黙って無視される。fail-open）                                                                                                                                                                                                      |
-| permission 強制              | `OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"deny","bash":"deny"}}'` で利用可能ツールが `glob, grep, invalid, read, skill, task, todowrite, websearch` に縮小。`bash` 呼び出しは "unavailable tool" で拒否され、ファイルは作成されなかった |
-| `session list --format json` | `[{id, title, updated, created, projectId, directory}]`                                                                                                                                                                                        |
-| config マージ順              | グローバル → `OPENCODE_CONFIG` → project `opencode.json` → `.opencode/` → `OPENCODE_CONFIG_CONTENT` → 管理者設定（後勝ち）                                                                                                                     |
+| 項目                         | 結果                                                                                                                                                                                                                                                       |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run --format json` の出力   | JSONL。イベント種別と各フィールドは §2.3 を正とする（§2.1 では列挙しない）                                                                                                                                                                                 |
+| session ID                   | 全イベントの `sessionID` に含まれる（例 `ses_fd90596b4ffelwStgDfFGz1b3a`）                                                                                                                                                                                 |
+| usage                        | `step_finish` の `part.tokens` = `{total, input, output, reasoning, cache:{write,read}}`                                                                                                                                                                   |
+| cost                         | `step_finish` の `part.cost`（数値）                                                                                                                                                                                                                       |
+| prompt の渡し方              | stdin パイプで受理する（positional / `--prompt` 以外の経路が使える）                                                                                                                                                                                       |
+| session resume               | `-s <sessionID>` で会話継続を確認。応答イベントにも同じ `sessionID` が入る                                                                                                                                                                                 |
+| 無効モデル                   | exit 1、stdout に `{"type":"error","error":{"name":"UnknownError",...}}`、stderr は空                                                                                                                                                                      |
+| 無効 variant                 | **exit 0**（黙って無視される。fail-open）                                                                                                                                                                                                                  |
+| permission 強制              | 実測条件は `OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"deny","bash":"deny"}}'`。利用可能ツールが `glob, grep, invalid, read, skill, task, todowrite, websearch` に縮小し、`bash` 呼び出しは "unavailable tool" で拒否され、ファイルは作成されなかった |
+| `session list --format json` | `[{id, title, updated, created, projectId, directory}]`                                                                                                                                                                                                    |
+| config マージ順              | グローバル → `OPENCODE_CONFIG` → project `opencode.json` → `.opencode/` → `OPENCODE_CONFIG_CONTENT` → 管理者設定（後勝ち）                                                                                                                                 |
 
 ### 2.2 Step 1 PoC で確定した事実（2026-08-22 実施）
 
-| 検証項目                  | 結果                                                                                                                                                                                                                                                                           | 影響        |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
-| prompt の渡し方           | **stdin 必須**。positional 引数に `---` を含む Markdown を渡すと ask 待ちでハングし、timeout まで stdout / stderr とも空のまま返らない。stdin 経由なら prompt 読み込み後に EOF となり、未解決の ask が reject に倒れて完走する                                                 | §3.2        |
-| permission パターンマップ | `OPENCODE_CONFIG_CONTENT` の指定は既定ルールを置き換えず**追加**され、評価は**先勝ち**。既定の `external_directory: * → ask` が残るため cwd 外パスを後から allow にできない                                                                                                    | §5.b / §5.c |
-| cwd 外への write          | 不可。`edit: "allow"` と `external_directory` の allow パターンを両方与えても `The user rejected permission to use this specific tool call.` で拒否される。cwd 内への write は成功する                                                                                         | §5.b / §8   |
-| stdout からの report 回収 | 成立。read-only（`edit: "deny"` / `bash: "deny"`）のまま front-matter 付き Markdown が最終 `text` イベントに出る                                                                                                                                                               | §5.b        |
-| `--variant` の実効値      | `opencode export <sessionID>` の `info.model.variant` に記録される（未指定時は `"default"`）。ただし low / high で reasoning token に有意差は出ず、CLI が受け取った値の記録であって効果の証明ではない                                                                          | §5.d        |
-| usage の合算              | `step_finish` の単純合算が export の `info.tokens` と完全一致（7 step で input 18655 / output 775 / reasoning 1749 / cache.read 63104）。`part.tokens.total` は累積表示なので合算に使わない                                                                                    | §3.3        |
-| cost                      | 有料モデル `opencode-go/glm-5.2` で `part.cost` = 0.00793828。free モデルは 0                                                                                                                                                                                                  | §5.g        |
-| 並列実行                  | 3 run 同時実行で session store の競合は観測されず、各 run が独立に完走した                                                                                                                                                                                                     | §5.e        |
-| 未知モデルの失敗形        | 実在 provider + 不明モデル / 不明 provider / provider 欠落の 3 パターンすべてが exit 1 + stdout `{"type":"error","error":{"name":"UnknownError","data":{"message":"Unexpected server error...","ref":"err_XXXX"}}}`。stderr は空で `ref` は毎回変わるため signature にできない | §5.f        |
-| `opencode models` の取得  | 29 モデルの一覧が約 880ms（3 回計測）                                                                                                                                                                                                                                          | §5.f        |
-| 無効 variant の記録       | `--variant bogus-effort-xyz` はそのまま export の `info.model.variant` に記録される。requested と effective は常に一致するため、この比較では乖離を検知できない                                                                                                                 | §5.d        |
-| catalog の `variants`     | `opencode models --verbose` がモデルごとの JSON を返し、`variants` に有効な effort 名が入る（非対応は `{}`）。29 モデル中 15 が対応で、値は `["high","max"]` / `["none","low","medium","high","xhigh","max"]` / `["none","thinking"]` などモデルごとに異なる。約 880ms・34KB   | §5.d / §5.f |
-| catalog の `cost`         | 同じ出力の `cost` に input / output / cache read / write の単価が入る                                                                                                                                                                                                          | §5.g        |
-| project config の優先     | 対象リポジトリの `opencode.json` に `edit: "allow"` を書いても `OPENCODE_CONFIG_CONTENT` の `edit: "deny"` が勝ち、write はツールリストから消えてファイルは作られなかった                                                                                                      | §5.c / §5.e |
-| session の削除            | `opencode session delete <id>` が exit 0 で成功し、`session list` から消えることを確認                                                                                                                                                                                         | Step 6      |
+| 検証項目                      | 結果                                                                                                                                                                                                                                                                            | 影響                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| prompt の渡し方               | **stdin 必須**。positional 引数に `---` を含む Markdown を渡すと ask 待ちでハングし、timeout まで stdout / stderr とも空のまま返らない。stdin 経由なら prompt 読み込み後に EOF となり、未解決の ask が reject に倒れて完走する                                                  | §3.2                 |
+| permission パターンマップ     | `OPENCODE_CONFIG_CONTENT` の指定は既定ルールを置き換えず**追加**され、評価は**先勝ち**。既定の `external_directory: * → ask` が残るため cwd 外パスを後から allow にできない                                                                                                     | §5.b / §5.c          |
+| cwd 外への write              | 不可。`edit: "allow"` と `external_directory` の allow パターンを両方与えても `The user rejected permission to use this specific tool call.` で拒否される。cwd 内への write は成功する                                                                                          | §5.b / §8            |
+| stdout からの report 回収     | 成立。実測条件は read-only（`edit: "deny"` / `bash: "deny"`）で、front-matter 付き Markdown が最終 `text` イベントに出る                                                                                                                                                        | §5.b                 |
+| `--variant` の実効値          | `opencode export <sessionID>` の `info.model.variant` に記録される（未指定時は `"default"`）。ただし low / high で reasoning token に有意差は出ず、CLI が受け取った値の記録であって効果の証明ではない                                                                           | §5.d                 |
+| usage の合算                  | `step_finish` の単純合算が export の `info.tokens` と完全一致（7 step で input 18655 / output 775 / reasoning 1749 / cache.read 63104）。`part.tokens.total` は累積表示なので合算に使わない                                                                                     | §3.3                 |
+| cost                          | 有料モデル `opencode-go/glm-5.2` で `part.cost` = 0.00793828。free モデルは 0                                                                                                                                                                                                   | §5.g                 |
+| 並列実行                      | 3 run 同時実行で session store の競合は観測されず、各 run が独立に完走した                                                                                                                                                                                                      | §5.e                 |
+| 未知モデルの失敗形            | 実在 provider + 不明モデル / 不明 provider / provider 欠落の 3 パターンすべてが exit 1 + stdout `{"type":"error","error":{"name":"UnknownError","data":{"message":"Unexpected server error...","ref":"err_XXXX"}}}`。stderr は空で `ref` は毎回変わるため signature にできない  | §5.f                 |
+| `opencode models` の取得      | 29 モデルの一覧が約 880ms（3 回計測）                                                                                                                                                                                                                                           | §5.f                 |
+| 無効 variant の記録           | `--variant bogus-effort-xyz` はそのまま export の `info.model.variant` に記録される。requested と effective は常に一致するため、この比較では乖離を検知できない                                                                                                                  | §5.d                 |
+| catalog の `variants`         | `opencode models --verbose` がモデルごとの JSON を返し、`variants` に有効な effort 名が入る（非対応は `{}`）。29 モデル中 15 が対応で、値は `["high","max"]` / `["none","low","medium","high","xhigh","max"]` / `["none","thinking"]` などモデルごとに異なる。約 880ms・34KB    | §5.d / §5.f          |
+| catalog の `cost`             | 同じ出力の `cost` に input / output / cache read / write の単価が入る                                                                                                                                                                                                           | §5.g                 |
+| project config の優先         | 対象リポジトリの `opencode.json` に `edit: "allow"` を書いても `OPENCODE_CONFIG_CONTENT` の `edit: "deny"` が勝ち、write はツールリストから消えてファイルは作られなかった                                                                                                       | §5.c / §5.e          |
+| session の削除                | `opencode session delete <id>` が exit 0 で成功し、`session list` から消えることを確認                                                                                                                                                                                          | Step 6               |
+| 採用 profile の実効性         | `edit: "deny"` のみ注入（bash は既定）でも `write` は "unavailable tool" として拒否され、利用可能ツールは `bash, glob, grep, invalid, read, skill, task, todowrite, websearch` に縮小する                                                                                       | §3.2 / §5.c          |
+| bash 経由の cwd 外アクセス    | **書き込みは通り読み取りは拒否される**。`echo x > /tmp/f` は completed、`cat /tmp/f` は `external_directory (/tmp/*)` で auto-reject。リダイレクトによる書き込みは拒否されなかった（permission がコマンド文字列から抽出したパスだけを見ていると推測できるが、内部機構は未検証） | §3.2 / §5.b / Step 4 |
+| 採用 profile での report 回収 | 成立。front-matter 付き Markdown が最終 `text` に出る。ただし free モデルは Summary のプレースホルダをそのまま返し、指示文を末尾に反復するなど内容品質が低い                                                                                                                    | §5.b / §8            |
 
 ### 2.3 parser が依存する実測 schema（2026-08-22 採取）
 
@@ -94,6 +97,8 @@ Step 4 / 5 の parser とテスト fixture はこの構造を前提にする。�
 
 - token / cost は全 `step_finish` の単純合算（`part.tokens.total` は累積表示なので使わない）
 - `part.cost` は step 単位の値。合算が `export` の `info.cost` と一致することを fixture で固定する
+- `step_finish` が 1 件も取れない、または token フィールドが取れない場合は usage を `measured` として記録せず、既存 event `usage_parse_failed`（spec.md §6 で定義済み）を出して推定 fallback に落とす。全 0 の measured は estimated より質が悪く、backend 横断の集計を汚すため
+- `cost` は **キーが存在し数値である `step_finish` だけを合算**し、1 つでも欠落・非数値があれば `cost_usd` を省略する（token は measured のまま残す）。free モデルの正当な `cost` 0 と、欠落を 0 と読んだ結果を区別できなくなるため、0 埋めはしない
 - JSON として parse できない行は無視する（stdout に非 JSON 行が混ざり得る）
 - `tokens.cache` や `reasoning` が欠落した step は 0 として扱う
 - `timestamp` は **epoch ミリ秒の整数**（例 `1787360343099`）。`part.time` の `start` / `end` も同じ単位
@@ -118,11 +123,11 @@ Step 4 / 5 の parser とテスト fixture はこの構造を前提にする。�
 
 記法は `opencode/<provider>/<model>[@<effort>]`。
 
-| 構成要素             | 内容                                                                                             | 配置 / 寿命                                    |
-| -------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
-| selector `opencode/` | `backendFromModel` の 5 番目の分岐（`model.startsWith('opencode/')`）                            | `shared/src/backend.ts`、README に載る公開仕様 |
-| CLI model            | selector を 1 回だけ剥離した `<provider>/<model>`。剥離後の `/` がちょうど 1 つでなければ exit 6 | `shared/src/wrapper-opencode.ts`               |
-| effort suffix        | `@<effort>` を共通処理で剥がし `--variant <effort>` へ素通しする。検証は形式のみ（§5.d）         | `shared/src/observe-effort.ts`                 |
+| 構成要素             | 内容                                                                                             | 配置 / 寿命                                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| selector `opencode/` | `backendFromModel` の 5 番目の分岐（`model.startsWith('opencode/')`）                            | `shared/src/backend.ts`、README に載る公開仕様                                                                                                                  |
+| CLI model            | selector を 1 回だけ剥離した `<provider>/<model>`。剥離後の `/` がちょうど 1 つでなければ exit 6 | 検証は `shared/src/observe-effort.ts`（`validateModelName`。既存 cursor の二重 prefix 拒否と同じ場所）、CLI へ渡す名前の生成は `shared/src/wrapper-opencode.ts` |
+| effort suffix        | `@<effort>` を共通処理で剥がし `--variant <effort>` へ素通しする。検証は形式のみ（§5.d）         | `shared/src/observe-effort.ts`                                                                                                                                  |
 
 指定例:
 
@@ -131,6 +136,8 @@ DELEGATE_EXPLORE_MODEL=opencode/opencode-go/glm-5.2
 DELEGATE_CHORE_MODEL=opencode/opencode/nemotron-3.5-lightning-free
 DELEGATE_IMPLEMENT_MODEL=opencode/opencode-go/kimi-k3@high
 ```
+
+exit 6 の stderr には許容形式に加えて「provider は `opencode models` の出力から取る」を含める。`opencode/glm-5.2` で弾かれたユーザーが `opencode/opencode/glm-5.2` と誤修正すると provider=`opencode` として実行され catalog miss に落ちるため、正しくは `opencode/opencode-go/glm-5.2` である。
 
 selector を剥離した残りは次の grammar を満たすこと。外れた場合は dispatch 前に exit 6 で停止する。
 
@@ -150,16 +157,18 @@ selector を剥離した残りは次の grammar を満たすこと。外れた�
 
 **prompt は stdin で渡す。** positional 引数に Markdown を渡すと `---` がオプションとして解釈され、ask 待ちのまま返らない。stdin 経由なら prompt 読み込み後に EOF となり、未解決の permission ask が reject に倒れて必ず完走する。非対話 backend としてはこの性質そのものが前提になる。
 
-**worker は run_dir に書けない。** opencode は cwd の外側を `external_directory` permission で守っており、既定の `* → ask` を `OPENCODE_CONFIG_CONTENT` で上書きできない（指定は既定ルールへ追加され、評価は先勝ち）。既定の `DELEGATE_WORK_DIR` は `mktemp`（`/tmp`）配下で run_dir は cwd の外にあるため、`report.md` を書かせることはできない。
+**worker に run_dir を書かせる方式は採らない。** opencode は cwd の外側を `external_directory` permission で守っており、既定の `* → ask` を `OPENCODE_CONFIG_CONTENT` で上書きできない（指定は既定ルールへ追加され、評価は先勝ち）。edit / write ツールは cwd 外を書けず、read-only 種別ではツール自体が消える。bash のリダイレクト（`echo x > /tmp/f`）だけは通るが、これは permission がコマンド文字列から抽出したパスを見てリダイレクト先を検出しないためで（§2.2）、将来塞がれ得る検出漏れに report 回収を依存させない。なお bash の明示パス読み取り（`cat /tmp/f`）は拒否された。`read-request.sh` 経路そのものは未実測だが、cwd 外の request file を worker に読ませる前提を置けないため、inline gate 超過は保守的に fail-closed とする（Step 4）。`DELEGATE_WORK_DIR` を repository 内へ向ける運用（development.md 推奨の `.temp/delegate/work`）もあるが、既定構成で成立しない方式は採らない。
 
 **したがって report は stdout から回収する。** read-only のまま front-matter 付き Markdown を最終 `text` イベントに出せることを PoC で確認した。`reportModeForBackend` に第 3 の mode `stdout_text` を足し、wrapper が最終 text から front-matter を剥がして response を組み立てる。
 
 種別ごとの permission:
 
-| task_type                   | edit                      | bash    | webfetch / websearch |
-| --------------------------- | ------------------------- | ------- | -------------------- |
-| explore / review            | `deny`                    | `allow` | `allow`              |
-| implement / chore / htmldoc | `allow`（cwd 内のみ有効） | `allow` | `allow`              |
+| task_type                   | wrapper が注入する permission | 結果                                                                                                                     |
+| --------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| explore / review            | `edit: "deny"` を注入         | edit / write ツールがツール一覧から消える。bash / websearch は既定のまま（実測ツール一覧に `webfetch` は現れない。§2.2） |
+| implement / chore / htmldoc | 注入しない（既定のまま）      | cwd 内の edit は可、cwd 外は `external_directory` の既定 `* → ask` が stdin EOF で reject に倒れる                       |
+
+先勝ちで効かないのは `external_directory` のようなパターンリスト内の後置 allow であり、カテゴリ単位（`edit` / `bash`）の deny は既定を締める方向に効くことを実測済み（§2.1）である。
 
 explore / review では `edit` / `write` ツールが CLI レベルで遮断される。これは既存 4 backend のうち Claude パスの denylist だけが持っていた技術的抑止で、`report.md` を書く必要が無くなったぶん Cursor の `--mode plan` が抱えた制約も回避できる。
 
@@ -173,19 +182,19 @@ read-only 性の最終的な担保は、既存 backend と同じく prompt 制�
 
 ### 3.3 observe への measured usage / cost
 
-`step_finish` が token 内訳と cost を直接返すため、usage も cost も実測値を記録できる（Devin export と同様に、既存の measured usage 経路へそのまま載る）。フィールド名は `observe-usage.ts` / spec.md §6 の既存契約に合わせる（実測性は `measurement`、`source` は由来を表す別フィールド）。
+`step_finish` が token 内訳と cost を直接返すため、usage も cost も実測値を記録できる（Devin export と同様に、既存の measured usage 経路へそのまま載る）。フィールド名は `observe-usage.ts` / spec.md §6 の既存契約に合わせる（実測性は `measurement`、`source` は由来を表す別フィールド）。ただし schema drift で `step_finish` が 1 件も取れない、または token フィールドが取れない場合は usage を `measured` として記録せず、既存の `usage_parse_failed` 経路へ乗せて推定 fallback に落とす（新 event は作らない）。全 0 の measured は estimated より質が悪く、backend 横断の集計を汚すためである。
 
-| observe field               | 由来 / 値                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------- |
-| `usage.measurement`         | `measured`                                                                      |
-| `usage.source`              | `opencode_step_finish`（新しい由来値。spec.md §6 の列挙に追加する）             |
-| `usage.input_tokens`        | 全 `step_finish` の `part.tokens.input` の合算                                  |
-| `usage.output_tokens`       | 同 `part.tokens.output` の合算                                                  |
-| `usage.cached_input_tokens` | 同 `part.tokens.cache.read` の合算（既存名。`cache_read_tokens` ではない）      |
-| `usage.total_tokens`        | `input_tokens + output_tokens`。`part.tokens.total` は累積表示なので使わない    |
-| `usage.cost_usd`            | 全 `step_finish` の `part.cost` の合算（実測。`cost_usd_estimated` は付けない） |
-| `run.effort.requested`      | 指定値                                                                          |
-| `run.effort.effective`      | `{ value: <export の info.model.variant>, source: "opencode_export" }`          |
+| observe field               | 由来 / 値                                                                                                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `usage.measurement`         | `measured`                                                                                                                                                                                                                                                               |
+| `usage.source`              | `opencode_step_finish`（新しい由来値。spec.md §6 の列挙に追加する）                                                                                                                                                                                                      |
+| `usage.input_tokens`        | 全 `step_finish` の `part.tokens.input` の合算                                                                                                                                                                                                                           |
+| `usage.output_tokens`       | 同 `part.tokens.output` の合算                                                                                                                                                                                                                                           |
+| `usage.cached_input_tokens` | 同 `part.tokens.cache.read` の合算（既存名。`cache_read_tokens` ではない）                                                                                                                                                                                               |
+| `usage.total_tokens`        | `input_tokens + output_tokens`。`part.tokens.total` は累積表示なので使わない                                                                                                                                                                                             |
+| `usage.cost_usd`            | 全 `step_finish` の `part.cost` の合算（実測。`cost_usd_estimated` は付けない）                                                                                                                                                                                          |
+| `run.effort.requested`      | 指定値                                                                                                                                                                                                                                                                   |
+| `run.effort.effective`      | `{ value: <export の info.model.variant>, source: "opencode_export" }`。`opencode export` は effort 指定がある run でのみ 1 回呼ぶ。未指定 run では呼ばず `run.effort` を記録しない（catalog 取得と同じく、成功パスかつ effort 未指定の run にオーバーヘッドを乗せない） |
 
 PoC で `step_finish` の単純合算が `opencode export` の `info.tokens` と完全一致することを確認済み。
 
@@ -216,6 +225,8 @@ token と cost は 1 つの measured usage object として `observe-usage.ts` �
 
 `model_catalog_miss` を `retryable: true` にするのは、catalog 未掲載でも受理されるモデルがあり得るため（§5.f）。miss を不存在の証明として扱わない。
 
+catalog を authoritative（= 指定モデルが無いことの根拠）として扱うのは、`models --verbose` が exit 0・timeout でない・出力上限に達していない・全 block の parse に成功した場合だけである。いずれかを満たさない場合は `model_catalog_unavailable` として扱う。出力上限や壊れた block で前半しか取れないと、後半のモデルを `model_catalog_miss` と誤分類するためである。`retryable` は分類のヒントであって自動リトライの指示ではなく、catalog 照合は参考情報であり allowlist ではない。
+
 **警告の挿入点**: 既存 wrapper は response を組み立てた後に effort を記録するため、Summary へ警告を載せるには catalog 照合を `completeResponse` より前に済ませる必要がある。照合結果の警告文字列を `CompletionConfig` 経由で渡し、`stdout_text` の collector が Summary section の先頭へ 1 行挿入する。挿入は response 組み立ての一部として行い、後から書き戻さない。
 
 **Summary が無い / 複数ある場合の規則**: `read-response.ts` は正確な `# Summary` 見出しだけを抽出するため、worker の応答が見出しを持たない、あるいは複数持つ場合に警告が消える。次を規則として固定する。
@@ -234,8 +245,13 @@ SKILL.md には、run 結果が `failed` なら Error section を、`completed` 
 
 - §5 の設計判断（selector 記法 / report 方式 / permission / effort）を確定した
 - PoC を free モデル中心に実施し、結果を §2.2 に記録した。有料モデルは cost 確認の 1 回のみ使用した
+- 追加 PoC（採用 permission profile での再確認、2026-08-22 実施）で次を確定した
+  - 採用 profile（`edit: "deny"` のみ注入、bash は既定）でも `edit` / `write` はツール一覧から消える
+  - bash 経由の cwd 外アクセスは**書き込みが通り読み取りが拒否される**。前者は permission の検出漏れに見えるため report 回収の根拠にせず、後者は inline gate 超過を fail-closed とする根拠になる
+  - 採用 profile のまま front-matter 付き report が最終 `text` に出る。free モデルは形式を守る一方で内容品質が低い
+- モデルは `write` が使えないと分かると bash のリダイレクトで同じ目的を達成した。抑止できるのは direct edit-tool の呼び出しだけという §3.2 の限定は実測どおりである
 
-成果物: §2.2 の PoC 結果表。§5.b は `stdout_text` 方式で確定し、prompt の stdin 必須と cwd 外書き込み不可を §3.2 へ反映した
+成果物: §2.2 の PoC 結果表。§5.b は `stdout_text` 方式で確定し、prompt の stdin 必須と cwd 外アクセスの非対称を §3.2 へ反映した
 
 ### Step 2: (未着手) config 契約と MCP 入力元の確定
 
@@ -252,9 +268,10 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
 
 この Step だけで build とテストが通る範囲に閉じる（wrapper 本体が無い段階で registry へ登録しない）。ただし **登録前に安全側へ倒す変更を先に入れる**。
 
-- `shared/src/dispatch.ts`: 現在の `BACKEND_SCRIPTS[backend] ?? 'delegate-claude.sh'` は未登録 backend を Claude へ fallback させる。この Step で `backendFromModel` が `opencode` を返すようになるため、fallback のままだと `opencode/...` 指定が誤った CLI・モデル・permission で Claude を起動する。未登録 backend を **fail-closed（exit 2）** へ変え、回帰テストを追加してから selector を足す。既存 4 backend はすべて登録済みなので影響しない
+- `shared/src/dispatch.ts`: 現在の `BACKEND_SCRIPTS[backend] ?? 'delegate-claude.sh'` は未登録 backend を Claude へ fallback させる。この Step では (1) `BACKEND_SCRIPTS` へ `claude: 'delegate-claude.sh'` を明示登録し、(2) その後で `?? 'delegate-claude.sh'` fallback を除去して未登録 backend を **fail-closed（exit 2）** にし、(3) 回帰テストを追加する。(1) を飛ばすと既定モデル（haiku / sonnet / opus / fable）を使う全 delegate が exit 2 で停止する
 - `shared/src/backend.ts`: `backendFromModel` に `opencode/` 分岐と in-source test を追加
 - `shared/src/observe-effort.ts`: selector 剥離と §3.1 の grammar 検証（`/` がちょうど 1 つ、provider / model が非空、空白・制御文字なし）、二重 selector の exit 6 と stderr 文言。effort は形式検証のみとし、`validateBackendEffort` で opencode を早期 `{ ok: true }` にする
+- `shared/src/observe-effort.ts`: `/` を含むのに `opencode/` で始まらないモデル名（selector 欠落の `opencode-go/glm-5.2`、区切り誤りの `opencode:opencode-go/glm-5.2` 等）は現状 `backendFromModel` の既定分岐で claude へ落ちる。既存 4 backend のモデル名に `/` は含まれないため、`/` を含むモデル名は opencode selector を要求すると定義し、grammar を満たさないものを exit 6 で拒否する。省略形・区切り誤りは exit 6 で拒否し、selector 付きで grammar を満たす未知 provider（`opencode/<unknown>/<model>`）は **dispatch して実行後分類に回す**（catalog を allowlist にしない §5.f と揃える）。両者の回帰テストを追加する
 
 成果物: モデル名から opencode backend が決定論的に選ばれ、不正記法が dispatch 前に停止する。wrapper 未実装の中間状態でも誤 backend が起動しない
 
@@ -268,10 +285,10 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
 - **共通層に第 3 の report mode を通す**（現在の `CompletionConfig.reportMode` は `structured | report_md` の union で、`completeMissingResponse` も 2 分岐しかない）
   - `wrapper-common.ts`: `reportMode` に `'stdout_text'` を追加し、対応する completion branch と collector を実装する。`CompletionOutcome.structuredParse` は **`null` を維持する**。spec.md §6 の `timing.structured_output_parse` は「Claude / Codex の schema 強制出力の parse 成否」と定義されており、front-matter parse の成否をここへ入れると既存 consumer の解釈が変わる。front-matter parse の成否を観測したい場合は、方式非依存の新 field（例 `response_parse`）を spec に足してから使う
   - `wrapper-report.ts`: `reportModeForBackend` に `stdout_text` を追加する
-  - `prompt-constraints.ts`: 現在の `promptConstraints(taskType, responseFile)` は explore / review / htmldoc で「`${responseFile}` への報告生成は可」と明示しており、cwd 外へ書けない stdout mode と矛盾する。report target を意識した形に変え、stdout mode では response path を渡さず「最終応答として front-matter 付き Markdown を返す」制約に差し替える
+- `prompt-constraints.ts`: 現在の `promptConstraints(taskType, responseFile)` は explore / review / htmldoc で「`${responseFile}` への報告生成は可」と明示しており、cwd 外へ書けない stdout mode と矛盾する。report target を意識した形に変え、stdout mode では response path を渡さず「最終応答として front-matter 付き Markdown を返す」制約に差し替える。既存 4 backend 向けの制約文言は変えない（prompt は stdin / argv に載るため既存 golden を壊す）。report target が stdout の場合の分岐だけを足す
 - **request inline gate 超過の扱いを決める**（protocol v1 は 256KB 超過時に worker が cwd 外の request file を `read-request.sh` で読む前提だが、opencode worker は cwd 外を読めない）
-  - 採用: `DELEGATE_REQUEST_INLINE_MAX` 超過を **child 起動前に fail-closed** とし、stderr に理由と回避策（request を分割する / 他 backend を使う）を 1 行で出す。cwd 内 staging は cleanup 責任とリポジトリ汚染を招くため採らない
-- **補助 subprocess を helper に集約する**: `--version` / `export` / `models --verbose` は子 CLI の watchdog 外にあるため、timeout・出力上限・SIGKILL を持つ共通 helper 経由で呼び、失敗時は telemetry 欠落として fail-soft にする（delegate 本体は失敗させない）
+  - 採用: `DELEGATE_REQUEST_INLINE_MAX` 超過を child 起動前に fail-closed とし、wrapper が failed response を書いて Error section に理由と回避策（request を分割する / 他 backend を使う）を載せる。exit code は 1（`spec.md` §10 の「その他の実行失敗」）。stderr のみの通知は main へ届かないため使わない。cwd 内 staging は cleanup 責任とリポジトリ汚染を招くため採らない
+- **補助 subprocess を helper に集約する**: `--version` は bounded timeout 付きの fail-closed preflight とし、CLI 不在・応答なしは exit 3（前提条件不足）で停止する。`export` / `models --verbose` / `session delete` を timeout・出力上限・SIGKILL 付き helper 経由の fail-soft にし、失敗は telemetry 欠落として run を止めない
 - `shared/delegate-opencode.sh` shim を追加する（既存 shim と同構造。`sync-shared.ts` は `.sh` を自動列挙するため設定変更は不要）
 - **配線**: `shared/src/dispatch.ts` の `BACKEND_SCRIPTS.opencode = 'delegate-opencode.sh'` と `shared/src/main.ts` の `WRAPPER_BACKENDS.opencode = runWrapperOpencode` をここで足す（wrapper 実体と shim が揃う Step だから）
 - **分岐漏れを型で止める**: 現在の `completeMissingResponse` は `if (reportMode === 'structured') ... else completeReportMd(...)` で、union を増やしても `stdout_text` が `report_md` 側へ落ちたままコンパイルが通る。exhaustive な `switch` + `assertNever` に置き換えてから mode を追加する
@@ -280,9 +297,9 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
 
 ### Step 5: (未着手) observe 正規化と失敗分類
 
-- `shared/src/observe-usage.ts`: `step_finish` の `part.tokens` と `part.cost` を合算し、token と cost を **1 つの measured usage object** として組み立てる（`measurement: "measured"` / `source: "opencode_step_finish"` / `cached_input_tokens`、§3.3 のフィールド契約）。`total_tokens` は input + output とし、`part.tokens.total` は使わない。`observe-cost.ts` は費用を報告しない backend 向けの推定専用モジュールなので**変更しない**
-- `shared/src/observe-timing.ts`: `step_start` / `tool_use` / `text` の timestamp から model turns / tool calls / first useful を抽出する
-- `shared/src/observe-effort.ts`: run 後に `opencode export <sessionID>` を呼び、`run.effort.effective = { value, source: "opencode_export" }` を記録する（未指定時は `"default"`。無効値もそのまま入るため有効性判定には使わず、`source` を `measured` にしない）
+- `shared/src/observe-usage.ts`: `step_finish` の `part.tokens` と `part.cost` を合算し、token と cost を **1 つの measured usage object** として組み立てる（`measurement: "measured"` / `source: "opencode_step_finish"` / `cached_input_tokens`、§3.3 のフィールド契約）。`total_tokens` は input + output とし、`part.tokens.total` は使わない。`step_finish` が 1 件も取れない、または token フィールドが取れない場合は `usage_parse_failed` event を出して推定 fallback に落とし、既存経路を使う（新 event は作らない）。`observe-cost.ts` は費用を報告しない backend 向けの推定専用モジュールなので**変更しない**
+- `shared/src/observe-timing.ts`: `model_turns` / `tool_calls` は event の計数から取る。first useful / report ready は **event 到達時点の wrapper monotonic clock** から記録し、event の `timestamp`（epoch ms）は種別判定と順序判定にだけ使う
+- `shared/src/observe-effort.ts`: `opencode export` は effort 指定がある run でのみ `opencode export <sessionID>` を 1 回呼び、`run.effort.effective = { value, source: "opencode_export" }` を記録する。未指定 run では呼ばず `run.effort` を記録しない（catalog 取得と同じく、成功パスかつ effort 未指定の run にオーバーヘッドを乗せない）。無効値もそのまま入るため有効性判定には使わず、`source` を `measured` にしない
 - effort 指定がある run では catalog の `variants` と照合し、requested が含まれなければ observe event `effort_unsupported` を出し、response の Summary 先頭へ警告行を挿入する（§3.4）
 - `shared/src/observe-followup.ts`: `classifiedReportLines()` は kind ごとに専用の Summary / Error 文言を持ち、未知 kind は generic failure へ落ちる。`model_catalog_miss` の分岐と固定文言（原因・model・retryable の 3 行）を追加する
 - **opencode 用 post-run classifier を新設する**: 既存の `classifyChildFailure({ backend, stderrTail })` は pure 関数で stdout も requested model も受け取らないため、そのままでは使えない。入力（exit code / stdout tail / requested model / catalog 取得結果）、`/` を含む model 文字列の正規化、`failedResponseOutcome` への受け渡しを実装する。catalog miss は `ChildFailure` の新 kind `model_catalog_miss`（`retryable: true`）として記録する。`unknown` のままでは `recordChildFailure()` が early return して `error` が保存されない（§5.f）
@@ -298,6 +315,8 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
 - follow-up: `-s <sessionID>` を argv に付ける。session home / handle 欠落時は既存契約どおり fail-closed（exit 5）
 - **通常 run の session lifecycle を決める**: opencode は opt-in でない通常 run でも永続 session store（`~/.local/share/opencode/`）を作る。通常 run は非永続という既存契約に合わせ、run 後に `opencode session delete <id>` で回収し、resumable / follow-up のときだけ保持する
   - 削除は `export` など session を参照する処理をすべて終えた後、`finally` 相当で行う
+  - event 到達前の child kill / timeout / schema drift では session ID を取得できない穴がある
+  - session ID を取得できなかった run では削除を試みず `session_delete_skipped` event を残す（`session list` 差分による推測削除は並列 run の session を誤削除するため採らない）
   - child failure・signal 受信・response parse 失敗の各経路でも削除する（成功パスだけで削除しない）
   - **削除失敗は telemetry 欠落ではなく状態の残留**なので、observe event（`session_delete_failed`）として記録する。delegate 本体は失敗させないが、記録は必ず残す
 - **project config の継承境界を決める**: 対象リポジトリの `opencode.json` / `.opencode/` は `OPENCODE_CONFIG_CONTENT` より優先度が低いが、permission 以外の設定（`instructions` / `agent` / `lsp` 等）は worker に効く。継承を許す範囲を明文化する
@@ -323,18 +342,19 @@ Step 4 以降の実装に先行して決める。ここが未定だと wrapper �
 
 CLI 契約の変更と公開文書の更新を同じ Step に置く。
 
-- `docs/design/protocol-v1.md`: 現在 4 CLI と 2 つの response 組立方式だけを規定している。5 つの target backend と 3 方式（`structured` / `report_md` / `stdout_text`）へ更新する
+- `docs/design/protocol-v1.md`: 現在 4 CLI と 2 つの response 組立方式だけを規定している。5 つの target backend と 3 方式（`structured` / `report_md` / `stdout_text`）へ更新し、request inline gate 超過時の backend 別例外（`read-request.sh` fallback は cwd 外を読めない opencode では成立しないため fail-closed）を追加する
 - `docs/design/spec.md`:
   - §4 モデル解決（`opencode/` selector）
   - §5「実行系の四分岐」→「五分岐」へ改題し、opencode 起動節を追加、permission 節（全開放に統一する理由）を改訂
-  - §6 observe JSON の backend 列挙と additive field（Step 5 で定義したもの）
-  - §7 セッション再利用・MCP の対応表
+  - §6 observe JSON の backend 列挙と additive field（Step 5 で定義したもの、session lifecycle の `session_delete_skipped` / `session_delete_failed` event を含む）
+  - §7 セッション再利用・MCP の対応表（通常 run の session 非永続性を含む）
   - §10 exit code / §11 リポジトリ構成（shim 追加）
   - §12 環境変数 / §13 脅威モデル（cwd 外アクセスが permission で拒否される点）
+  - request inline gate 超過時の backend 別例外（`read-request.sh` fallback は cwd 外を読めない opencode では成立しないため fail-closed）
 - 見出し変更は既存リンクを壊すため、`docs/` 配下から旧アンカー（`実行系の四分岐` 等）への参照を洗って追随させる
-- `README.md` / `README_ja.md`: prerequisites、How it works の backend 表、Skills 表の env、Supported model names 表、resumable 対応。Effort handling 節では opencode を「delegate は検証せず素通し」と書き分け、既存の「Invalid values and unsupported combinations stop before dispatch」が opencode の effort には当てはまらないことを明記する。cwd 外へ書けない制約も記載する
-- `skills/*/SKILL.md`: 対象は **generic な 5 skill**（explore / implement / chore / review / htmldoc）だけ。`delegate-imagegen`（Codex 固定）と `delegate-x-research`（Grok 固定）は backend が固定でスコープ外なので触らない。実行系分岐・CLI prerequisite・session 対応に加え、§3.4 の通知（failed の Error section / Summary 先頭の警告行）を main がユーザーへ伝える手順を書く
-- `shared/model-token-prices.json`: pricing source と主要モデルを追加し、価格チャート 2 枚を再生成する。単価は `opencode models --verbose` の `cost`（input / output / cache read / write）から取れるので、手動転記ではなくこの出力を一次ソースにする
+- `README.md` / `README_ja.md`: prerequisites、How it works の backend 表、Skills 表の env、Supported model names 表、resumable 対応。Effort handling 節では opencode を「delegate は検証せず素通し」と書き分け、既存の「Invalid values and unsupported combinations stop before dispatch」が opencode の effort には当てはまらないことを明記する。cwd 外へ書けない制約、request inline gate 超過時の backend 別例外（`read-request.sh` fallback は cwd 外を読めない opencode では成立しないため fail-closed）、管理者設定のない環境を前提とすること、catalog 照合は参考情報であり allowlist ではなく `retryable` は分類のヒントであって自動リトライの指示ではないことも記載する
+- `skills/*/SKILL.md`: 対象は **generic な 5 skill**（explore / implement / chore / review / htmldoc）だけ。`delegate-imagegen`（Codex 固定）と `delegate-x-research`（Grok 固定）は backend が固定でスコープ外なので触らない。実行系分岐・CLI prerequisite・session 対応に加え、§3.4 の通知（failed の Error section / Summary 先頭の警告行）を main がユーザーへ伝える手順、cwd 外アクセスの制約（direct edit / write と明示パス読み取りは拒否され、bash のリダイレクトは通る。出力先を cwd 外に指定する htmldoc / implement は成功が保証されない）と、request inline gate 超過時の fail-closed、管理者設定のない環境を前提とすることを書く
+- `shared/model-token-prices.json`: 次の checklist を検証可能な形で実施する。対象モデル集合は `opencode models --verbose` で `cost` が取れるモデルのうち documented model に載せるもの、`pricing_sources` への source 追加、`retrieved_at` の更新、`pricing_status` の明示、価格チャート 2 枚の再生成、`metrics:baseline:check` の通過とし、該当なしの項目も理由付きで記録する。単価は `opencode models --verbose` の `cost`（input / output / cache read / write）を一次ソースにする
 - `docs/design/development.md`: 正本 / 配布 tree、backend 一覧、モデル追加手順に opencode の catalog drift 確認節（`opencode models --verbose`）を追加
 - backend 数の増加は **generic な target backend だけ**に効く。requester（delegate を起動する側）は Claude / Codex / Devin / Cursor の 4 種のままなので、「4 → 5」の一律置換をしない。文字列検索でヒットした箇所ごとに requester の話か target の話かを判別する
 - `docs/archive/` は完了済みプランの歴史記録なので、検索対象には含めても**書き換えない**
@@ -370,11 +390,11 @@ CLI 契約の変更と公開文書の更新を同じ Step に置く。
 
 ### b. report 回収方式
 
-| 候補                                                                 | 採用 | 理由                                                                                                                                                                                    |
-| -------------------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **stdout 最終 text から front-matter 回収（新 mode `stdout_text`）** | ✓    | run_dir への書き込みを worker に要求しないため、run_dir が cwd 外にある既定構成で唯一成立する。`edit: "deny"` のまま report が返ることを PoC で確認済みで、read-only の抑止とも両立する |
-| `report_md` + run_dir だけ edit allow                                | ✗    | cwd 外を allow にできない（§2.2）。`DELEGATE_WORK_DIR` を repo 内へ強制すれば回避できるが、opencode backend のためだけに work dir の既定を変えることになり protocol の一貫性を崩す      |
-| `structured`（JSON schema 強制）                                     | ✗    | opencode CLI に `--json-schema` / `--output-schema` 相当のフラグが無い                                                                                                                  |
+| 候補                                                                 | 採用 | 理由                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **stdout 最終 text から front-matter 回収（新 mode `stdout_text`）** | ✓    | run_dir への書き込みを worker に要求しないため、permission の実装詳細に依存せず成立する。read-only 種別では edit / write ツール自体が消え、残る書き込み経路は bash のリダイレクト（permission の検出漏れに見える。§2.2）と、permission 継承が未検証の `task` ツールだけになる。採用 profile のまま front-matter 付き report が返ることを PoC で確認済み |
+| `report_md` + run_dir だけ edit allow                                | ✗    | cwd 外を allow にできない（§2.2）。read-only 種別では edit / write が消えるため書き込み経路が bash のリダイレクトだけになり、report 生成が permission の検出漏れと shell quoting に依存する。`DELEGATE_WORK_DIR` を repo 内へ強制すれば回避できるが、opencode backend のためだけに work dir の既定を変えることになり protocol の一貫性を崩す            |
+| `structured`（JSON schema 強制）                                     | ✗    | opencode CLI に `--json-schema` / `--output-schema` 相当のフラグが無い                                                                                                                                                                                                                                                                                  |
 
 front-matter の出力はプロンプト依存になるため、front-matter を含まない応答は failed response として扱い、wrapper が status を落とす。
 
@@ -385,7 +405,7 @@ front-matter の出力はプロンプト依存になるため、front-matter を
 | **種別ごとに permission を出し分け**          | ✓    | 実機で編集ツールの遮断を確認済み。Claude パスの denylist と同等の抑止を 5 番目の backend にも与えられ、read-only 種別の保証が prompt 依存のみだった現状より強い |
 | 全開放に統一（Codex / Devin / Cursor と同じ） | ✗    | 技術的に抑止できるのに使わない理由が無い。ただし `bash` は explore でも allow にして Claude パスと粒度を揃える                                                  |
 
-`OPENCODE_CONFIG_CONTENT` で与えた permission は既定ルールを置き換えず追加され、評価は先勝ちになる（§2.2）。したがって「既定より緩める」方向の指定は効かず、`deny` を足して締める方向にだけ使える。この非対称性が §5.b の選択を決めている。
+`OPENCODE_CONFIG_CONTENT` で与えた permission は既定ルールを置き換えず追加され、評価は先勝ちになる（§2.2）。したがって「既定より緩める」方向の指定は効かず、`deny` を足して締める方向にだけ使える。先勝ちで効かないのは `external_directory` のようなパターンリスト内の後置 allow であり、カテゴリ単位（`edit` / `bash`）の deny は既定を締める方向に効く。この非対称性が §5.b の選択を決めている。
 
 締める方向については、対象リポジトリの `opencode.json` が `edit: "allow"` を宣言していても `OPENCODE_CONFIG_CONTENT` の `deny` が勝つことを実測した（§2.2）。委譲先リポジトリの設定で read-only 抑止を無効化されない。
 
@@ -401,14 +421,15 @@ front-matter の出力はプロンプト依存になるため、front-matter を
 
 - `run.effort.requested`: 指定値をそのまま記録する
 - `run.effort.effective`: `{ value: <export の info.model.variant>, source: "opencode_export" }`。**CLI が受け取った値であって有効性の証明ではない**（無効値 `bogus-effort-xyz` もそのまま記録される）。`source` を `measured` にすると既存の `effort_mismatch` 判定が誤作動するため使わない
+- `opencode export` は effort 指定がある run でのみ 1 回呼ぶ。未指定 run では呼ばず `run.effort` を記録しない（catalog 取得と同じく、成功パスかつ effort 未指定の run にオーバーヘッドを乗せない）
 - catalog 照合の結果は `run.effort` へは書かない（`recordEffort` が上書きするため）。**モデル行を取得できて** `variants` に requested が無いときだけ observe event `effort_unsupported` を出し、response の Summary へ警告行を載せる。モデル行を取得できない場合は判定不能として何もしない（§3.4）
 
 ### e. config 注入と並列実行の隔離
 
-| 候補                                            | 採用 | 理由                                                                                                                                  |
-| ----------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **`OPENCODE_CONFIG_CONTENT`（インライン env）** | ✓    | ファイルを作らないため Cursor で必要だった config dir コピーと rename 競合が起きない。マージ順で project `opencode.json` より後に効く |
-| `OPENCODE_CONFIG`（パス指定）                   | ✗    | マージ順で project の `opencode.json` に上書きされ、対象リポジトリの設定次第で permission が無効化され得る                            |
+| 候補                                            | 採用 | 理由                                                                                                                                                                                                    |
+| ----------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`OPENCODE_CONFIG_CONTENT`（インライン env）** | ✓    | ファイルを作らないため Cursor で必要だった config dir コピーと rename 競合が起きない。マージ順で project `opencode.json` より後に効く。代償として session store は実 HOME に残り、§5.h の明示削除が要る |
+| `OPENCODE_CONFIG`（パス指定）                   | ✗    | マージ順で project の `opencode.json` に上書きされ、対象リポジトリの設定次第で permission が無効化され得る                                                                                              |
 
 ### f. failure classification
 
@@ -419,7 +440,7 @@ front-matter の出力はプロンプト依存になるため、front-matter を
 | `model_not_found`（`retryable: false`）を使う                       | ✗    | 一過性障害を恒久エラーと誤記録する。opencode の失敗メッセージは実在 provider + 不明モデル / 不明 provider / provider 欠落のすべてが同一の `UnknownError` で、モデル不存在を断定できない |
 | stdout / stderr の signature を登録                                 | ✗    | 上記のとおり 3 パターンが同一メッセージで、`ref` は毎回変わる                                                                                                                           |
 
-`model_catalog_miss` を `retryable: true` にする根拠は「catalog 未掲載でも受理されるモデルがあり得る」ことだが、**これは Cursor で実際に起きた事象（`grok-4.5` が `agent --list-models` に無くても受理される）からの類推で、opencode では未実測である**。実測で否定されれば `retryable: false` へ格上げできる。逆に言えば、この不確実性がある限り catalog を dispatch 前の allowlist には使わない。
+`model_catalog_miss` を `retryable: true` にする根拠は「catalog 未掲載でも受理されるモデルがあり得る」ことだが、**これは Cursor で実際に起きた事象（`grok-4.5` が `agent --list-models` に無くても受理される）からの類推で、opencode では未実測である**。実測で否定されれば `retryable: false` へ格上げできる。`retryable` は分類のヒントであって自動リトライの指示ではない。逆に言えば、この不確実性がある限り catalog 照合は参考情報であり allowlist ではなく、dispatch 前の allowlist には使わない。
 
 実装上の注意:
 
@@ -429,10 +450,19 @@ front-matter の出力はプロンプト依存になるため、front-matter を
 
 ### g. 価格表と cost
 
-| 候補                                                         | 採用 | 理由                                                                                                                       |
-| ------------------------------------------------------------ | ---- | -------------------------------------------------------------------------------------------------------------------------- |
-| **`part.cost` を measured として記録し価格表は参照用に追加** | ✓    | backend が cost を直接返す初の経路であり、推定に落とす理由が無い。価格表は README のチャートで横並び比較するために維持する |
-| 価格表からの推定に統一                                       | ✗    | 実測値を捨てることになる                                                                                                   |
+| 候補                                                         | 採用 | 理由                                                                                                                             |
+| ------------------------------------------------------------ | ---- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **`part.cost` を measured として記録し価格表は参照用に追加** | ✓    | Claude パスと同じく CLI が cost を直接返すため、推定に落とす理由が無い。価格表は README のチャートで横並び比較するために維持する |
+| 価格表からの推定に統一                                       | ✗    | 実測値を捨てることになる                                                                                                         |
+
+### h. 通常 run の session 非永続性
+
+| 候補                                                    | 採用 | 理由                                                                                                                                                      |
+| ------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **run 後の `session delete` + 取得不能時の event 記録** | ✓    | 通常 run は既存契約どおり session store を残さず、session ID を取得できない場合は `session_delete_skipped`、削除失敗は `session_delete_failed` に記録する |
+| run ごとの XDG data 隔離                                | ✗    | 認証情報の限定注入が必要になり Codex の auth cleanup と同種の複雑性を抱えるため。並列競合が実測されたら §8 の代替案として採る                             |
+
+既存 4 backend は状態の置き場所を run_dir 配下へ向け、run 後に丸ごと捨てることで非永続性を担保している（Claude は `workDir/claude-config`、Codex は `CODEX_HOME`、Cursor は `CURSOR_CONFIG_DIR`。Devin は session が cloud 側にあり local store を持たない）。opencode で同じ手を採れないのは §5.e で config 注入に env を選び、session store の置き場所が実 HOME のままになるためで、e と h はトレードオフの関係にある。削除方式は session ID を取得できた run にしか効かず、event 到達前の失敗では対象を特定できない穴が残る（隔離方式ならこの穴自体が生じない）。
 
 ## 6. テスト方針
 
@@ -444,14 +474,15 @@ fake CLI で再現できるのは argv・env・stdout の形だけで、stdin EO
   - `opencode/` 分岐、既存 prefix（`gpt` / `swe` / `composer` / `cursor-`）との非衝突、空文字
 - `shared/src/observe-effort.ts` の in-source test
   - selector 剥離、`/` 欠落の exit 6、二重 selector の拒否、未知 effort が素通しすること、形式不正（`@` の重複 / 空文字）の拒否
+  - `/` を含むのに `opencode/` で始まらない selector 省略形・区切り誤りを exit 6 で拒否し、selector 付きで grammar を満たす未知 provider は拒否しないこと（`opencode-go/glm-5.2`、`opencode:opencode-go/glm-5.2` 等）
   - `variants` に requested が無いとき `effort_unsupported` event を出し、あるときは出さない。`variants: {}` のモデルでも出す。catalog 取得失敗時は event を出さない
   - `run.effort.effective.source` が `opencode_export` であり、`recordEffort` の `effort_mismatch` を誘発しないこと
 - `shared/src/observe-usage.ts` の in-source test
-  - 単一 / 複数 `step_finish` の合算（token と cost の両方）、`measurement` / `source` / `cached_input_tokens` のフィールド名、`total_tokens` が input + output（`part.tokens.total` を使わない）、`cost_usd_estimated` が付かないこと、`cache` 欠落、壊れた JSONL 行の無視
+  - 単一 / 複数 `step_finish` の合算（token と cost の両方）、`measurement` / `source` / `cached_input_tokens` のフィールド名、`total_tokens` が input + output（`part.tokens.total` を使わない）、`cost_usd_estimated` が付かないこと、`cache` 欠落、壊れた JSONL 行の無視、`step_finish` 欠落・token フィールド欠落で `usage_parse_failed` に落ちること
 - `shared/src/observe-timing.ts` の in-source test
-  - `step_start` / `tool_use` / `text` からの model turns / tool calls / first useful、`structured_output_parse` が `null` のままであること
+  - event 計数からの model turns / tool calls、event 到達時の wrapper monotonic clock からの first useful / report ready（epoch `timestamp` を timing 値に入れないこと）、`structured_output_parse` が `null` のままであること
 - opencode post-run classifier の in-source test
-  - catalog に無いモデルで `error.kind = "model_catalog_miss"` かつ `retryable: true`、catalog を引けないときは既存 `model_catalog_unavailable`、catalog に行があるときは `unknown`（`error` キーを作らない）、`/` を含む model 文字列の正規化
+  - catalog に無いモデルで `error.kind = "model_catalog_miss"` かつ `retryable: true`、catalog を引けないときは既存 `model_catalog_unavailable`、catalog に行があるときは `unknown`（`error` キーを作らない）、`/` を含む model 文字列の正規化、truncation / 部分 parse 失敗時に `model_catalog_unavailable` へ落ちること
 - `shared/src/wrapper-common.ts` の in-source test
   - `stdout_text` branch: 複数 `text` イベントからの最終応答選択、front-matter の剥がし、front-matter 欠落・不正 status で failed response、`error` イベントのみの応答
 - `scripts/delegate-wrapper-session.test.ts`（fake `opencode` CLI）
@@ -467,21 +498,21 @@ fake CLI で再現できるのは argv・env・stdout の形だけで、stdin EO
 
 §1 の各要件がどの層で立証されるかを固定する。空欄を残さない。
 
-| §1 の要件                      | unit / in-source                                                                   | fake CLI golden                                                              | 実 CLI smoke                                           |
-| ------------------------------ | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------ |
-| 5 番目の実行系へ分岐           | `backend.ts` の分岐、`dispatch.ts` の shim 選択                                    | dispatch が `delegate-opencode.sh` を起動                                    | —                                                      |
-| 通常 run の protocol v1 往復   | `stdout_text` collector                                                            | 5 task type × `stdout_text` の matrix                                        | explore / implement の 2 種別                          |
-| direct edit-tool 抑止          | permission JSON の生成                                                             | `OPENCODE_CONFIG_CONTENT` の内容（種別ごと）                                 | explore で拒否 / implement で成功                      |
-| measured usage / cost          | `observe-usage.ts` の合算・フィールド名・`cache_write_tokens` / `reasoning_tokens` | usage が observe に入ること                                                  | 実 run の値が export と一致                            |
-| 不正なモデル記法の fail-closed | `observe-effort.ts` の grammar 検証                                                | `prepare` / `run` 経由で exit 6 が透過                                       | —                                                      |
-| 失敗の検知と通知               | post-run classifier の写像、`classifiedReportLines` の文言                         | catalog miss が one-shot の Error section に出ること                         | 実在しないモデル                                       |
-| 生成物の同期と配布             | —                                                                                  | —                                                                            | `build:check` / `sync-shared:check`                    |
-| session reuse                  | `observe-followup.ts` の resumable 判定                                            | 3 session mode                                                               | resumable → follow-up の 2 段                          |
-| session lifecycle              | 削除の呼び出し順と失敗時 fail-soft                                                 | 通常 run で delete が呼ばれ、resumable では呼ばれない                        | 通常 run 後に `session list` へ残らない                |
-| MCP 注入                       | canonical → opencode config の変換 fixture                                         | 生成された config の `mcp` セクション                                        | **本環境では不可**（§8）                               |
-| effort 対応                    | `variants` 照合、モデル行欠落時の判定不能                                          | `effort_unsupported` event と Summary 警告行（欠落・重複時の生成規則を含む） | 未対応 effort の警告到達                               |
-| 補助 subprocess の頑健性       | timeout / 出力上限 / SIGKILL / fail-soft                                           | 応答しない fake `models` での timeout                                        | —                                                      |
-| 価格表エントリ                 | —（`observe-cost.ts` は変更しない）                                                | —                                                                            | `opencode models --verbose` の `cost` と表の一致を目視 |
+| §1 の要件                      | unit / in-source                                                                   | fake CLI golden                                                              | 実 CLI smoke                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 5 番目の実行系へ分岐           | `backend.ts` の分岐、`dispatch.ts` の shim 選択                                    | dispatch が `delegate-opencode.sh` を起動                                    | —                                                                          |
+| 通常 run の protocol v1 往復   | `stdout_text` collector                                                            | 5 task type × `stdout_text` の matrix                                        | explore / implement の 2 種別（Summary が request を反映しているかも見る） |
+| direct edit-tool 抑止          | permission JSON の生成                                                             | `OPENCODE_CONFIG_CONTENT` の内容（種別ごと）                                 | explore / review で拒否、implement で成功                                  |
+| measured usage / cost          | `observe-usage.ts` の合算・フィールド名・`cache_write_tokens` / `reasoning_tokens` | usage が observe に入ること                                                  | 実 run の値が export と一致                                                |
+| 不正なモデル記法の fail-closed | `observe-effort.ts` の grammar 検証                                                | `prepare` / `run` 経由で exit 6 が透過                                       | —                                                                          |
+| 失敗の検知と通知               | post-run classifier の写像、`classifiedReportLines` の文言                         | catalog miss が one-shot の Error section に出ること                         | 実在しないモデル                                                           |
+| 生成物の同期と配布             | —                                                                                  | —                                                                            | `build:check` / `sync-shared:check`                                        |
+| session reuse                  | `observe-followup.ts` の resumable 判定                                            | 3 session mode                                                               | resumable → follow-up の 2 段                                              |
+| session lifecycle              | 削除の呼び出し順と失敗時 fail-soft                                                 | 通常 run で delete が呼ばれ、resumable では呼ばれない                        | 通常 run 後に `session list` へ残らない                                    |
+| MCP 注入                       | canonical → opencode config の変換 fixture                                         | 生成された config の `mcp` セクション                                        | **本環境では不可**（§8）                                                   |
+| effort 対応                    | `variants` 照合、モデル行欠落時の判定不能                                          | `effort_unsupported` event と Summary 警告行（欠落・重複時の生成規則を含む） | 未対応 effort の警告到達                                                   |
+| 補助 subprocess の頑健性       | timeout / 出力上限 / SIGKILL / fail-soft                                           | 応答しない fake `models` での timeout                                        | —                                                                          |
+| 価格表エントリ                 | —（`observe-cost.ts` は変更しない）                                                | —                                                                            | `opencode models --verbose` の `cost` と表の一致を目視                     |
 
 gate の規則:
 
@@ -497,8 +528,9 @@ gate の規則:
 - [ ] `npm run sync-shared` / `npm run sync-shared:check`
 - [ ] `bash scripts/check-no-jq-md2idx.sh`
 - [ ] 実 CLI smoke（すべて timeout 付きで実行する）
-  - [ ] explore で編集が拒否され、implement で編集が通る（permission profile）
+  - [ ] explore / review で編集が拒否され、implement で編集が通る（permission profile。ツール一覧と実際の edit / write 試行の両方で確認する）
   - [ ] measured usage と cost が observe に入る
+  - [ ] report の Summary が request の対象を指しており、テンプレート文字列の反復でない（free モデルは形式のみ成立する実測がある。§2.2）
   - [ ] 実在しないモデルで failed response と `error.kind = "model_catalog_miss"` が出る
   - [ ] `variants` に無い effort で警告が response の Summary に出る
   - [ ] resumable → follow-up の 2 段実行で session が継続し、通常 run では session が残らない
@@ -509,7 +541,7 @@ gate の規則:
 ## 7. 受け入れ基準
 
 - §1 の MUST 要件をすべて満たす
-- 既存 4 backend の argv / observe / exit code が変わっていない（既存 golden が無改変で通る）
+- 既存 4 backend の argv / prompt 文言 / observe / exit code が変わっていない（既存 golden が無改変で通る）
 - 新規挙動に対応する in-source test と fake CLI golden がある
 - `npm run build:check` / `npm run sync-shared:check` / `vp check` / `npm test` が通る
 - README / README_ja / spec.md / protocol-v1.md / development.md / SKILL.md が実装と一致し、backend 一覧と response 組立方式がすべて 5 backend / 3 方式を表している
@@ -518,22 +550,26 @@ gate の規則:
 
 ## 8. 想定リスクと回避策
 
-| リスク                                                                     | 回避策                                                                                                                                                                                                                                                                                                 |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| permission が期待通り効かず read-only が破れる                             | PoC でパターン allow が効かないことを確認済みで、`edit: "deny"` + stdout 回収に確定した（§5.b）。実 CLI smoke で explore の編集拒否を毎回確認する                                                                                                                                                      |
-| `/` を含む model 文字列が failure report の sanitizer を通らない           | run / request / response / observe のパスは task type・timestamp・random token から生成され model を使わないため path 破損は起きない。実在する問題は failure に載せる model 名の表示・保存で、既存 sanitizer が `/` を受理しない点に限られる（Step 5）                                                 |
-| 並列 run で session store が競合する                                       | PoC の 3 並列では競合が観測されなかった（§2.2）が、競合不在の証明ではない。実 CLI smoke に resumable を含む並列ケースを置き、競合が出たら `HOME` / `XDG_DATA_HOME` の run_dir 隔離を検討する（auth.json のコピーが要る点に注意）                                                                       |
-| `--variant` が黙って無視され effort が効かない                             | 素通し方針のため dispatch では弾かない（§5.d）。catalog の `variants` と照合して `effort_unsupported` event を出し、response の Summary へ警告行を載せる（§3.4）。ただし catalog に載っていても推論量が実際に変わった保証にはならない（PoC で low / high の reasoning token に有意差なし）             |
-| worker が cwd 外のファイルを読み書きできない                               | 他 backend と異なり cwd 外の read / write が permission で拒否される。(1) request が `DELEGATE_REQUEST_INLINE_MAX` を超える場合は child 起動前に fail-closed とする（Step 4 で確定）。(2) 出力先を cwd 外に指定する htmldoc / implement タスクは失敗するため、この制約を SKILL.md と README に明記する |
-| prompt を positional で渡すとハングする                                    | wrapper は必ず stdin で渡す。fake CLI golden の argv assert に「positional に prompt を置かない」を含める                                                                                                                                                                                              |
-| catalog 未掲載だが受理されるモデルを恒久エラーと誤記録する                 | catalog miss は `model_catalog_miss`（`retryable: true`）に留め、`model_not_found` へ倒さない（§5.f）。dispatch も止めない。README に「catalog 照合は参考情報であり allowlist ではない」と明記する                                                                                                     |
-| opencode の catalog / provider が予告なく変わる                            | Cursor と同じく「実 CLI で確認できた変換だけを持つ」方針を development.md に明記し、drift 確認手順（`opencode models`）を残す                                                                                                                                                                          |
-| ドキュメント各所に「四分岐 / 4 backend」表現が残る                         | Step 8 で洗う。ただし requester は 4 種のままで target backend だけが 5 種になるため、一律置換はしない                                                                                                                                                                                                 |
-| free モデルの PoC 結果を有料モデルへ一般化する                             | 有料モデル（`opencode-go/glm-5.2`）で `part.cost` が非 0 になることを確認済み（§2.2）。実 CLI smoke でも有料モデルを 1 回使う                                                                                                                                                                          |
-| 補助 subprocess（`--version` / `export` / `models --verbose`）が hang する | 子 CLI の watchdog 外にあるため、timeout・出力上限・SIGKILL 付きの共通 helper 経由で呼び、失敗は telemetry 欠落として fail-soft にする（Step 4）                                                                                                                                                       |
-| 通常 run の session が削除されず会話データが残る                           | `export` 後の `finally` 相当で削除し、child failure / signal / parse 失敗の経路も通す。削除失敗は `session_delete_failed` event として残す（Step 6）。golden で削除の呼び出し順と失敗時の記録を固定する                                                                                                |
-| MCP 注入の実効性を本環境で検証できない                                     | 親の `~/.claude.json` に MCP サーバーが無い。変換ロジックは fixture テストで固定し、実効性は MCP 設定がある環境で確認する。未確認のまま SHOULD を完了扱いにしない                                                                                                                                      |
-| 共通層の第 3 mode 追加が既存 2 backend を壊す                              | `CompletionConfig.reportMode` の union 拡張は型で漏れを検出できる。加えて既存 4 backend の argv / response mode の golden を無改変で通すことを回帰条件にする（§6）                                                                                                                                     |
+| リスク                                                                                                  | 回避策                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| permission が期待通り効かず read-only が破れる                                                          | PoC でパターン allow が効かないことを確認済みで、`edit: "deny"` + stdout 回収に確定した（§5.b）。実 CLI smoke で explore の編集拒否を毎回確認する                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| config merge 順の最後にある管理者設定が `OPENCODE_CONFIG_CONTENT` を override し read-only 抑止が外れる | delegate の制御外。read-only 抑止は管理者設定のない環境を前提とすることを README / SKILL.md に明記する                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `/` を含む model 文字列が failure report の sanitizer を通らない                                        | run / request / response / observe のパスは task type・timestamp・random token から生成され model を使わないため path 破損は起きない。実在する問題は failure に載せる model 名の表示・保存で、既存 sanitizer が `/` を受理しない点に限られる（Step 5）                                                                                                                                                                                                                                                                                                                            |
+| 並列 run で session store が競合する                                                                    | PoC の 3 並列では競合が観測されなかった（§2.2）が、競合不在の証明ではない。実 CLI smoke に resumable を含む並列ケースを置き、競合が出たら `HOME` / `XDG_DATA_HOME` の run_dir 隔離を検討する（auth.json のコピーが要る点に注意）                                                                                                                                                                                                                                                                                                                                                  |
+| `--variant` が黙って無視され effort が効かない                                                          | 素通し方針のため dispatch では弾かない（§5.d）。catalog の `variants` と照合して `effort_unsupported` event を出し、response の Summary へ警告行を載せる（§3.4）。ただし catalog に載っていても推論量が実際に変わった保証にはならない（PoC で low / high の reasoning token に有意差なし）                                                                                                                                                                                                                                                                                        |
+| event schema drift で `step_finish` が取れず usage が 0 の measured になる                              | core field の取得可否を検証し、取れなければ `usage_parse_failed` + 推定 fallback に落とす。部分欠落・型変更・未知 schema を in-source test の fixture に入れる                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| worker の cwd 外アクセスに一貫した境界が無い                                                            | direct edit / write ツールは cwd 外を書けず、明示パスの読み取り（`cat /tmp/f`）も拒否されるが、**bash のリダイレクトによる書き込みは通る**（§2.2）。`task` 経由は未検証。したがって cwd 外への出力は「不可能」ではなく「保証・依存できない」ものとして扱う。(1) request が `DELEGATE_REQUEST_INLINE_MAX` を超える場合は child 起動前に fail-closed とする（Step 4 で確定）。(2) 出力先を cwd 外に指定する htmldoc / implement は成功が保証されないため、この制約を SKILL.md と README に明記する。(3) report 回収は stdout に寄せ、どの経路が塞がれても方式が変わらないようにする |
+| prompt を positional で渡すとハングする                                                                 | wrapper は必ず stdin で渡す。fake CLI golden の argv assert に「positional に prompt を置かない」を含める                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| front-matter を出せないモデルで failed が頻発する                                                       | PoC の成立確認は 1 モデルのみ。`stdout_text` は `--json-schema` 相当の強制手段が無く既存 2 方式より prompt 依存が強い。Step 7 の実 CLI smoke に free / 小型モデルでの front-matter 安定性確認を含める。欠落時に本文全体を report とみなす救済は status を偽装するため採らず、failed response の Error section に front-matter 欠落であることを明示して切り分け可能にする                                                                                                                                                                                                          |
+| catalog 未掲載だが受理されるモデルを恒久エラーと誤記録する                                              | catalog miss は `model_catalog_miss`（`retryable: true`）に留め、`model_not_found` へ倒さない（§5.f）。dispatch も止めない。`retryable` は分類のヒントであって自動リトライの指示ではない。README に「catalog 照合は参考情報であり allowlist ではない」と明記する                                                                                                                                                                                                                                                                                                                  |
+| opencode の catalog / provider が予告なく変わる                                                         | Cursor と同じく「実 CLI で確認できた変換だけを持つ」方針を development.md に明記し、drift 確認手順（`opencode models`）を残す                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ドキュメント各所に「四分岐 / 4 backend」表現が残る                                                      | Step 8 で洗う。ただし requester は 4 種のままで target backend だけが 5 種になるため、一律置換はしない                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| free モデルの PoC 結果を有料モデルへ一般化する                                                          | 有料モデル（`opencode-go/glm-5.2`）で `part.cost` が非 0 になることを確認済み（§2.2）。実 CLI smoke でも有料モデルを 1 回使う                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 補助 subprocess（`export` / `models --verbose`）が hang する                                            | `--version` は preflight として別扱いにし、CLI 不在・応答なしは bounded timeout 付きで exit 3 にする。`export` / `models --verbose` / `session delete` を timeout・出力上限・SIGKILL 付きの共通 helper 経由で呼び、失敗は telemetry 欠落として fail-soft にする（Step 4）                                                                                                                                                                                                                                                                                                         |
+| 通常 run の session が削除されず会話データが残る                                                        | `export` 後の `finally` 相当で削除し、child failure / signal / parse 失敗の経路も通す。event 到達前の child kill / timeout / schema drift では session ID を取得できず削除できないため、推測削除はせず `session_delete_skipped` event に残す。削除失敗は `session_delete_failed` event として残す（Step 6）。golden で削除の呼び出し順と失敗時の記録を固定する                                                                                                                                                                                                                    |
+| MCP 注入の実効性を本環境で検証できない                                                                  | 親の `~/.claude.json` に MCP サーバーが無い。変換ロジックは fixture テストで固定し、実効性は MCP 設定がある環境で確認する。未確認のまま SHOULD を完了扱いにしない                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| opencode の permission 挙動が変わる（bash のリダイレクトが塞がれる / 読み取りが通るようになる）         | report 回収は stdout に寄せてあるため、書き込み側がどちらに転んでも方式は変わらない。読み取り側は inline gate 超過の fail-closed（Step 4）の根拠なので、permission 挙動が変わった場合は §2.2 の実測を取り直して判断を見直す                                                                                                                                                                                                                                                                                                                                                       |
+| 共通層の第 3 mode 追加が既存 2 backend を壊す                                                           | `CompletionConfig.reportMode` の union 拡張は型で漏れを検出できる。加えて既存 4 backend の argv / response mode の golden を無改変で通すことを回帰条件にする（§6）                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## 9. 参考
 
