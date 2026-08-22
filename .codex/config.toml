@@ -1,5 +1,6 @@
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
+sandbox_mode = "danger-full-access"
 
 [features]
 hooks = true
@@ -14,7 +15,7 @@ inherit = "core"
 
 [shell_environment_policy.set]
 DISABLE_AUTOUPDATER = "1"
-DELEGATE_CHORE_MODEL = "gpt-5.5"
-DELEGATE_EXPLORE_MODEL = "gpt-5.5"
-DELEGATE_IMPLEMENT_MODEL = "gpt-5.5"
+DELEGATE_CHORE_MODEL = "gpt-5.6-luna@medium"
+DELEGATE_EXPLORE_MODEL = "gpt-5.6-luna@medium"
+DELEGATE_IMPLEMENT_MODEL = "sgpt-5.6-luna@max"
 DELEGATE_REVIEW_MODEL = "gpt-5.6-sol"

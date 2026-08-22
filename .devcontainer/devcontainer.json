@@ -21,12 +21,7 @@
   "postStartCommand": "bash -lc 'cleanup_status=0; bash scripts/clean-devcontainer-disk.sh --threshold 90 || cleanup_status=$?; if [ \"$cleanup_status\" -ne 0 ]; then printf \"warning: devcontainer disk cleanup failed (exit %s); continuing startup\\n\" \"$cleanup_status\" >&2; fi'",
   "customizations": {
     "vscode": {
-      "extensions": [
-        "ms-vscode.live-server",
-        "VoidZero.vite-plus-extension-pack",
-        "anthropic.claude-code",
-        "openai.chatgpt"
-      ],
+      "extensions": ["anthropic.claude-code"],
       "settings": {
         "terminal.integrated.defaultProfile.linux": "zsh",
         "terminal.integrated.profiles.linux": {

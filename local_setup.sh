@@ -27,6 +27,10 @@ node node_modules/@anthropic-ai/claude-code/install.cjs
 CODEX_BIN="$(cd "$(dirname "$0")" && pwd)/node_modules/.bin/codex"
 sudo ln -sf "$CODEX_BIN" /usr/local/bin/codex
 
+# opencode コマンドのシンボリックリンクを作成
+OPENCODE_BIN="$(cd "$(dirname "$0")" && pwd)/node_modules/.bin/opencode"
+sudo ln -sf "$OPENCODE_BIN" /usr/local/bin/opencode
+
 # .claude/settings.local.json が無ければ example からコピー
 if [ ! -f .claude/settings.local.json ]; then
   cp .claude/settings.example.json .claude/settings.local.json
@@ -56,9 +60,8 @@ gh skill install oubakiou/mdxg-redline md-review --agent codex --scope project
 
 for agent in claude-code codex; do
   for skill in \
-    guarded-webfetch-codex \
-    guarded-websearch-codex \
     dataviz-svg \
+    handover \
   ; do
     gh skill install oubakiou/skills "$skill" --agent "$agent" --scope project --force
   done

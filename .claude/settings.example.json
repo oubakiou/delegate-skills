@@ -14,6 +14,6 @@
   },
   "permissions": {
     "deny": ["Read(**.archive.md)", "Edit(**.archive.md)"],
-    "allow": ["Edit(docs/**)", "MultiEdit(docs/**)", "Write(docs/**)"]
+    "allow": ["Edit(docs/**)"]
   }
 }
