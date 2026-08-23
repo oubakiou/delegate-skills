@@ -30,6 +30,7 @@ import {
   OPENCODE_CAPTURE_MAX_BYTES,
   OPENCODE_CAPTURE_MAX_LINE_BYTES,
   estimatedUsage,
+  freezeOpencodeCaptureSession,
   summarizeOpencodeCapture,
   usageFromOpencodeCapture,
 } from './observe-usage.ts'
@@ -675,8 +676,20 @@ export const opencodeCliArgs = (context: WrapperContext, cliModel: string): stri
   return args
 }
 
+// redaction は capture の byte 長を変え、増分読み取りの offset をずらす。書き換え前に
+// 走査を終えた結果をここへ確定させ、以後は再走査しない
+const frozenSummaries = new Map<string, ReturnType<typeof summarizeOpencodeCapture>>()
+
+const captureSummaryOf = (captureFile: string): ReturnType<typeof summarizeOpencodeCapture> => {
+  const frozen = frozenSummaries.get(captureFile)
+  if (typeof frozen === 'undefined') {
+    return summarizeOpencodeCapture(captureFile)
+  }
+  return frozen
+}
+
 export const lastTextFromCapture = (captureFile: string): string | null => {
-  const summary = summarizeOpencodeCapture(captureFile)
+  const summary = captureSummaryOf(captureFile)
   if (summary === null || !summary.sawTextEvent) {
     return null
   }
@@ -1035,8 +1048,28 @@ const sessionIdentityFromCapture = (captureFile: string): OpencodeSessionIdentit
   }
 }
 
+// redaction は capture の byte 長を変え、増分読み取りの offset をずらす。書き換え前に
+// 走査を終えた結果をここへ確定させ、以後は再走査しない
+const frozenIdentities = new Map<string, ReturnType<typeof sessionIdentityFromCapture>>()
+
+const captureIdentityOf = (captureFile: string): ReturnType<typeof sessionIdentityFromCapture> => {
+  const frozen = frozenIdentities.get(captureFile)
+  if (typeof frozen === 'undefined') {
+    return sessionIdentityFromCapture(captureFile)
+  }
+  return frozen
+}
+
+const freezeCaptureBeforeRedaction = (captureFile: string): void => {
+  quietly(() => {
+    frozenSummaries.set(captureFile, summarizeOpencodeCapture(captureFile))
+    frozenIdentities.set(captureFile, sessionIdentityFromCapture(captureFile))
+    freezeOpencodeCaptureSession(captureFile)
+  })
+}
+
 const sessionIdFromCapture = (captureFile: string): string | null =>
-  sessionIdentityFromCapture(captureFile).id
+  captureIdentityOf(captureFile).id
 
 const recordOpencodeChildFailure = (context: WrapperContext, failure: ChildFailure): void => {
   quietly(() => {
@@ -1543,6 +1576,10 @@ const opencodeWaitInput = (run: OpencodeChildRun): WaitInput => ({
   env: run.context.env,
   redactCapture: (content: string) =>
     redactKnownSecrets(content, opencodeMcpOf(run.context).secrets),
+  beforeCaptureRedaction: () => {
+    freezeCaptureBeforeRedaction(run.context.stdoutCapture)
+    freezeCaptureBeforeRedaction(run.context.stderrCapture)
+  },
 })
 
 const waitForOpencodeChild = async (run: OpencodeChildRun): Promise<WaitResult> => {

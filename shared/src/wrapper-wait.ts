@@ -154,6 +154,9 @@ export interface WaitInput {
   responseFile: string
   env: Env
   redactCapture?: (content: string) => string
+  // capture の増分読み取りは byte offset をキャッシュするため、書き換えより先に
+  // 最終走査を終える必要がある。redaction は長さを変え、以後の offset をずらす
+  beforeCaptureRedaction?: () => void
 }
 
 export interface WaitResult {
@@ -355,12 +358,35 @@ const readCaptureOrNull = (file: string): string | null => {
   }
 }
 
+// 置換は構文非依存なので、短い値が JSON の構造文字を含む部分列に一致して行を壊し得る。
+// 壊れた行は元へ戻さず（元は置換対象を含む）行ごと落とす
+const redactedLine = (line: string, redact: (content: string) => string): string => {
+  const redacted = redact(line)
+  if (redacted === line || line.trim() === '') {
+    return redacted
+  }
+  try {
+    JSON.parse(line)
+  } catch {
+    return redacted
+  }
+  try {
+    JSON.parse(redacted)
+    return redacted
+  } catch {
+    return ''
+  }
+}
+
 const rewriteRedactedCapture = (file: string, redact: (content: string) => string): void => {
   const content = readCaptureOrNull(file)
   if (content === null) {
     return
   }
-  const redacted = redact(content)
+  const redacted = content
+    .split('\n')
+    .map((line) => redactedLine(line, redact))
+    .join('\n')
   if (redacted === content) {
     return
   }
@@ -376,6 +402,9 @@ const applyCaptureRedaction = (input: WaitInput): void => {
 }
 
 const finalizeWaitObserve = (input: WaitInput, childPid: number): void => {
+  if (typeof input.beforeCaptureRedaction !== 'undefined') {
+    input.beforeCaptureRedaction()
+  }
   applyCaptureRedaction(input)
   heartbeat(input.observeFile, input.runDir, {
     backend: input.backend,

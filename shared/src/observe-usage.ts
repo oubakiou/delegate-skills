@@ -287,10 +287,17 @@ const readAndMaybeFinishCapture = (
   return session
 }
 
+// capture を書き換える処理（値のマスクなど）は byte 長を変え、session がキャッシュした
+// offset を無効にする。書き換え前に freeze して以後の読み進めを止める
+const frozenCaptures = new Set<string>()
+
 const advanceOpencodeCaptureSession = (
   captureFile: string,
   finish: boolean
 ): OpencodeCaptureSession | null => {
+  if (frozenCaptures.has(captureFile)) {
+    return captureSessions.get(captureFile) ?? null
+  }
   const fd = openOpencodeCaptureFd(captureFile)
   if (fd === null) {
     return captureSessions.get(captureFile) ?? null
@@ -300,6 +307,11 @@ const advanceOpencodeCaptureSession = (
   } finally {
     closeOpencodeCapture(fd)
   }
+}
+
+export const freezeOpencodeCaptureSession = (captureFile: string): void => {
+  advanceOpencodeCaptureSession(captureFile, true)
+  frozenCaptures.add(captureFile)
 }
 
 const isUsefulOpencodeEvent = (event: Record<string, unknown>): boolean => {
@@ -1033,6 +1045,22 @@ const opencodeTokens = (input: number, output: number): Record<string, unknown> 
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  const freezeSecret = 'A'.repeat(60)
+  const freezeFixture = [
+    JSON.stringify({
+      type: 'tool_use',
+      sessionID: 's',
+      part: { tool: 'bash', state: { status: 'completed', output: freezeSecret } },
+    }),
+    JSON.stringify({
+      type: 'step_finish',
+      sessionID: 's',
+      part: { tokens: { input: 10, output: 5 }, cost: 0.001 },
+    }),
+    JSON.stringify({ type: 'text', sessionID: 's', part: { text: 'final' } }),
+    '',
+  ].join('\n')
+
   describe('parseUsageEvents', () => {
     it('takes the last measured item, prefers event-level cost, and sums missing totals', () => {
       const text = [
@@ -1060,6 +1088,20 @@ if (import.meta.vitest) {
           source: 's',
         })
       ).toBeNull()
+    })
+  })
+
+  describe('freezeOpencodeCaptureSession', () => {
+    it('keeps the summary stable when the capture is rewritten afterwards', async () => {
+      const { writeFileSync } = await import('node:fs')
+      const { createTestScratchDir } = await import('./test-scratch.ts')
+      const capture = path.join(createTestScratchDir('freeze-capture'), 'stdout.capture')
+      writeFileSync(capture, freezeFixture)
+      freezeOpencodeCaptureSession(capture)
+      const before = summarizeOpencodeCapture(capture)
+      expect(before).toMatchObject({ lastText: 'final' })
+      writeFileSync(capture, readFileSync(capture, 'utf8').replaceAll(freezeSecret, '***'))
+      expect(summarizeOpencodeCapture(capture)).toEqual(before)
     })
   })
 

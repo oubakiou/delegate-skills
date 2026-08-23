@@ -995,7 +995,9 @@ var readAndMaybeFinishCapture = (fd, session, finish) => {
 	}
 	return session;
 };
+var frozenCaptures = /* @__PURE__ */ new Set();
 var advanceOpencodeCaptureSession = (captureFile, finish) => {
+	if (frozenCaptures.has(captureFile)) return captureSessions.get(captureFile) ?? null;
 	const fd = openOpencodeCaptureFd(captureFile);
 	if (fd === null) return captureSessions.get(captureFile) ?? null;
 	try {
@@ -1003,6 +1005,10 @@ var advanceOpencodeCaptureSession = (captureFile, finish) => {
 	} finally {
 		closeOpencodeCapture(fd);
 	}
+};
+var freezeOpencodeCaptureSession = (captureFile) => {
+	advanceOpencodeCaptureSession(captureFile, true);
+	frozenCaptures.add(captureFile);
 };
 var isUsefulOpencodeEvent = (event) => {
 	if (event.type === "tool_use") return true;
@@ -5242,10 +5248,25 @@ var readCaptureOrNull = (file) => {
 		return null;
 	}
 };
+var redactedLine = (line, redact) => {
+	const redacted = redact(line);
+	if (redacted === line || line.trim() === "") return redacted;
+	try {
+		JSON.parse(line);
+	} catch {
+		return redacted;
+	}
+	try {
+		JSON.parse(redacted);
+		return redacted;
+	} catch {
+		return "";
+	}
+};
 var rewriteRedactedCapture = (file, redact) => {
 	const content = readCaptureOrNull(file);
 	if (content === null) return;
-	const redacted = redact(content);
+	const redacted = content.split("\n").map((line) => redactedLine(line, redact)).join("\n");
 	if (redacted === content) return;
 	writeFileSync(file, redacted);
 };
@@ -5255,6 +5276,7 @@ var applyCaptureRedaction = (input) => {
 	rewriteRedactedCapture(input.stderrCapture, input.redactCapture);
 };
 var finalizeWaitObserve = (input, childPid) => {
+	if (typeof input.beforeCaptureRedaction !== "undefined") input.beforeCaptureRedaction();
 	applyCaptureRedaction(input);
 	heartbeat(input.observeFile, input.runDir, {
 		backend: input.backend,
@@ -7122,8 +7144,14 @@ var opencodeCliArgs = (context, cliModel) => {
 	if (usePureMode(context)) args.push("--pure");
 	return args;
 };
+var frozenSummaries = /* @__PURE__ */ new Map();
+var captureSummaryOf = (captureFile) => {
+	const frozen = frozenSummaries.get(captureFile);
+	if (typeof frozen === "undefined") return summarizeOpencodeCapture(captureFile);
+	return frozen;
+};
 var lastTextFromCapture = (captureFile) => {
-	const summary = summarizeOpencodeCapture(captureFile);
+	const summary = captureSummaryOf(captureFile);
 	if (summary === null || !summary.sawTextEvent) return null;
 	return summary.lastText;
 };
@@ -7351,7 +7379,20 @@ var sessionIdentityFromCapture = (captureFile) => {
 		closeSync(fd);
 	}
 };
-var sessionIdFromCapture = (captureFile) => sessionIdentityFromCapture(captureFile).id;
+var frozenIdentities = /* @__PURE__ */ new Map();
+var captureIdentityOf = (captureFile) => {
+	const frozen = frozenIdentities.get(captureFile);
+	if (typeof frozen === "undefined") return sessionIdentityFromCapture(captureFile);
+	return frozen;
+};
+var freezeCaptureBeforeRedaction = (captureFile) => {
+	quietly(() => {
+		frozenSummaries.set(captureFile, summarizeOpencodeCapture(captureFile));
+		frozenIdentities.set(captureFile, sessionIdentityFromCapture(captureFile));
+		freezeOpencodeCaptureSession(captureFile);
+	});
+};
+var sessionIdFromCapture = (captureFile) => captureIdentityOf(captureFile).id;
 var recordOpencodeChildFailure = (context, failure) => {
 	quietly(() => {
 		recordChildFailure(context.args.observeFile, context.workDir, {
@@ -7663,7 +7704,11 @@ var opencodeWaitInput = (run) => ({
 	stderrCapture: run.context.stderrCapture,
 	responseFile: run.context.args.responseFile,
 	env: run.context.env,
-	redactCapture: (content) => redactKnownSecrets(content, opencodeMcpOf(run.context).secrets)
+	redactCapture: (content) => redactKnownSecrets(content, opencodeMcpOf(run.context).secrets),
+	beforeCaptureRedaction: () => {
+		freezeCaptureBeforeRedaction(run.context.stdoutCapture);
+		freezeCaptureBeforeRedaction(run.context.stderrCapture);
+	}
 });
 var waitForOpencodeChild = async (run) => {
 	const wait = await waitWithHeartbeat(opencodeWaitInput(run));
