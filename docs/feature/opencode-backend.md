@@ -391,13 +391,24 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 
 成果物: review / fix ループで session が継続し、通常 run が session を残さず、親の MCP 設定が worker から使える
 
-### Step 7: (未着手) fake CLI golden と実 CLI smoke
+### Step 7: (完了済み) fake CLI golden と実 CLI smoke
 
-- `scripts/delegate-wrapper-session.test.ts` に fake `opencode` CLI を追加し、§6 の fake ケース（argv / stdin / 3 session mode / permission 内容 / 5 task type × `stdout_text` / inline gate 超過 / 既存 4 backend の回帰）を固定する
-- `scripts/delegate-run.test.ts` に one-shot 契約と、completed response での警告到達テストを追加する
-- 実 CLI smoke: §6 手動確認のチェックリストを timeout 付きで一通り実行する。fake では再現できない stdin EOF の ask reject、permission の実効性、実 catalog / export schema はここでのみ担保される
+- `scripts/delegate-wrapper-session.test.ts` に fake `opencode` CLI を追加し、argv / stdin / 3 session mode / permission 内容 / `--pure` の付与条件 / MCP 決定表 / 5 task type × `stdout_text` / inline gate 超過 / 既存 4 backend の回帰を固定した
+- `scripts/delegate-run.test.ts` に one-shot 契約と、completed response での警告到達テストを追加した
+- 実 CLI smoke（2026-08-23 実施、opencode v1.18.21）の結果:
 
-成果物: CLI レベルの契約が golden で固定され、fake で再現できない挙動が実機で確認される
+| 確認項目                                    | 結果                                                                                                                                                                 |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| explore / implement の 2 種別が `completed` | `opencode/opencode-go/glm-5.2` で両方成功。Summary は request の対象を指しており、テンプレート文字列の反復ではない                                                   |
+| measured usage と cost                      | explore で input 15982 / output 395 / cached 10554 / cost 0.02685684、implement で cost 0.03264866。いずれも `measurement: measured`                                 |
+| 実在しないモデル                            | exit 1 / `status: failed` / `error.kind = "model_catalog_miss"` / `retryable: true`。Error section に Cause・Model・Retryable が出る                                 |
+| `variants` に無い effort                    | run は `completed` のまま `effort_unsupported` を 1 件記録し、Summary 先頭に固定警告が出る。`requested` と `effective` は共に指定値（export は無効値もそのまま返す） |
+| resumable → follow-up                       | 1 回目で `backend_session.resume_id` を回収し、2 回目は**対象ファイルパスを request に書かなくても**直前の文脈からファイルを特定して更新した                         |
+| 通常 run の session                         | 実行前後で `session list` の件数が変わらない（削除されている）                                                                                                       |
+| explore の write 遮断                       | 書き込みを指示しても対象ファイルは作成されない                                                                                                                       |
+| free モデルの report 形式                   | `opencode/nemotron-3.5-lightning-free` は**本文を先に書き front-matter を末尾に置いた**ため failed。回答内容自体は正確だった。有料モデルでは形式を守る               |
+
+成果物: CLI レベルの契約が golden で固定され、fake では再現できない挙動が実機で確認された
 
 ### Step 8: (未着手) 公開仕様の更新と配布同期
 
@@ -639,7 +650,7 @@ gate の規則:
 | event schema drift で `step_finish` が取れず usage が 0 の measured になる                              | core field の取得可否を検証し、取れなければ `usage_parse_failed` + 推定 fallback に落とす。部分欠落・型変更・未知 schema を in-source test の fixture に入れる                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | worker の cwd 外アクセスに一貫した境界が無い                                                            | direct edit / write ツールは cwd 外を書けず、明示パスの読み取り（`cat /tmp/f`）も拒否されるが、**bash のリダイレクトによる書き込みは通る**（§2.2）。`task` 経由は未検証。したがって cwd 外への出力は「不可能」ではなく「保証・依存できない」ものとして扱う。(1) request が `DELEGATE_REQUEST_INLINE_MAX` を超える場合は child 起動前に fail-closed とする（Step 4 で確定）。(2) 出力先を cwd 外に指定する htmldoc / implement は成功が保証されないため、この制約を SKILL.md と README に明記する。(3) report 回収は stdout に寄せ、どの経路が塞がれても方式が変わらないようにする |
 | prompt を positional で渡すとハングする                                                                 | wrapper は必ず stdin で渡す。fake CLI golden の argv assert に「positional に prompt を置かない」を含める                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| front-matter を出せないモデルで failed が頻発する                                                       | PoC の成立確認は 1 モデルのみ。`stdout_text` は `--json-schema` 相当の強制手段が無く既存 2 方式より prompt 依存が強い。Step 7 の実 CLI smoke に free / 小型モデルでの front-matter 安定性確認を含める。欠落時に本文全体を report とみなす救済は status を偽装するため採らず、failed response の Error section に front-matter 欠落であることを明示して切り分け可能にする                                                                                                                                                                                                          |
+| front-matter を出せないモデルで failed が頻発する                                                       | **実測で発生**（2026-08-23）。`opencode/nemotron-3.5-lightning-free` は回答内容は正確なまま本文を先に書き、front-matter を末尾に置いて failed になった。prompt は「先頭に front-matter を置き」と明示しているが、タスクが複雑になると形式が崩れる。有料モデル（`opencode-go/glm-5.2`）では守られた。救済（本文全体を report とみなす）は status を偽装するため採らず、failed response の Error section で front-matter 欠落と分かるようにしている。documented model に載せる際は形式維持の実績があるモデルに絞る                                                                  |
 | catalog 未掲載だが受理されるモデルを恒久エラーと誤記録する                                              | catalog miss は `model_catalog_miss`（`retryable: true`）に留め、`model_not_found` へ倒さない（§5.f）。dispatch も止めない。`retryable` は分類のヒントであって自動リトライの指示ではない。README に「catalog 照合は参考情報であり allowlist ではない」と明記する                                                                                                                                                                                                                                                                                                                  |
 | opencode の catalog / provider が予告なく変わる                                                         | Cursor と同じく「実 CLI で確認できた変換だけを持つ」方針を development.md に明記し、drift 確認手順（`opencode models`）を残す                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ドキュメント各所に「四分岐 / 4 backend」表現が残る                                                      | Step 8 で洗う。ただし requester は 4 種のままで target backend だけが 5 種になるため、一律置換はしない                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
