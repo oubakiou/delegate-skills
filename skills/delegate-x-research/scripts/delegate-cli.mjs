@@ -4353,6 +4353,13 @@ var codexCanonicalFromList = (parsed) => {
 	for (const entry of parsed) addCodexEntry(canonical, entry);
 	return canonical;
 };
+var mcpCanonicalFromCodexListJson = (stdout) => {
+	try {
+		return codexCanonicalFromList(JSON.parse(stdout));
+	} catch {
+		return emptyCanonical();
+	}
+};
 var mcpExtractCodexUser = (realCodexHome) => {
 	const listed = spawnSync("codex", [
 		"mcp",
@@ -4371,15 +4378,62 @@ var mcpExtractCodexUser = (realCodexHome) => {
 		]
 	});
 	if (listed.status !== 0) return emptyCanonical();
-	try {
-		return codexCanonicalFromList(JSON.parse(listed.stdout ?? ""));
-	} catch {
-		return emptyCanonical();
-	}
+	return mcpCanonicalFromCodexListJson(listed.stdout ?? "");
 };
 var mcpHasServers = (canonical) => Object.keys(canonical).length > 0;
 var mcpRenderClaudeMcpConfig = (canonical) => `${JSON.stringify({ mcpServers: canonical })}\n`;
 var mcpRenderCursorMcpJson = (canonical) => mcpRenderClaudeMcpConfig(canonical);
+var stringArgsOf = (value) => {
+	if (typeof value === "undefined") return [];
+	if (!Array.isArray(value)) return null;
+	if (value.every((item) => typeof item === "string")) return value;
+	return null;
+};
+var stringRecordOf = (value) => {
+	if (!isRecord$3(value)) return null;
+	const record = {};
+	for (const [key, item] of Object.entries(value)) if (typeof item === "string") record[key] = item;
+	if (Object.keys(record).length === 0) return null;
+	return record;
+};
+var opencodeLocalOf = (server) => {
+	if (typeof server.command !== "string" || server.command === "") return null;
+	const args = stringArgsOf(server.args);
+	if (args === null) return null;
+	const converted = {
+		type: "local",
+		command: [server.command, ...args]
+	};
+	const environment = stringRecordOf(server.env);
+	if (environment !== null) converted.environment = environment;
+	return converted;
+};
+var opencodeRemoteOf = (server) => {
+	if (typeof server.url !== "string" || server.url === "") return null;
+	const converted = {
+		type: "remote",
+		url: server.url
+	};
+	const headers = stringRecordOf(server.headers);
+	if (headers !== null) converted.headers = headers;
+	return converted;
+};
+var nonEmptyString = (value) => typeof value === "string" && value !== "";
+var mixedCommandAndUrl = (server) => nonEmptyString(server.command) && nonEmptyString(server.url);
+var opencodeMcpEntryOf = (server) => {
+	if (!isRecord$3(server) || mixedCommandAndUrl(server)) return null;
+	const local = opencodeLocalOf(server);
+	if (local !== null) return local;
+	return opencodeRemoteOf(server);
+};
+var mcpRenderOpencodeConfig = (canonical) => {
+	const mcp = {};
+	for (const [name, server] of Object.entries(canonical)) {
+		const converted = opencodeMcpEntryOf(server);
+		if (converted !== null) mcp[name] = converted;
+	}
+	return mcp;
+};
 var tomlQuote = (value) => {
 	if (typeof value === "string") return JSON.stringify(value);
 	return JSON.stringify(String(value));
@@ -5181,7 +5235,27 @@ var finalStatus = (stalled, exitResult) => {
 	if (stalled) return 124;
 	return exitStatusFromChild(exitResult);
 };
+var readCaptureOrNull = (file) => {
+	try {
+		return readFileSync(file, "utf8");
+	} catch {
+		return null;
+	}
+};
+var rewriteRedactedCapture = (file, redact) => {
+	const content = readCaptureOrNull(file);
+	if (content === null) return;
+	const redacted = redact(content);
+	if (redacted === content) return;
+	writeFileSync(file, redacted);
+};
+var applyCaptureRedaction = (input) => {
+	if (typeof input.redactCapture === "undefined") return;
+	rewriteRedactedCapture(input.stdoutCapture, input.redactCapture);
+	rewriteRedactedCapture(input.stderrCapture, input.redactCapture);
+};
 var finalizeWaitObserve = (input, childPid) => {
+	applyCaptureRedaction(input);
 	heartbeat(input.observeFile, input.runDir, {
 		backend: input.backend,
 		childPid,
@@ -5286,7 +5360,7 @@ var minimalAllowedTools = (context, requestInline) => {
 	if (requestInline) return "Read";
 	return `Bash(bash ${context.scriptsDir}/read-request.sh:*),Read`;
 };
-var parentClaudeConfigFile = (env) => {
+var parentClaudeConfigFile$1 = (env) => {
 	const configDir = env.CLAUDE_CONFIG_DIR ?? "";
 	if (configDir !== "") return path.join(configDir, ".claude.json");
 	return path.join(env.HOME ?? "", ".claude.json");
@@ -5302,7 +5376,7 @@ var mcpServersFromConfigFile = (mcpConfigFile) => {
 };
 var sessionArgsForResumable = (context, session) => {
 	const args = [];
-	const canonical = mcpExtractClaudeUser(parentClaudeConfigFile(context.env));
+	const canonical = mcpExtractClaudeUser(parentClaudeConfigFile$1(context.env));
 	if (mcpHasServers(canonical)) {
 		const mcpConfigFile = path.join(session.sessionHome, "mcp-config.json");
 		writeFileSync(mcpConfigFile, mcpRenderClaudeMcpConfig(canonical));
@@ -5491,7 +5565,7 @@ var runWrapperClaude = async (argv, env, io) => {
 //#endregion
 //#region shared/src/wrapper-codex.ts
 var lastMessageFileOf = (context) => path.join(context.workDir, "codex-last-message.txt");
-var realCodexHomeOf = (env) => {
+var realCodexHomeOf$1 = (env) => {
 	const home = env.CODEX_HOME ?? "";
 	if (home !== "") return home;
 	return path.join(env.HOME ?? "", ".codex");
@@ -5518,7 +5592,7 @@ var ownedRealDirectory = (directory) => {
 };
 var safeFollowupSessionHome = (context, sessionHome) => {
 	const resolvedHome = path.resolve(sessionHome);
-	const realRoot = path.resolve(realCodexHomeOf(context.env));
+	const realRoot = path.resolve(realCodexHomeOf$1(context.env));
 	try {
 		return path.basename(resolvedHome) === "codex-home" && DELEGATE_SESSION_RUN.test(path.basename(path.dirname(resolvedHome))) && ownedRealDirectory(path.dirname(resolvedHome)) && ownedRealDirectory(resolvedHome) && realpathSync(resolvedHome) !== realpathSync(realRoot) && followupSessionRecordMatches(context, resolvedHome);
 	} catch {
@@ -5562,7 +5636,7 @@ var authCopyExists = (authCopy) => {
 var safeCodexAuthCopyPath = (context, codexHome) => {
 	const resolvedHome = path.resolve(codexHome);
 	const authCopy = path.join(resolvedHome, "auth.json");
-	const rootAuth = path.resolve(realCodexHomeOf(context.env), "auth.json");
+	const rootAuth = path.resolve(realCodexHomeOf$1(context.env), "auth.json");
 	if (resolvedHome === path.parse(resolvedHome).root || authCopy === rootAuth) return null;
 	if (matchesRealCodexHome(resolvedHome, rootAuth) || authCopyIsSymlink(authCopy)) return null;
 	return authCopy;
@@ -5589,7 +5663,7 @@ var copyAuthAtomic = (source, destination, lease) => {
 };
 var copyCodexAuth = (context, codexHome, lease) => {
 	mkdirSync(codexHome, { recursive: true });
-	const authFile = path.join(realCodexHomeOf(context.env), "auth.json");
+	const authFile = path.join(realCodexHomeOf$1(context.env), "auth.json");
 	const authCopy = safeCodexAuthCopyPath(context, codexHome);
 	if (authCopy === null || authCopyExists(authCopy)) throw new CodexAuthLifecycleError("stage");
 	if (!hasFileContent(authFile)) return;
@@ -5720,7 +5794,7 @@ var recordFollowupMcp = (context, codexHome) => {
 	});
 };
 var injectCodexMcp = (context, codexHome) => {
-	const canonical = mcpExtractCodexUser(realCodexHomeOf(context.env));
+	const canonical = mcpExtractCodexUser(realCodexHomeOf$1(context.env));
 	if (mcpHasServers(canonical)) {
 		writeFileSync(path.join(codexHome, "config.toml"), mcpRenderCodexToml(canonical));
 		quietly(() => {
@@ -5998,7 +6072,7 @@ var cursorCliModelOf = (context, model) => {
 	if (model === "grok-4.5") return `cursor-grok-4.5-${context.effort}`;
 	return finishWithoutChild(context, 6, `ERROR: no bracket override mapping for cursor model '${context.args.originalModel}'`);
 };
-var realCursorConfigDirOf = (env) => {
+var realCursorConfigDirOf$1 = (env) => {
 	const configured = env.CURSOR_CONFIG_DIR ?? "";
 	if (configured !== "") return configured;
 	const xdg = env.XDG_CONFIG_HOME ?? "";
@@ -6008,14 +6082,14 @@ var realCursorConfigDirOf = (env) => {
 var isolateCursorConfig = (context) => {
 	const isolated = path.join(context.workDir, "cursor-config");
 	mkdirSync(isolated, { recursive: true });
-	const realConfig = path.join(realCursorConfigDirOf(context.env), "cli-config.json");
+	const realConfig = path.join(realCursorConfigDirOf$1(context.env), "cli-config.json");
 	quietly(() => {
 		if (hasFileContent(realConfig)) copyFileSync(realConfig, path.join(isolated, "cli-config.json"));
 	});
 	return isolated;
 };
 var setupCursorMcp = (context, isolatedConfigDir) => {
-	const canonical = mcpExtractCursorGlobal(path.join(realCursorConfigDirOf(context.env), "mcp.json"));
+	const canonical = mcpExtractCursorGlobal(path.join(realCursorConfigDirOf$1(context.env), "mcp.json"));
 	if (mcpHasServers(canonical)) {
 		writeFileSync(path.join(isolatedConfigDir, "mcp.json"), mcpRenderCursorMcpJson(canonical));
 		return {
@@ -6891,9 +6965,144 @@ var opencodePureEnabled = (env) => {
 	return value === "1" || value === "true" || value === "yes";
 };
 var usePureMode = (context) => PURE_TASK_TYPES.has(context.args.taskType) || opencodePureEnabled(context.env);
-var opencodeConfigContent = (taskType) => {
+var opencodeMcpSourceOf = (value) => {
+	if (value === "claude" || value === "cursor" || value === "codex") return value;
+	return null;
+};
+var opencodeMcpSourceChoice = (env) => {
+	const value = env.DELEGATE_OPENCODE_MCP_SOURCE;
+	if (typeof value === "undefined" || value === "") return { kind: "unset" };
+	const source = opencodeMcpSourceOf(value);
+	if (source === null) return {
+		kind: "invalid",
+		value
+	};
+	return {
+		kind: "source",
+		source
+	};
+};
+var parentClaudeConfigFile = (env) => {
+	const configDir = env.CLAUDE_CONFIG_DIR ?? "";
+	if (configDir !== "") return path.join(configDir, ".claude.json");
+	return path.join(env.HOME ?? "", ".claude.json");
+};
+var realCursorConfigDirOf = (env) => {
+	const configured = env.CURSOR_CONFIG_DIR ?? "";
+	if (configured !== "") return configured;
+	const xdg = env.XDG_CONFIG_HOME ?? "";
+	if (xdg !== "") return path.join(xdg, "cursor");
+	return path.join(env.HOME ?? "", ".cursor");
+};
+var realCodexHomeOf = (env) => {
+	const home = env.CODEX_HOME ?? "";
+	if (home !== "") return home;
+	return path.join(env.HOME ?? "", ".codex");
+};
+var envWithoutConfigContent = (env) => {
+	const sanitized = {};
+	for (const [key, value] of Object.entries(env)) if (key !== "OPENCODE_CONFIG_CONTENT" && typeof value === "string") sanitized[key] = value;
+	return sanitized;
+};
+var fetchCodexMcpList = (env, options = {}) => {
+	const limits = auxLimitsOf(options, {
+		timeoutMs: OPENCODE_AUX_TIMEOUT_MS,
+		maxBytes: OPENCODE_MODELS_MAX_BYTES
+	});
+	const result = runOpencodeAux({
+		command: options.command ?? "codex",
+		args: [
+			"mcp",
+			"list",
+			"--json"
+		],
+		env: {
+			...envWithoutConfigContent(env),
+			CODEX_HOME: realCodexHomeOf(env)
+		},
+		cwd: options.cwd,
+		limits
+	});
+	if (!auxResultAuthoritative(result, limits.maxBytes)) return {};
+	return mcpCanonicalFromCodexListJson(result.stdout);
+};
+var extractOpencodeMcpCanonical = (source, context) => {
+	if (source === "claude") return mcpExtractClaudeUser(parentClaudeConfigFile(context.env));
+	if (source === "cursor") return mcpExtractCursorGlobal(path.join(realCursorConfigDirOf(context.env), "mcp.json"));
+	return fetchCodexMcpList(context.env, { cwd: context.repoRoot });
+};
+var MCP_SECRET_PLACEHOLDER = "***";
+var enableOpencodeMcpEntry = (entry) => {
+	if (!isRecord$3(entry)) return entry;
+	return {
+		...entry,
+		enabled: true
+	};
+};
+var enableOpencodeMcpEntries = (mcp) => {
+	const enabled = {};
+	for (const [name, entry] of Object.entries(mcp)) enabled[name] = enableOpencodeMcpEntry(entry);
+	return enabled;
+};
+var stringValuesOf = (value) => {
+	if (!isRecord$3(value)) return [];
+	return Object.values(value).filter((item) => typeof item === "string" && item !== "");
+};
+var mcpSecretValuesOf = (mcp) => {
+	const secrets = [];
+	for (const entry of Object.values(mcp)) if (isRecord$3(entry)) secrets.push(...stringValuesOf(entry.environment), ...stringValuesOf(entry.headers));
+	return [...new Set(secrets)].toSorted((left, right) => right.length - left.length);
+};
+var redactKnownSecrets = (text, secrets) => secrets.reduce((redacted, secret) => redacted.replaceAll(secret, MCP_SECRET_PLACEHOLDER), text);
+var emptyOpencodeMcp = (source) => ({
+	source,
+	servers: [],
+	mcp: null,
+	secrets: []
+});
+var injectedOpencodeMcp = (mcp) => {
+	const enabled = enableOpencodeMcpEntries(mcp);
+	const servers = Object.keys(enabled);
+	if (servers.length === 0) return emptyOpencodeMcp("none");
+	return {
+		source: "injected",
+		servers,
+		mcp: enabled,
+		secrets: mcpSecretValuesOf(enabled)
+	};
+};
+var resolveOpencodeMcpState = (context) => {
+	const choice = opencodeMcpSourceChoice(context.env);
+	if (choice.kind === "source") return injectedOpencodeMcp(mcpRenderOpencodeConfig(extractOpencodeMcpCanonical(choice.source, context)));
+	if (choice.kind === "unset") return emptyOpencodeMcp("shared");
+	return emptyOpencodeMcp("none");
+};
+var opencodeMcpByContext = /* @__PURE__ */ new WeakMap();
+var opencodeMcpOf = (context) => {
+	const cached = opencodeMcpByContext.get(context);
+	if (cached) return cached;
+	const resolved = resolveOpencodeMcpState(context);
+	opencodeMcpByContext.set(context, resolved);
+	return resolved;
+};
+var recordOpencodeMcp = (context) => {
+	const mcp = opencodeMcpOf(context);
+	quietly(() => {
+		updateMcpConfig(context.args.observeFile, context.workDir, {
+			source: mcp.source,
+			servers: mcp.servers
+		});
+	});
+};
+var opencodeMcpSourceFailure = (context) => {
+	const choice = opencodeMcpSourceChoice(context.env);
+	if (choice.kind !== "invalid") return null;
+	return finishWithoutChild(context, 3, `ERROR: DELEGATE_OPENCODE_MCP_SOURCE must be claude, cursor, or codex: ${choice.value}`);
+};
+var opencodeConfigContent = (taskType, mcp = null) => {
 	const config = {};
 	if (taskType === "explore" || taskType === "review") config.permission = { edit: "deny" };
+	if (mcp !== null && Object.keys(mcp).length > 0) config.mcp = mcp;
 	return JSON.stringify(config);
 };
 var opencodeSessionCliArgs = (context) => {
@@ -6946,7 +7155,7 @@ var recordOpencodeUsage = (context) => {
 };
 var opencodeChildEnv = (context) => ({
 	...context.env,
-	OPENCODE_CONFIG_CONTENT: opencodeConfigContent(context.args.taskType),
+	OPENCODE_CONFIG_CONTENT: opencodeConfigContent(context.args.taskType, opencodeMcpOf(context).mcp),
 	TMPDIR: path.join(context.workDir, "tmp")
 });
 var inlineFailureTarget = (context) => ({
@@ -6982,7 +7191,9 @@ var finishInlineFailure = (context) => {
 var launchValidationFailure = (context) => {
 	const effortError = effortFailure(context);
 	if (effortError !== null) return effortError;
-	return sessionModeFailure(context);
+	const sessionError = sessionModeFailure(context);
+	if (sessionError !== null) return sessionError;
+	return opencodeMcpSourceFailure(context);
 };
 var requestStepForOpencode = (context) => {
 	const requestStep = requestPromptStep(context.args.requestFile, {
@@ -7259,9 +7470,14 @@ var applyOpencodeEffort = (input) => {
 	recordOpencodeExportEffort(input.context, input.command, input.sessionID);
 	return warning;
 };
-var opencodeStdoutText = (input) => {
+var rawOpencodeStdoutText = (input) => {
 	if (input.wait.childStatus !== 0) return classifiedFailureReport(input.context, input.failure, input.wait.childStatus);
 	return opencodeCapturedText(input.context, input.wait);
+};
+var opencodeStdoutText = (input) => {
+	const text = rawOpencodeStdoutText(input);
+	if (text === null) return null;
+	return redactKnownSecrets(text, opencodeMcpOf(input.context).secrets);
 };
 var OPENCODE_RESUME_SOURCE = "opencode_json";
 var recordOpencodeResumable = (context, sessionID, outcome) => {
@@ -7438,17 +7654,19 @@ var attachOpencodeSignalHold = (observeFile) => {
 		releaseOpencodeSignalHold(hold, listeners);
 	};
 };
+var opencodeWaitInput = (run) => ({
+	observeFile: run.context.args.observeFile,
+	runDir: run.context.workDir,
+	backend: run.context.backend,
+	worker: run.worker,
+	stdoutCapture: run.context.stdoutCapture,
+	stderrCapture: run.context.stderrCapture,
+	responseFile: run.context.args.responseFile,
+	env: run.context.env,
+	redactCapture: (content) => redactKnownSecrets(content, opencodeMcpOf(run.context).secrets)
+});
 var waitForOpencodeChild = async (run) => {
-	const wait = await waitWithHeartbeat({
-		observeFile: run.context.args.observeFile,
-		runDir: run.context.workDir,
-		backend: run.context.backend,
-		worker: run.worker,
-		stdoutCapture: run.context.stdoutCapture,
-		stderrCapture: run.context.stderrCapture,
-		responseFile: run.context.args.responseFile,
-		env: run.context.env
-	});
+	const wait = await waitWithHeartbeat(opencodeWaitInput(run));
 	applyOpencodeAfterWait(run.context.args.observeFile);
 	return wait;
 };
@@ -7475,6 +7693,7 @@ var opencodePromptFile = (context, launch) => {
 };
 var spawnOpencodeWorker = (context, launch) => {
 	const cliModel = stripOpencodeSelector(context.baseModel);
+	recordOpencodeMcp(context);
 	return {
 		cliModel,
 		worker: spawnWorker({

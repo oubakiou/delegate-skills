@@ -76,6 +76,14 @@ const codexCanonicalFromList = (parsed: unknown): McpCanonical => {
   return canonical
 }
 
+export const mcpCanonicalFromCodexListJson = (stdout: string): McpCanonical => {
+  try {
+    return codexCanonicalFromList(JSON.parse(stdout))
+  } catch {
+    return emptyCanonical()
+  }
+}
+
 export const mcpExtractCodexUser = (realCodexHome: string): McpCanonical => {
   const listed = spawnSync('codex', ['mcp', 'list', '--json'], {
     encoding: 'utf8',
@@ -85,11 +93,7 @@ export const mcpExtractCodexUser = (realCodexHome: string): McpCanonical => {
   if (listed.status !== 0) {
     return emptyCanonical()
   }
-  try {
-    return codexCanonicalFromList(JSON.parse(listed.stdout ?? ''))
-  } catch {
-    return emptyCanonical()
-  }
+  return mcpCanonicalFromCodexListJson(listed.stdout ?? '')
 }
 
 export const mcpHasServers = (canonical: McpCanonical): boolean => Object.keys(canonical).length > 0
@@ -102,6 +106,97 @@ export const mcpRenderClaudeMcpConfig = (canonical: McpCanonical): string =>
 
 export const mcpRenderCursorMcpJson = (canonical: McpCanonical): string =>
   mcpRenderClaudeMcpConfig(canonical)
+
+const stringArgsOf = (value: unknown): string[] | null => {
+  if (typeof value === 'undefined') {
+    return []
+  }
+  if (!Array.isArray(value)) {
+    return null
+  }
+  if (value.every((item) => typeof item === 'string')) {
+    return value
+  }
+  return null
+}
+
+const stringRecordOf = (value: unknown): Record<string, string> | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+  const record: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'string') {
+      record[key] = item
+    }
+  }
+  if (Object.keys(record).length === 0) {
+    return null
+  }
+  return record
+}
+
+const opencodeLocalOf = (server: Record<string, unknown>): Record<string, unknown> | null => {
+  if (typeof server.command !== 'string' || server.command === '') {
+    return null
+  }
+  const args = stringArgsOf(server.args)
+  if (args === null) {
+    return null
+  }
+  const converted: Record<string, unknown> = {
+    type: 'local',
+    command: [server.command, ...args],
+  }
+  const environment = stringRecordOf(server.env)
+  if (environment !== null) {
+    converted.environment = environment
+  }
+  return converted
+}
+
+const opencodeRemoteOf = (server: Record<string, unknown>): Record<string, unknown> | null => {
+  if (typeof server.url !== 'string' || server.url === '') {
+    return null
+  }
+  const converted: Record<string, unknown> = {
+    type: 'remote',
+    url: server.url,
+  }
+  const headers = stringRecordOf(server.headers)
+  if (headers !== null) {
+    converted.headers = headers
+  }
+  return converted
+}
+
+const nonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value !== ''
+
+const mixedCommandAndUrl = (server: Record<string, unknown>): boolean =>
+  nonEmptyString(server.command) && nonEmptyString(server.url)
+
+const opencodeMcpEntryOf = (server: unknown): Record<string, unknown> | null => {
+  if (!isRecord(server) || mixedCommandAndUrl(server)) {
+    return null
+  }
+  const local = opencodeLocalOf(server)
+  if (local !== null) {
+    return local
+  }
+  return opencodeRemoteOf(server)
+}
+
+export const mcpRenderOpencodeConfig = (canonical: McpCanonical): Record<string, unknown> => {
+  const mcp: Record<string, unknown> = {}
+  for (const [name, server] of Object.entries(canonical)) {
+    const converted = opencodeMcpEntryOf(server)
+    if (converted !== null) {
+      mcp[name] = converted
+    }
+  }
+  return mcp
+}
 
 const tomlQuote = (value: unknown): string => {
   if (typeof value === 'string') {
@@ -297,6 +392,93 @@ console.log(${JSON.stringify(JSON.stringify(payload))})
       const expected = { mcpServers: canonical }
       expect(JSON.parse(mcpRenderClaudeMcpConfig(canonical))).toEqual(expected)
       expect(JSON.parse(mcpRenderCursorMcpJson(canonical))).toEqual(expected)
+    })
+  })
+
+  describe('mcpCanonicalFromCodexListJson', () => {
+    it('returns {} when stdout is not a JSON array', () => {
+      expect(mcpCanonicalFromCodexListJson('not json')).toEqual({})
+      expect(mcpCanonicalFromCodexListJson('{"name":"x"}')).toEqual({})
+    })
+  })
+
+  describe('mcpRenderOpencodeConfig', () => {
+    const rendered = mcpRenderOpencodeConfig({
+      local: { command: 'node', args: ['server.js'] },
+      remote: { url: 'https://example.test/mcp' },
+      withEnv: {
+        command: 'npx',
+        args: ['-y', 'notion-mcp'],
+        env: { API_TOKEN: 'secret', SKIP: 1 },
+      },
+      withHeaders: {
+        url: 'https://mcp.example/sse',
+        headers: { Authorization: 'Bearer secret', 'X-Skip': 2 },
+      },
+      flaggedLocal: { command: 'uvx', enabled: false },
+      flaggedRemote: { url: 'https://flagged.example/mcp', enabled: true },
+      unconvertible: { type: 'stdio' },
+      empty: {},
+      badArgs: { command: 'node', args: 'server.js' },
+    })
+
+    it('converts local, remote, env, and headers entries to the official schema', () => {
+      expect(rendered.local).toEqual({ type: 'local', command: ['node', 'server.js'] })
+      expect(rendered.remote).toEqual({ type: 'remote', url: 'https://example.test/mcp' })
+      expect(rendered.withEnv).toEqual({
+        type: 'local',
+        command: ['npx', '-y', 'notion-mcp'],
+        environment: { API_TOKEN: 'secret' },
+      })
+      expect(rendered.withHeaders).toEqual({
+        type: 'remote',
+        url: 'https://mcp.example/sse',
+        headers: { Authorization: 'Bearer secret' },
+      })
+      expect(rendered.flaggedLocal).toEqual({ type: 'local', command: ['uvx'] })
+      expect(rendered.flaggedRemote).toEqual({
+        type: 'remote',
+        url: 'https://flagged.example/mcp',
+      })
+    })
+
+    it('drops unconvertible entries and never writes enabled', () => {
+      expect(rendered).not.toHaveProperty('unconvertible')
+      expect(rendered).not.toHaveProperty('empty')
+      expect(rendered).not.toHaveProperty('badArgs')
+      expect(Object.keys(rendered)).toEqual([
+        'local',
+        'remote',
+        'withEnv',
+        'withHeaders',
+        'flaggedLocal',
+        'flaggedRemote',
+      ])
+      expect(Object.values(rendered).some((entry) => isRecord(entry) && 'enabled' in entry)).toBe(
+        false
+      )
+    })
+
+    it('drops entries that have both a non-empty command and a non-empty url', () => {
+      const mixed = mcpRenderOpencodeConfig({
+        both: {
+          command: 'node',
+          args: ['server.js'],
+          url: 'https://example.test/mcp',
+        },
+        bothBadArgs: { command: 'node', args: [1], url: 'https://example.test/mcp' },
+        localOnly: { command: 'uvx' },
+        remoteOnly: { url: 'https://ok.example/mcp' },
+        emptyCommand: { command: '', url: 'https://empty-command.example/mcp' },
+      })
+      expect(mixed).not.toHaveProperty('both')
+      expect(mixed).not.toHaveProperty('bothBadArgs')
+      expect(mixed.localOnly).toEqual({ type: 'local', command: ['uvx'] })
+      expect(mixed.remoteOnly).toEqual({ type: 'remote', url: 'https://ok.example/mcp' })
+      expect(mixed.emptyCommand).toEqual({
+        type: 'remote',
+        url: 'https://empty-command.example/mcp',
+      })
     })
   })
 

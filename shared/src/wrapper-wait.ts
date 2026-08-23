@@ -1,5 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, closeSync, constants, openSync, statSync } from 'node:fs'
+import {
+  accessSync,
+  closeSync,
+  constants,
+  openSync,
+  readFileSync as readCaptureSync,
+  statSync,
+  writeFileSync as writeCaptureSync,
+} from 'node:fs'
 import path from 'node:path'
 import type { Env } from './build-request.ts'
 import { getPath, readFileOrEmpty, stringOf } from './jq-compat.ts'
@@ -145,6 +153,7 @@ export interface WaitInput {
   stderrCapture: string
   responseFile: string
   env: Env
+  redactCapture?: (content: string) => string
 }
 
 export interface WaitResult {
@@ -338,7 +347,36 @@ const finalStatus = (
   return exitStatusFromChild(exitResult)
 }
 
+const readCaptureOrNull = (file: string): string | null => {
+  try {
+    return readCaptureSync(file, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+const rewriteRedactedCapture = (file: string, redact: (content: string) => string): void => {
+  const content = readCaptureOrNull(file)
+  if (content === null) {
+    return
+  }
+  const redacted = redact(content)
+  if (redacted === content) {
+    return
+  }
+  writeCaptureSync(file, redacted)
+}
+
+const applyCaptureRedaction = (input: WaitInput): void => {
+  if (typeof input.redactCapture === 'undefined') {
+    return
+  }
+  rewriteRedactedCapture(input.stdoutCapture, input.redactCapture)
+  rewriteRedactedCapture(input.stderrCapture, input.redactCapture)
+}
+
 const finalizeWaitObserve = (input: WaitInput, childPid: number): void => {
+  applyCaptureRedaction(input)
   heartbeat(input.observeFile, input.runDir, {
     backend: input.backend,
     childPid,
@@ -398,6 +436,18 @@ if (import.meta.vitest) {
     return observeFile
   }
 
+  const expectRedactedSecretCaptures = (
+    files: { stdoutCapture: string; stderrCapture: string },
+    observeFile: string
+  ): void => {
+    expect(readFileSync(files.stdoutCapture, 'utf8')).toBe('***\n')
+    expect(readFileSync(files.stderrCapture, 'utf8')).toBe('***\n')
+    const observe: unknown = JSON.parse(readFileSync(observeFile, 'utf8'))
+    expect(observe).toMatchObject({
+      streams: { stdout: { content: '***\n' }, stderr: { content: '***\n' } },
+    })
+  }
+
   describe('commandAvailable', () => {
     it('finds executables on PATH and rejects missing ones', () => {
       expect(commandAvailable('bash', process.env)).toBe(true)
@@ -435,6 +485,39 @@ if (import.meta.vitest) {
       expect(observe).toMatchObject({
         streams: { stdout: { content: 'out-line\n' }, stderr: { content: 'err-line\n' } },
       })
+    })
+
+    it('redacts capture files before importing streams when redactCapture is set', async () => {
+      const dir = makeWaitTestDir()
+      const observeFile = writeObserveFixture(dir, {})
+      const files = {
+        stdoutCapture: path.join(dir, 'stdout.capture'),
+        stderrCapture: path.join(dir, 'stderr.capture'),
+      }
+      const result = await waitWithHeartbeat({
+        observeFile,
+        runDir: dir,
+        backend: 'claude',
+        worker: spawnWorker({
+          command: 'bash',
+          args: [
+            '-c',
+            String.raw`printf "%s\n" secret-token; printf "%s\n" secret-token >&2; exit 0`,
+          ],
+          cwd: dir,
+          env: { ...process.env },
+          stdinFile: null,
+          stdoutCapture: files.stdoutCapture,
+          stderrCapture: files.stderrCapture,
+        }),
+        stdoutCapture: files.stdoutCapture,
+        stderrCapture: files.stderrCapture,
+        responseFile: path.join(dir, 'run_res.json'),
+        env: {},
+        redactCapture: (content) => content.replaceAll('secret-token', '***'),
+      })
+      expect(result.childStatus).toBe(0)
+      expectRedactedSecretCaptures(files, observeFile)
     })
 
     it('returns 127 when the command cannot be spawned', async () => {

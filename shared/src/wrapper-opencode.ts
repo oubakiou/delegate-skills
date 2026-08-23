@@ -4,6 +4,13 @@ import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import type { Env } from './build-request.ts'
 import type { CliResult } from './cli-result.ts'
+import {
+  mcpCanonicalFromCodexListJson,
+  mcpExtractClaudeUser,
+  mcpExtractCursorGlobal,
+  mcpRenderOpencodeConfig,
+  type McpCanonical,
+} from './delegate-mcp.ts'
 import { sanitizeFailureModel, type ChildFailure } from './failure-classify.ts'
 import { isRecord, parseJsonLine } from './jq-compat.ts'
 import {
@@ -17,6 +24,7 @@ import {
   recordChildFailure,
   recordEffort,
   recordUsage,
+  updateMcpConfig,
 } from './observe-store.ts'
 import {
   OPENCODE_CAPTURE_MAX_BYTES,
@@ -57,6 +65,7 @@ import {
   spawnWorker,
   waitWithHeartbeat,
   type SpawnedWorker,
+  type WaitInput,
   type WaitResult,
 } from './wrapper-wait.ts'
 
@@ -421,10 +430,228 @@ export const opencodePureEnabled = (env: Env): boolean => {
 const usePureMode = (context: WrapperContext): boolean =>
   PURE_TASK_TYPES.has(context.args.taskType) || opencodePureEnabled(context.env)
 
-export const opencodeConfigContent = (taskType: string): string => {
+type OpencodeMcpSource = 'claude' | 'cursor' | 'codex'
+
+type OpencodeMcpSourceChoice =
+  | { kind: 'unset' }
+  | { kind: 'source'; source: OpencodeMcpSource }
+  | { kind: 'invalid'; value: string }
+
+interface OpencodeMcpState {
+  source: 'shared' | 'injected' | 'none'
+  servers: string[]
+  mcp: Record<string, unknown> | null
+  secrets: readonly string[]
+}
+
+const opencodeMcpSourceOf = (value: string): OpencodeMcpSource | null => {
+  if (value === 'claude' || value === 'cursor' || value === 'codex') {
+    return value
+  }
+  return null
+}
+
+const opencodeMcpSourceChoice = (env: Env): OpencodeMcpSourceChoice => {
+  const value = env.DELEGATE_OPENCODE_MCP_SOURCE
+  if (typeof value === 'undefined' || value === '') {
+    return { kind: 'unset' }
+  }
+  const source = opencodeMcpSourceOf(value)
+  if (source === null) {
+    return { kind: 'invalid', value }
+  }
+  return { kind: 'source', source }
+}
+
+const parentClaudeConfigFile = (env: Env): string => {
+  const configDir = env.CLAUDE_CONFIG_DIR ?? ''
+  if (configDir !== '') {
+    return path.join(configDir, '.claude.json')
+  }
+  return path.join(env.HOME ?? '', '.claude.json')
+}
+
+const realCursorConfigDirOf = (env: Env): string => {
+  const configured = env.CURSOR_CONFIG_DIR ?? ''
+  if (configured !== '') {
+    return configured
+  }
+  const xdg = env.XDG_CONFIG_HOME ?? ''
+  if (xdg !== '') {
+    return path.join(xdg, 'cursor')
+  }
+  return path.join(env.HOME ?? '', '.cursor')
+}
+
+const realCodexHomeOf = (env: Env): string => {
+  const home = env.CODEX_HOME ?? ''
+  if (home !== '') {
+    return home
+  }
+  return path.join(env.HOME ?? '', '.codex')
+}
+
+const envWithoutConfigContent = (env: Env): Env => {
+  const sanitized: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (key !== 'OPENCODE_CONFIG_CONTENT' && typeof value === 'string') {
+      sanitized[key] = value
+    }
+  }
+  return sanitized
+}
+
+export const fetchCodexMcpList = (
+  env: Env,
+  options: Partial<OpencodeAuxLimits> & { command?: string; cwd?: string } = {}
+): McpCanonical => {
+  const limits = auxLimitsOf(options, {
+    timeoutMs: OPENCODE_AUX_TIMEOUT_MS,
+    maxBytes: OPENCODE_MODELS_MAX_BYTES,
+  })
+  const result = runOpencodeAux({
+    command: options.command ?? 'codex',
+    args: ['mcp', 'list', '--json'],
+    env: { ...envWithoutConfigContent(env), CODEX_HOME: realCodexHomeOf(env) },
+    cwd: options.cwd,
+    limits,
+  })
+  if (!auxResultAuthoritative(result, limits.maxBytes)) {
+    return {}
+  }
+  return mcpCanonicalFromCodexListJson(result.stdout)
+}
+
+const extractOpencodeMcpCanonical = (
+  source: OpencodeMcpSource,
+  context: WrapperContext
+): McpCanonical => {
+  if (source === 'claude') {
+    return mcpExtractClaudeUser(parentClaudeConfigFile(context.env))
+  }
+  if (source === 'cursor') {
+    return mcpExtractCursorGlobal(path.join(realCursorConfigDirOf(context.env), 'mcp.json'))
+  }
+  return fetchCodexMcpList(context.env, { cwd: context.repoRoot })
+}
+
+const MCP_SECRET_PLACEHOLDER = '***'
+
+const enableOpencodeMcpEntry = (entry: unknown): unknown => {
+  if (!isRecord(entry)) {
+    return entry
+  }
+  return { ...entry, enabled: true }
+}
+
+const enableOpencodeMcpEntries = (mcp: Record<string, unknown>): Record<string, unknown> => {
+  const enabled: Record<string, unknown> = {}
+  for (const [name, entry] of Object.entries(mcp)) {
+    enabled[name] = enableOpencodeMcpEntry(entry)
+  }
+  return enabled
+}
+
+const stringValuesOf = (value: unknown): string[] => {
+  if (!isRecord(value)) {
+    return []
+  }
+  return Object.values(value).filter(
+    (item): item is string => typeof item === 'string' && item !== ''
+  )
+}
+
+const mcpSecretValuesOf = (mcp: Record<string, unknown>): string[] => {
+  const secrets: string[] = []
+  for (const entry of Object.values(mcp)) {
+    if (isRecord(entry)) {
+      secrets.push(...stringValuesOf(entry.environment), ...stringValuesOf(entry.headers))
+    }
+  }
+  return [...new Set(secrets)].toSorted((left, right) => right.length - left.length)
+}
+
+const redactKnownSecrets = (text: string, secrets: readonly string[]): string =>
+  secrets.reduce((redacted, secret) => redacted.replaceAll(secret, MCP_SECRET_PLACEHOLDER), text)
+
+const emptyOpencodeMcp = (source: 'shared' | 'none'): OpencodeMcpState => ({
+  source,
+  servers: [],
+  mcp: null,
+  secrets: [],
+})
+
+const injectedOpencodeMcp = (mcp: Record<string, unknown>): OpencodeMcpState => {
+  const enabled = enableOpencodeMcpEntries(mcp)
+  const servers = Object.keys(enabled)
+  if (servers.length === 0) {
+    return emptyOpencodeMcp('none')
+  }
+  return {
+    source: 'injected',
+    servers,
+    mcp: enabled,
+    secrets: mcpSecretValuesOf(enabled),
+  }
+}
+
+const resolveOpencodeMcpState = (context: WrapperContext): OpencodeMcpState => {
+  const choice = opencodeMcpSourceChoice(context.env)
+  if (choice.kind === 'source') {
+    return injectedOpencodeMcp(
+      mcpRenderOpencodeConfig(extractOpencodeMcpCanonical(choice.source, context))
+    )
+  }
+  if (choice.kind === 'unset') {
+    return emptyOpencodeMcp('shared')
+  }
+  return emptyOpencodeMcp('none')
+}
+
+const opencodeMcpByContext = new WeakMap<WrapperContext, OpencodeMcpState>()
+
+const opencodeMcpOf = (context: WrapperContext): OpencodeMcpState => {
+  const cached = opencodeMcpByContext.get(context)
+  if (cached) {
+    return cached
+  }
+  const resolved = resolveOpencodeMcpState(context)
+  opencodeMcpByContext.set(context, resolved)
+  return resolved
+}
+
+const recordOpencodeMcp = (context: WrapperContext): void => {
+  const mcp = opencodeMcpOf(context)
+  quietly(() => {
+    updateMcpConfig(context.args.observeFile, context.workDir, {
+      source: mcp.source,
+      servers: mcp.servers,
+    })
+  })
+}
+
+const opencodeMcpSourceFailure = (context: WrapperContext): CliResult | null => {
+  const choice = opencodeMcpSourceChoice(context.env)
+  if (choice.kind !== 'invalid') {
+    return null
+  }
+  return finishWithoutChild(
+    context,
+    3,
+    `ERROR: DELEGATE_OPENCODE_MCP_SOURCE must be claude, cursor, or codex: ${choice.value}`
+  )
+}
+
+export const opencodeConfigContent = (
+  taskType: string,
+  mcp: Record<string, unknown> | null = null
+): string => {
   const config: Record<string, unknown> = {}
   if (taskType === 'explore' || taskType === 'review') {
     config.permission = { edit: 'deny' }
+  }
+  if (mcp !== null && Object.keys(mcp).length > 0) {
+    config.mcp = mcp
   }
   return JSON.stringify(config)
 }
@@ -488,7 +715,7 @@ const recordOpencodeUsage = (context: WrapperContext): void => {
 
 const opencodeChildEnv = (context: WrapperContext): Env => ({
   ...context.env,
-  OPENCODE_CONFIG_CONTENT: opencodeConfigContent(context.args.taskType),
+  OPENCODE_CONFIG_CONTENT: opencodeConfigContent(context.args.taskType, opencodeMcpOf(context).mcp),
   TMPDIR: path.join(context.workDir, 'tmp'),
 })
 
@@ -560,7 +787,11 @@ const launchValidationFailure = (context: WrapperContext): CliResult | null => {
   if (effortError !== null) {
     return effortError
   }
-  return sessionModeFailure(context)
+  const sessionError = sessionModeFailure(context)
+  if (sessionError !== null) {
+    return sessionError
+  }
+  return opencodeMcpSourceFailure(context)
 }
 
 const requestStepForOpencode = (context: WrapperContext): RequestPromptStep | CliResult => {
@@ -993,7 +1224,7 @@ const applyOpencodeEffort = (input: {
   return warning
 }
 
-const opencodeStdoutText = (input: {
+const rawOpencodeStdoutText = (input: {
   context: WrapperContext
   wait: WaitResult
   failure: ChildFailure
@@ -1002,6 +1233,18 @@ const opencodeStdoutText = (input: {
     return classifiedFailureReport(input.context, input.failure, input.wait.childStatus)
   }
   return opencodeCapturedText(input.context, input.wait)
+}
+
+const opencodeStdoutText = (input: {
+  context: WrapperContext
+  wait: WaitResult
+  failure: ChildFailure
+}): string | null => {
+  const text = rawOpencodeStdoutText(input)
+  if (text === null) {
+    return null
+  }
+  return redactKnownSecrets(text, opencodeMcpOf(input.context).secrets)
 }
 
 const OPENCODE_RESUME_SOURCE = 'opencode_json'
@@ -1289,17 +1532,21 @@ const attachOpencodeSignalHold = (observeFile: string): (() => void) => {
   }
 }
 
+const opencodeWaitInput = (run: OpencodeChildRun): WaitInput => ({
+  observeFile: run.context.args.observeFile,
+  runDir: run.context.workDir,
+  backend: run.context.backend,
+  worker: run.worker,
+  stdoutCapture: run.context.stdoutCapture,
+  stderrCapture: run.context.stderrCapture,
+  responseFile: run.context.args.responseFile,
+  env: run.context.env,
+  redactCapture: (content: string) =>
+    redactKnownSecrets(content, opencodeMcpOf(run.context).secrets),
+})
+
 const waitForOpencodeChild = async (run: OpencodeChildRun): Promise<WaitResult> => {
-  const wait = await waitWithHeartbeat({
-    observeFile: run.context.args.observeFile,
-    runDir: run.context.workDir,
-    backend: run.context.backend,
-    worker: run.worker,
-    stdoutCapture: run.context.stdoutCapture,
-    stderrCapture: run.context.stderrCapture,
-    responseFile: run.context.args.responseFile,
-    env: run.context.env,
-  })
+  const wait = await waitWithHeartbeat(opencodeWaitInput(run))
   applyOpencodeAfterWait(run.context.args.observeFile)
   return wait
 }
@@ -1337,6 +1584,7 @@ const spawnOpencodeWorker = (
   launch: OpencodeLaunch
 ): { cliModel: string; worker: SpawnedWorker } => {
   const cliModel = stripOpencodeSelector(context.baseModel)
+  recordOpencodeMcp(context)
   const worker = spawnWorker({
     command: launch.command,
     args: opencodeCliArgs(context, cliModel),
@@ -1462,7 +1710,7 @@ const usageForOpencodeObserveCase = (
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { chmodSync, existsSync, readFileSync, writeFileSync } = await import('node:fs')
+  const { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } = await import('node:fs')
   const { execFileSync } = await import('node:child_process')
   const { createTestScratchDir } = await import('./test-scratch.ts')
 
@@ -1826,6 +2074,11 @@ fi
 printf '%s\\n' "$@" > "$OPENCODE_TEST_ARGS"
 printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$OPENCODE_TEST_CONFIG"
 cat > "$OPENCODE_TEST_PROMPT"
+if [ "$OPENCODE_TEST_OUTPUT_MODE" = "leak-config" ]; then
+  printf '%s\\n' "$OPENCODE_CONFIG_CONTENT" >&2
+  node -e "const c=process.env.OPENCODE_CONFIG_CONTENT||'';process.stdout.write(c+'\\n'+JSON.stringify({type:'text',sessionID:'ses_leak',part:{text:'---\\nstatus: completed\\n---\\n# Summary\\n'+c}})+'\\n')"
+  exit 0
+fi
 if [ "$OPENCODE_TEST_OUTPUT_MODE" = "oversized-line" ]; then
   head -c ${OPENCODE_CAPTURE_MAX_LINE_BYTES + 1} /dev/zero | tr '\\0' 'x'
   printf '\\n'
@@ -1883,12 +2136,17 @@ fi
 
   const runFake = async (
     fixture: FakeRunFixture,
-    options: { env?: Env; sessionArgs?: readonly string[]; model?: string } = {}
+    options: {
+      env?: Env
+      sessionArgs?: readonly string[]
+      model?: string
+      taskType?: string
+    } = {}
   ): Promise<CliResult> =>
     runWrapperOpencode(
       [
         options.model ?? 'opencode/opencode-go/glm-5.2@high',
-        'chore',
+        options.taskType ?? 'chore',
         fixture.requestFile,
         fixture.responseFile,
         fixture.dir,
@@ -2065,6 +2323,7 @@ fi
           measurement_source: 'opencode_json',
         },
         usage: input.usage,
+        mcp_config: { source: 'shared', servers: [] },
       })
       if (!isRecord(doc) || !isRecord(doc.timing)) {
         throw new Error('observe timing is missing')
@@ -2731,6 +2990,330 @@ fi
       } finally {
         process.removeListener('SIGTERM', onTerm)
       }
+    })
+  })
+
+  const writeJsonFile = (file: string, value: unknown): void => {
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(value))
+  }
+
+  const observeMcpOf = (observeFile: string): unknown => {
+    const doc = readTestJson(observeFile)
+    if (!isRecord(doc)) {
+      return null
+    }
+    return doc.mcp_config
+  }
+
+  const parentMcpServers = {
+    local: {
+      command: 'npx',
+      args: ['-y', 'notion-mcp'],
+      env: { API_TOKEN: 'secret-env-value' },
+    },
+    remote: {
+      url: 'https://secret.example.test/mcp',
+      headers: { Authorization: 'Bearer secret-header' },
+    },
+    unconvertible: { type: 'stdio' },
+  }
+
+  const expectedInjectedMcp = {
+    local: {
+      type: 'local',
+      command: ['npx', '-y', 'notion-mcp'],
+      environment: { API_TOKEN: 'secret-env-value' },
+      enabled: true,
+    },
+    remote: {
+      type: 'remote',
+      url: 'https://secret.example.test/mcp',
+      headers: { Authorization: 'Bearer secret-header' },
+      enabled: true,
+    },
+  }
+
+  const claudeMcpEnv = (dir: string, servers: Record<string, unknown>): Env => {
+    const home = path.join(dir, 'mcp-home')
+    writeJsonFile(path.join(home, '.claude.json'), { mcpServers: servers })
+    return { HOME: home, DELEGATE_OPENCODE_MCP_SOURCE: 'claude' }
+  }
+
+  const cursorMcpEnv = (dir: string, servers: Record<string, unknown>): Env => {
+    const home = path.join(dir, 'mcp-home')
+    writeJsonFile(path.join(home, '.cursor', 'mcp.json'), { mcpServers: servers })
+    return { HOME: home, DELEGATE_OPENCODE_MCP_SOURCE: 'cursor' }
+  }
+
+  const writeFakeCodexList = (dir: string, payload: unknown): void => {
+    writeExecutable(
+      dir,
+      'codex',
+      `#!/bin/sh
+if [ -n "$OPENCODE_TEST_CODEX_LOG" ]; then
+  printf '%s\\n' "argv=$*" >> "$OPENCODE_TEST_CODEX_LOG"
+  printf '%s\\n' "cwd=$(pwd)" >> "$OPENCODE_TEST_CODEX_LOG"
+  printf '%s\\n' "config=$OPENCODE_CONFIG_CONTENT" >> "$OPENCODE_TEST_CODEX_LOG"
+fi
+if [ "$*" != "mcp list --json" ]; then
+  exit 9
+fi
+printf '%s\\n' '${JSON.stringify(payload)}'
+`
+    )
+  }
+
+  const expectInjectedMcpRun = (fixture: FakeRunFixture, mcp: Record<string, unknown>): void => {
+    expect(readTestJson(fixture.configFile)).toEqual({ mcp })
+    expect(observeMcpOf(fixture.observeFile)).toEqual({
+      source: 'injected',
+      servers: Object.keys(mcp),
+    })
+  }
+
+  const expectNoLeakedMcpSecrets = (fixture: FakeRunFixture): void => {
+    const observeText = readFileSync(fixture.observeFile, 'utf8')
+    const responseText = JSON.stringify(readTestJson(fixture.responseFile))
+    const stdout = readFileSync(path.join(fixture.dir, 'worker-stdout.capture'), 'utf8')
+    const stderr = readFileSync(path.join(fixture.dir, 'worker-stderr.capture'), 'utf8')
+    for (const text of [observeText, responseText, stdout, stderr]) {
+      expect(text).not.toContain('secret-env-value')
+      expect(text).not.toContain('secret-header')
+    }
+  }
+
+  const expectCodexExtractorIsolation = (log: string, repoRoot: string): void => {
+    const logged = readFileSync(log, 'utf8')
+    expect(logged).toContain('argv=mcp list --json')
+    expect(logged).not.toContain('--pure')
+    expect(logged).toContain(`cwd=${repoRoot}`)
+    expect(logged).not.toContain('leaked')
+  }
+
+  describe('opencode MCP injection', () => {
+    it.each([
+      { name: 'unset', env: {} },
+      { name: 'empty', env: { DELEGATE_OPENCODE_MCP_SOURCE: '' } },
+    ])('records shared and omits config.mcp when the source is $name', async ({ name, env }) => {
+      const fixture = makeFakeRunFixture(createTestScratchDir(`wrapper-opencode-mcp-${name}`))
+      const result = await runFake(fixture, { env })
+      expect(result.exitCode).toBe(0)
+      expect(readTestJson(fixture.configFile)).toEqual({})
+      expect(observeMcpOf(fixture.observeFile)).toEqual({ source: 'shared', servers: [] })
+    })
+
+    it.each([
+      { source: 'claude', envOf: claudeMcpEnv },
+      { source: 'cursor', envOf: cursorMcpEnv },
+    ])(
+      'injects converted $source MCP and records injected server names',
+      async ({ source, envOf }) => {
+        const fixture = makeFakeRunFixture(createTestScratchDir(`wrapper-opencode-mcp-${source}`))
+        const result = await runFake(fixture, { env: envOf(fixture.dir, parentMcpServers) })
+        expect(result.exitCode).toBe(0)
+        expectInjectedMcpRun(fixture, expectedInjectedMcp)
+      }
+    )
+
+    it('injects converted codex MCP through the bounded list helper', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-codex'))
+      writeFakeCodexList(fixture.dir, [
+        {
+          name: 'local',
+          enabled: true,
+          transport: {
+            type: 'stdio',
+            command: 'npx',
+            args: ['-y', 'notion-mcp'],
+            env: { API_TOKEN: 'secret-env-value' },
+          },
+        },
+        {
+          name: 'remote',
+          enabled: true,
+          transport: { type: 'http', url: 'https://secret.example.test/mcp' },
+        },
+      ])
+      const result = await runFake(fixture, {
+        env: {
+          DELEGATE_OPENCODE_MCP_SOURCE: 'codex',
+          CODEX_HOME: path.join(fixture.dir, 'codex-home'),
+        },
+      })
+      expect(result.exitCode).toBe(0)
+      expectInjectedMcpRun(fixture, {
+        local: {
+          type: 'local',
+          command: ['npx', '-y', 'notion-mcp'],
+          environment: { API_TOKEN: 'secret-env-value' },
+          enabled: true,
+        },
+        remote: { type: 'remote', url: 'https://secret.example.test/mcp', enabled: true },
+      })
+    })
+
+    it.each([
+      {
+        name: 'missing parent config',
+        setup: (fixture: FakeRunFixture): Env => ({
+          HOME: path.join(fixture.dir, 'empty-home'),
+          DELEGATE_OPENCODE_MCP_SOURCE: 'claude',
+        }),
+      },
+      {
+        name: 'unconvertible entries',
+        setup: (fixture: FakeRunFixture): Env =>
+          claudeMcpEnv(fixture.dir, { bad: { type: 'stdio' }, empty: {} }),
+      },
+      {
+        name: 'codex CLI failure',
+        setup: (fixture: FakeRunFixture): Env => {
+          writeExecutable(fixture.dir, 'codex', '#!/bin/sh\nexit 1\n')
+          return { DELEGATE_OPENCODE_MCP_SOURCE: 'codex', CODEX_HOME: fixture.dir }
+        },
+      },
+    ])('records none and omits config.mcp for $name', async ({ setup }) => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-none'))
+      const result = await runFake(fixture, { env: setup(fixture) })
+      expect(result.exitCode).toBe(0)
+      expect(readTestJson(fixture.configFile)).toEqual({})
+      expect(observeMcpOf(fixture.observeFile)).toEqual({ source: 'none', servers: [] })
+    })
+
+    it.each(['gemini', 'Claude', 'openai', '  ', ' claude '])(
+      'stops with exit 3 before child start for MCP source %s',
+      async (value) => {
+        const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-invalid'))
+        const result = await runFake(fixture, { env: { DELEGATE_OPENCODE_MCP_SOURCE: value } })
+        expect(result.exitCode).toBe(3)
+        expect(existsSync(fixture.argsFile)).toBe(false)
+        expect(readFileSync(path.join(fixture.dir, 'worker-stderr.capture'), 'utf8')).toContain(
+          'claude, cursor, or codex'
+        )
+      }
+    )
+
+    it('injects MCP when --pure is enabled', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-pure'))
+      const result = await runFake(fixture, {
+        taskType: 'implement',
+        env: {
+          ...claudeMcpEnv(fixture.dir, parentMcpServers),
+          DELEGATE_OPENCODE_PURE: '1',
+        },
+      })
+      expect(result.exitCode).toBe(0)
+      expect(readFileSync(fixture.argsFile, 'utf8')).toContain('--pure')
+      expectInjectedMcpRun(fixture, expectedInjectedMcp)
+    })
+
+    it('records server names without command, env, or headers in observe', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-observe'))
+      await runFake(fixture, { env: claudeMcpEnv(fixture.dir, parentMcpServers) })
+      const observeText = readFileSync(fixture.observeFile, 'utf8')
+      expect(observeMcpOf(fixture.observeFile)).toEqual({
+        source: 'injected',
+        servers: ['local', 'remote'],
+      })
+      expect(observeText).not.toContain('secret-env-value')
+      expect(observeText).not.toContain('secret-header')
+      expect(observeText).not.toContain('secret.example.test')
+      expect(observeText).not.toContain('"command"')
+      expect(observeText).not.toContain('npx')
+    })
+
+    it('regenerates MCP from the parent config on follow-up runs', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-followup'))
+      const result = await runFake(fixture, {
+        sessionArgs: ['followup', TEST_SESSION_ID, ''],
+        env: claudeMcpEnv(fixture.dir, parentMcpServers),
+      })
+      expect(result.exitCode).toBe(0)
+      expectInjectedMcpRun(fixture, expectedInjectedMcp)
+    })
+
+    it('prefers CLAUDE_CONFIG_DIR over HOME for claude extraction', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-claude-dir'))
+      const home = path.join(fixture.dir, 'home')
+      const configDir = path.join(fixture.dir, 'claude-config')
+      writeJsonFile(path.join(home, '.claude.json'), {
+        mcpServers: { homeOnly: { command: 'from-home' } },
+      })
+      writeJsonFile(path.join(configDir, '.claude.json'), {
+        mcpServers: { configOnly: { command: 'from-config' } },
+      })
+      await runFake(fixture, {
+        env: {
+          HOME: home,
+          CLAUDE_CONFIG_DIR: configDir,
+          DELEGATE_OPENCODE_MCP_SOURCE: 'claude',
+        },
+      })
+      expect(readTestJson(fixture.configFile)).toEqual({
+        mcp: { configOnly: { type: 'local', command: ['from-config'], enabled: true } },
+      })
+    })
+
+    it('times out a hung codex mcp list helper without failing the lookup API', () => {
+      const dir = createTestScratchDir('wrapper-opencode-mcp-codex-timeout')
+      const sleepy = writeExecutable(dir, 'codex-sleep', '#!/bin/sh\nsleep 2\n')
+      expect(
+        fetchCodexMcpList({ PATH: '/usr/bin:/bin' }, { command: sleepy, timeoutMs: 200 })
+      ).toEqual({})
+    })
+  })
+
+  describe('opencode MCP injection hardening', () => {
+    it('writes enabled: true on injected entries that share a project server name', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-enabled'))
+      const result = await runFake(fixture, {
+        env: claudeMcpEnv(fixture.dir, { colliding: { command: 'npx', args: ['-y', 'app'] } }),
+      })
+      expect(result.exitCode).toBe(0)
+      expect(readTestJson(fixture.configFile)).toEqual({
+        mcp: {
+          colliding: { type: 'local', command: ['npx', '-y', 'app'], enabled: true },
+        },
+      })
+    })
+
+    it('redacts leaked OPENCODE_CONFIG_CONTENT from observe and response', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-leak'))
+      const result = await runFake(fixture, {
+        env: {
+          ...claudeMcpEnv(fixture.dir, parentMcpServers),
+          OPENCODE_TEST_OUTPUT_MODE: 'leak-config',
+        },
+      })
+      expect(result.exitCode).toBe(0)
+      expectNoLeakedMcpSecrets(fixture)
+    })
+
+    it('starts the Codex extractor with sanitized env, repoRoot cwd, and without --pure', async () => {
+      const fixture = makeFakeRunFixture(createTestScratchDir('wrapper-opencode-mcp-codex-iso'))
+      const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        encoding: 'utf8',
+      }).trimEnd()
+      const log = path.join(fixture.dir, 'codex-aux.log')
+      writeFakeCodexList(fixture.dir, [
+        {
+          name: 'local',
+          enabled: true,
+          transport: { type: 'stdio', command: 'npx', args: ['-y', 'notion-mcp'] },
+        },
+      ])
+      const result = await runFake(fixture, {
+        env: {
+          DELEGATE_OPENCODE_MCP_SOURCE: 'codex',
+          CODEX_HOME: path.join(fixture.dir, 'codex-home'),
+          OPENCODE_CONFIG_CONTENT: '{"leaked":true}',
+          DELEGATE_OPENCODE_PURE: '1',
+          OPENCODE_TEST_CODEX_LOG: log,
+        },
+      })
+      expect(result.exitCode).toBe(0)
+      expectCodexExtractorIsolation(log, repoRoot)
     })
   })
 }
