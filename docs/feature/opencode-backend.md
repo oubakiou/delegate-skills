@@ -18,7 +18,7 @@
 | [MUST] 失敗の検知と通知                       | 未           | catalog に無いモデルでの失敗が `error.kind = "model_catalog_miss"` に記録され、failed response の Error section 経由で main へ届く（effort 警告は effort を実装する場合の条件として SHOULD 側に置く）                                                    |          | 未着手 |
 | [MUST] session lifecycle                      | 未           | session ID を取得できた通常 run が session store を残さず、取得できなかった run は `session_delete_skipped`、削除失敗は `session_delete_failed`、削除の timeout は `session_delete_failed` として必ず observe に残る（残留を許すのは記録された場合だけ） |          | 未着手 |
 | [SHOULD] session reuse                        | 未           | resumable で `sessionID` を回収し、follow-up が `-s <sessionID>` で継続する golden が通る                                                                                                                                                                |          | 未着手 |
-| [SHOULD] MCP 注入                             | 未           | `DELEGATE_OPENCODE_MCP_SOURCE` 指定時に親 MCP 設定を config の `mcp` セクションへ変換注入し observe に server 名のみ記録する。未指定時は `source: "none"` を記録する                                                                                     |          | 未着手 |
+| [SHOULD] MCP 注入                             | 未           | `DELEGATE_OPENCODE_MCP_SOURCE` 指定時に親 MCP 設定を config の `mcp` セクションへ変換注入し observe に server 名のみ記録する。未指定時は `source: "shared"` を記録する                                                                                   |          | 未着手 |
 | [SHOULD] effort（`--variant`）対応            | 未           | `@<effort>` が形式検証のみで `--variant` へ渡り、`run.effort.requested` / `effective` が記録される。**実装する場合は**未対応値の `effort_unsupported` event と Summary 警告行の到達まで含めて完了とする                                                  |          | 未着手 |
 | [SHOULD] 価格表エントリ                       | 未           | `shared/model-token-prices.json` に opencode の pricing source と主要モデルを追加し、チャートを再生成する                                                                                                                                                |          | 未着手 |
 
@@ -313,7 +313,7 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 
 成果物: Step 4 と Step 6 が実装者判断なしに書ける config 契約
 
-### Step 3: (未着手) モデル解決と selector 検証
+### Step 3: (完了済み) モデル解決と selector 検証
 
 この Step だけで build とテストが通る範囲に閉じる（wrapper 本体が無い段階で registry へ登録しない）。ただし **登録前に安全側へ倒す変更を先に入れる**。
 
@@ -325,7 +325,7 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 
 成果物: モデル名から opencode backend が決定論的に選ばれ、不正記法が dispatch 前に停止する。wrapper 未実装の中間状態でも誤 backend が起動しない
 
-### Step 4: (未着手) wrapper 本体・共通層の第 3 モード・配線
+### Step 4: (完了済み) wrapper 本体・共通層の第 3 モード・配線
 
 - `shared/src/wrapper-opencode.ts` を新規作成し、`wrapper-cursor.ts` の構造（`parseWrapperArgs` → `makeWrapperContext` → 子 CLI 起動 → `waitWithHeartbeat` → finalize）を踏襲する
   - CLI 解決: PATH 上の `opencode` を `--version` で検証
@@ -348,7 +348,7 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 
 成果物: 通常 run で request → response が往復し、report mode の分岐漏れが型で検出される
 
-### Step 5: (未着手) observe 正規化と失敗分類
+### Step 5: (完了済み) observe 正規化と失敗分類
 
 - `shared/src/observe-usage.ts`: `step_finish` の `part.tokens` と `part.cost` を合算し、token と cost を **1 つの measured usage object** として組み立てる（`measurement: "measured"` / `source: "opencode_step_finish"` / `cached_input_tokens`、§3.3 のフィールド契約）。`total_tokens` は input + output とし、`part.tokens.total` は使わない。`step_finish` が 1 件も取れない、または token フィールドが取れない場合は `usage_parse_failed` event を出して推定 fallback に落とし、既存経路を使う（新 event は作らない）。`observe-cost.ts` は費用を報告しない backend 向けの推定専用モジュールなので**変更しない**
 - `shared/src/observe-timing.ts`: `model_turns` / `tool_calls` は event の計数から取る。first useful / report ready は **event 到達時点の wrapper monotonic clock** から記録し、event の `timestamp`（epoch ms）は種別判定と順序判定にだけ使う
@@ -365,7 +365,7 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 
 成果物: observe JSON が既存契約と互換な形で埋まり、失敗と無効 effort が誤分類なしに記録される
 
-### Step 6: (未着手) session reuse・session lifecycle・MCP 注入
+### Step 6: (完了済み) session reuse・session lifecycle・MCP 注入
 
 - `shared/src/observe-followup.ts`: `RESUMABLE_BACKENDS` に `opencode` を追加する（session 実装が揃うこの Step で行う）
 - resumable: 初回 run のイベントから `sessionID` を回収し、既存契約どおり `backend_session.resume_id` へ記録する（`backend_session.id` ではない）。`backend_session` は opt-in run にだけ入る契約なので、通常 run では書かない
@@ -386,7 +386,7 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
   - 変換: canonical → opencode の `mcp` セクション（local は `type: "local"` + `command` 配列 + `environment`、remote は `type: "remote"` + `url` + `headers`）
   - observe: `mcp_config.source` は `injected`、`servers` はサーバー名のみ。command / env / headers / 認証情報は記録しない
   - 寿命: 初回・follow-up とも run ごとに親設定から再生成する（Cursor と同じ）
-  - fixture: local / remote / env 付き / headers 付き / 変換不能 entry（捨てられて `servers` にも載らないこと）。`enabled` を書き出さないこと
+  - fixture: local / remote / env 付き / headers 付き / 変換不能 entry（捨てられて `servers` にも載らないこと）。各 entry に `enabled: true` を書くこと
   - **本環境では実効性を実測できない**（親の `~/.claude.json` に MCP サーバーが無く、既存 backend も同条件）。変換は fixture テストで固定し、実効性の確認は MCP 設定がある環境に回す。未確認のまま SHOULD を完了扱いにしない
 
 成果物: review / fix ループで session が継続し、通常 run が session を残さず、親の MCP 設定が worker から使える
@@ -423,6 +423,8 @@ CLI 契約の変更と公開文書の更新を同じ Step に置く。
   - §10 exit code / §11 リポジトリ構成（shim 追加）
   - §12 環境変数（`DELEGATE_OPENCODE_PURE` / `DELEGATE_OPENCODE_MCP_SOURCE`）/ §13 脅威モデル（cwd 外アクセスの非対称と、read-only 抑止が管理者設定のない環境を前提とする点）
   - request inline gate 超過時の backend 別例外（`read-request.sh` fallback は cwd 外を読めない opencode では成立しないため fail-closed）
+- `docs/design/protocol-v1.md` に残る旧 runtime 前提（`npx md2idx` / `jq` の手順と前提条件）を撤去する
+- `docs/design/spec.md` §4 に opencode の effort 例外（形式検証のみで素通し）を、§6 に第 3 の response 組立方式と `structured_output_parse: null` を明記する
 - 見出し変更は既存リンクを壊すため、`docs/` 配下から旧アンカー（`実行系の四分岐` 等）への参照を洗って追随させる
 - `README.md` / `README_ja.md`: prerequisites、How it works の backend 表、Skills 表の env、Supported model names 表、resumable 対応。Effort handling 節では opencode を「delegate は検証せず素通し」と書き分け、既存の「Invalid values and unsupported combinations stop before dispatch」が opencode の effort には当てはまらないことを明記する。cwd 外へ書けない制約、request inline gate 超過時の backend 別例外（`read-request.sh` fallback は cwd 外を読めない opencode では成立しないため fail-closed）、管理者設定のない環境を前提とすること、catalog 照合は参考情報であり allowlist ではなく `retryable` は分類のヒントであって自動リトライの指示ではないことも記載する
 - `skills/*/SKILL.md`: 対象は **generic な 5 skill**（explore / implement / chore / review / htmldoc）だけ。`delegate-imagegen`（Codex 固定）と `delegate-x-research`（Grok 固定）は backend が固定でスコープ外なので触らない。実行系分岐・CLI prerequisite・session 対応に加え、§3.4 の通知（failed の Error section / Summary 先頭の警告行）を main がユーザーへ伝える手順、cwd 外アクセスの制約（direct edit / write と明示パス読み取りは拒否され、bash のリダイレクトは通る。出力先を cwd 外に指定する htmldoc / implement は成功が保証されない）、`DELEGATE_OPENCODE_PURE` / `DELEGATE_OPENCODE_MCP_SOURCE` の意味と、request inline gate 超過時の fail-closed、管理者設定のない環境を前提とすることを書く
@@ -489,7 +491,7 @@ front-matter の出力はプロンプト依存になるため、front-matter を
 | 厳格 allowlist で fail-closed                    | ✗    | 未知の effort が一切使えなくなる。effort が外れても worker は動く（品質・コストのチューニングが効かないだけ）ので、run が失敗する model 名の誤りと同じ強度で止める理由が無い                                                                                            |
 | 素通しのみ（検知なし）                           | ✗    | 無効な effort が黙って無視され、ユーザーは effort が効いていると誤解したままになる                                                                                                                                                                                      |
 
-検証は共通の形式チェック（`<model>@<effort>` の形、`@` の重複、空文字）だけで、`validateBackendEffort` は opencode を早期 `{ ok: true }` にする。実効性の可視化は observe と stderr に寄せる（§3.4）。
+検証は共通の形式チェック（`<model>@<effort>` の形、`@` の重複、空文字）だけで、`validateBackendEffort` は opencode を早期 `{ ok: true }` にする。実効性の可視化は observe と response に寄せる（§3.4。stderr は `collectOutcome` に捨てられるため main へ届かない）。
 
 - `run.effort.requested`: 指定値をそのまま記録する
 - `run.effort.effective`: `{ value: <export の info.model.variant>, source: "opencode_export" }`。**CLI が受け取った値であって有効性の証明ではない**（無効値 `bogus-effort-xyz` もそのまま記録される）。`source` を `measured` にすると既存の `effort_mismatch` 判定が誤作動するため使わない
@@ -599,7 +601,7 @@ fake CLI で再現できるのは argv・env・stdout の形だけで、stdin EO
 | 生成物の同期と配布             | —                                                                                  | —                                                                            | `build:check` / `sync-shared:check`                                        |
 | session reuse                  | `observe-followup.ts` の resumable 判定                                            | 3 session mode                                                               | resumable → follow-up の 2 段                                              |
 | session lifecycle              | 削除の呼び出し順と失敗時 fail-soft                                                 | 通常 run で delete が呼ばれ、resumable では呼ばれない                        | 通常 run 後に `session list` へ残らない                                    |
-| MCP 注入                       | canonical → opencode config の変換 fixture、入力元 env の解決                      | 生成された config の `mcp` セクション、env 未指定時の `source: "none"`       | **本環境では不可**（§8）                                                   |
+| MCP 注入                       | canonical → opencode config の変換 fixture、入力元 env の解決                      | 生成された config の `mcp` セクション、env 未指定時の `source: "shared"`     | **本環境では不可**（§8）                                                   |
 | effort 対応                    | `variants` 照合、モデル行欠落時の判定不能                                          | `effort_unsupported` event と Summary 警告行（欠落・重複時の生成規則を含む） | 未対応 effort の警告到達                                                   |
 | 補助 subprocess の頑健性       | timeout / 出力上限 / SIGKILL / fail-soft                                           | 応答しない fake `models` での timeout                                        | —                                                                          |
 | 価格表エントリ                 | —（`observe-cost.ts` は変更しない）                                                | —                                                                            | `opencode models --verbose` の `cost` と表の一致を目視                     |
