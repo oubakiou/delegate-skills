@@ -27,7 +27,7 @@ chore の作業を委譲する場合は、この skill の固定フローを使�
 
 - **既定モデル `haiku`**: chore は read 中心・低リスクで判断比重が小さいため最安モデルを既定にする（spec.md [§3 既定モデルの根拠](spec.md#既定モデルの根拠) と同方針）。`DELEGATE_CHORE_MODEL` で上書き可
 - **Claude パス**: 軽微な編集（Edit/Write）や定型コマンド実行（Bash）を伴いうるため、`delegate-claude.sh`（`claude -p` 子プロセス）で worker を起動する
-- **制約**: 編集は可、ただし **push はしない**（push・PR は親エージェントが直接扱う）。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の四分岐)）
+- **制約**: 編集は可、ただし **push はしない**（push・PR は親エージェントが直接扱う）。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の五分岐)）
 
 ## 4. フィードバックループ（chore 固有の中核責務）
 

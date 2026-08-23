@@ -9,13 +9,13 @@
 
 **実装・調査・レビュー・雑務などのタスクを、より安価なモデルや別ベンダーのモデル（Claude → Codex 等）の subagent に委譲してトークン費用を圧縮する LLM エージェント向け skill 集。**
 
-高価なモデルを main agent に据えたまま、「読む・調べる・直す」といった定型作業だけを安価なモデルの子プロセスへ逃がす。たとえば main が Claude Fable 5（input \$10 / output \$50 per 1M tokens）のとき、コード探索を Claude Haiku 4.5（\$1 / \$5）へ委譲すれば、その作業のトークン単価は 1/10 になる。委譲先は Claude 系モデルに限らず、Codex（`gpt-*`）・Devin CLI・Cursor agent CLI 経由のモデルもモデル名だけで指定できる。委譲結果はファイル経由で必要な部分だけ段階的に読み取るため、main の context も膨らまない。
+高価なモデルを main agent に据えたまま、「読む・調べる・直す」といった定型作業だけを安価なモデルの子プロセスへ逃がす。たとえば main が Claude Fable 5（input \$10 / output \$50 per 1M tokens）のとき、コード探索を Claude Haiku 4.5（\$1 / \$5）へ委譲すれば、その作業のトークン単価は 1/10 になる。委譲先は Claude 系モデルに限らず、Codex（`gpt-*`）・Devin CLI・Cursor agent CLI・opencode CLI 経由のモデルもモデル名だけで指定できる。委譲結果はファイル経由で必要な部分だけ段階的に読み取るため、main の context も膨らまない。
 
 ## 特徴
 
 - **トークン費用の圧縮** — 読む量・書く量の多い定型作業を安価なモデルへ委譲し、高価なモデルの消費を意思決定と最終責任に集中させる
 - **context の分離** — 大量のファイル読解や試行錯誤のログは子プロセス側に隔離され、main は結果の index → 必要 section だけを読む
-- **マルチ CLI 対応** — 呼び出し元（requester）が Claude Code / Codex / Devin CLI / Cursor のいずれでも動作し、委譲先もモデル名だけで同じ 4 系統から選べる
+- **マルチ CLI 対応** — 呼び出し元（requester）が Claude Code / Codex / Devin CLI / Cursor のいずれでも動作し、委譲先はモデル名だけで Claude / Codex / Devin / Cursor / opencode の 5 系統から選べる
 - **capability bridge** — 画像生成（`delegate-imagegen`）や x.com 調査（`delegate-x-research`）など、main 側にない能力を子プロセスで橋渡しする
 - **安全側に倒した設計** — 多段委譲の再帰防止、前提不足時の fail-closed、委譲先の push 禁止・read-only などのツール権限制限
 
@@ -29,6 +29,7 @@
 - `gpt-*` を使う場合: `codex` CLI（ログイン済み）
 - `swe-*` / `devin-*` を使う場合: `devin` CLI（ログイン済み）
 - `composer-*` / `cursor-*` を使う場合: Cursor agent CLI（コマンド名は `agent`。ログイン済み、または `CURSOR_API_KEY` 設定済み）
+- `opencode/*` を使う場合: `opencode` CLI（ログイン済み）
 - 現在の backend で `delegate-x-research` を使う場合: `grok` CLI（ログイン済み、X 調査へアクセス可能）
 
 requester に Codex を使う場合は、delegate skills をインストールした project の `.codex/config.toml` に次を追加して Codex を再起動する。
@@ -103,12 +104,15 @@ delegate-review でこのブランチの差分をレビューして
 | `gpt-*`                               | Codex            |
 | `swe-*` / `devin-*`                   | Devin CLI        |
 | `composer-*` / `cursor-*`             | Cursor agent CLI |
+| `opencode/<provider>/<model>`         | opencode CLI     |
 
 各 backend は子プロセスとして動き、main agent と request / response file を受け渡すため、詳細な作業内容は main context に入らない。run は既定で one-shot。詳細は [protocol-v1](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md) と [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。
 
 ### 再開可能な worker session
 
-大きめの `delegate-implement` / `delegate-chore` で review/fix の往復が見込まれる場合は、resumable session を選択できる。再開の検証に失敗しても別 session を暗黙に起動せず、通常の run として出し直す。Claude / Codex / Devin / Cursor が対応する。
+大きめの `delegate-implement` / `delegate-chore` で review/fix の往復が見込まれる場合は、resumable session を選択できる。再開の検証に失敗しても別 session を暗黙に起動せず、通常の run として出し直す。Claude / Codex / Devin / Cursor / opencode が対応する。
+
+OpenCode は cwd 外への出力を保証しない。direct な edit / write と明示パスの読み取りは拒否され、bash のリダイレクトは通る。read-only 種別の edit / write 抑止は、delegate-skills が注入する permission を上書きし得る管理者設定が無い環境を前提とする。request が `DELEGATE_REQUEST_INLINE_MAX` を超えると child 起動前に失敗する。catalog 照合は参考情報であり allowlist ではない。`retryable` は分類のヒントであって自動リトライの指示ではない。
 
 ## skill 一覧
 
@@ -147,27 +151,29 @@ delegate-review でこのブランチの差分をレビューして
 
 ### 高度な設定
 
-| 環境変数                                 | 既定                           | 用途                                                                               |
-| ---------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------- |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                  | response の inline / 段階読み閾値                                                  |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限）  | one-shot JSON に含める content の上限                                              |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                 | worker prompt に埋め込む request の上限                                            |
-| `DELEGATE_METRICS_FILE`                  | 未設定                         | 任意の JSONL telemetry 出力先                                                      |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                        | observe heartbeat の間隔                                                           |
-| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                        | observe lock の timeout                                                            |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）  | Claude child の Bash timeout                                                       |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）              | 成功 run の cache を削除する。auth は常に削除する                                  |
-| `DELEGATE_CODEX_HOOKS`                   | `1`（`0`/`false`/`no` で無効） | Codex の implement / chore run で project hooks を実行する（hook trust を bypass） |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                    | stream が増えない child を指定秒数後に停止する                                     |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限）  | observe JSON に保持する stdout / stderr の上限                                     |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                    | 古い run ごとの scratch directory を削除する                                       |
+| 環境変数                                 | 既定                           | 用途                                                                                                                  |
+| ---------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                  | response の inline / 段階読み閾値                                                                                     |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限）  | one-shot JSON に含める content の上限                                                                                 |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                 | worker prompt に埋め込む request の上限                                                                               |
+| `DELEGATE_METRICS_FILE`                  | 未設定                         | 任意の JSONL telemetry 出力先                                                                                         |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                        | observe heartbeat の間隔                                                                                              |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                        | observe lock の timeout                                                                                               |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）  | Claude child の Bash timeout                                                                                          |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）              | 成功 run の cache を削除する。auth は常に削除する                                                                     |
+| `DELEGATE_CODEX_HOOKS`                   | `1`（`0`/`false`/`no` で無効） | Codex の implement / chore run で project hooks を実行する（hook trust を bypass）                                    |
+| `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                 | `1` / `true` / `yes` で `--pure` を全 task type へ広げる。`explore` / `review` / `htmldoc` は常に `--pure` で起動する |
+| `DELEGATE_OPENCODE_MCP_SOURCE`           | 未設定（注入しない）           | `claude` / `cursor` / `codex` で MCP 入力元を明示する。未指定なら注入しない                                           |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                    | stream が増えない child を指定秒数後に停止する                                                                        |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限）  | observe JSON に保持する stdout / stderr の上限                                                                        |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                    | 古い run ごとの scratch directory を削除する                                                                          |
 
 ### 作業ファイルとテレメトリ
 
 ローカルでの再現調査や外部 watchdog からの監視には `DELEGATE_WORK_DIR=.temp/delegate/work` を設定し、request / response / observe JSON / run ごとの scratch file をリポジトリ内の ignore 済みディレクトリに集約する。
 `DELEGATE_RUN_RETENTION_DAYS` を設定すると、その work directory 内の古い run ごとの scratch directory を削除する。監査・デバッグ用の request / response / observe JSON は削除しない。
 完走した run は observe JSON に usage と timing を記録する。backend が usage を公開する場合は `measured`、それ以外は request / response だけに基づく推定値となるため、実測値とは比較しないこと。`DELEGATE_METRICS_FILE` を設定すると JSONL telemetry を出力し、`scripts/summarize-metrics.ts` で集計できる。各 field の契約は [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) を参照。
-子 CLI が既知のモデル解決失敗 signature（現時点では Devin と Cursor）で失敗した run では、observe JSON の `error` に分類（一過性か恒久的か）が記録され、親は `read-json.sh .error.kind` で読める。signature に合致しない失敗では `error` は現れない。
+子 CLI が既知のモデル解決失敗 signature（現時点では Devin と Cursor）で失敗した run では、observe JSON の `error` に分類（一過性か恒久的か）が記録され、親は `read-json.sh .error.kind` で読める。signature に合致しない失敗では `error` は現れない。OpenCode は catalog miss を `error.kind = model_catalog_miss` として記録する（照合は参考情報であり allowlist ではない）。
 
 ## モデルと推論強度
 
@@ -175,12 +181,13 @@ delegate-review でこのブランチの差分をレビューして
 
 `DELEGATE_<TYPE>_MODEL` には次のドキュメント済みモデル名を指定できる:
 
-| 実行系           | モデル名                                                                                                                                                                                                                                                                                                                             | 補足                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`, `claude-fable-5`, `claude-opus-5`, `claude-opus-5[1m]`, `claude-opus-4-8`, `claude-opus-4-8[1m]`, `claude-sonnet-5`, `claude-sonnet-5[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5`                                                                                                              | Claude 系モデルの alias に加え、バージョン固定用にフル `claude-*` モデル ID も指定可（`[1m]` は 1M context 変種） |
-| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                                                                                                                                      | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける                                                          |
-| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`, `devin-nemotron-3-ultra`, `devin-kimi-k3`                                                                                                                                                                                       | `devin-*` は prefix を剥がして Devin CLI に渡す                                                                   |
-| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-grok-4.6`, `cursor-grok-4.6-fast`, `cursor-gemini-3.1-pro`, `cursor-gemini-3.6-flash-minimal`, `cursor-gemini-3.6-flash-low`, `cursor-gemini-3.6-flash-medium`, `cursor-gemini-3.6-flash-high`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` は backend selector を 1 回剥がし、モデル別に変換する（grok の effort は catalog slug へ再構成）       |
+| 実行系           | モデル名                                                                                                                                                                                                                                                                                                                             | 補足                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`, `claude-fable-5`, `claude-opus-5`, `claude-opus-5[1m]`, `claude-opus-4-8`, `claude-opus-4-8[1m]`, `claude-sonnet-5`, `claude-sonnet-5[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5`                                                                                                              | Claude 系モデルの alias に加え、バージョン固定用にフル `claude-*` モデル ID も指定可（`[1m]` は 1M context 変種）            |
+| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                                                                                                                                      | `delegate-imagegen` は `gpt*` / Codex 分岐のみ受け付ける                                                                     |
+| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`, `devin-nemotron-3-ultra`, `devin-kimi-k3`                                                                                                                                                                                       | `devin-*` は prefix を剥がして Devin CLI に渡す                                                                              |
+| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-grok-4.6`, `cursor-grok-4.6-fast`, `cursor-gemini-3.1-pro`, `cursor-gemini-3.6-flash-minimal`, `cursor-gemini-3.6-flash-low`, `cursor-gemini-3.6-flash-medium`, `cursor-gemini-3.6-flash-high`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` は backend selector を 1 回剥がし、モデル別に変換する（grok の effort は catalog slug へ再構成）                  |
+| opencode CLI     | `opencode/opencode-go/glm-5.2`                                                                                                                                                                                                                                                                                                       | 記法は `opencode/<provider>/<model>`（provider の省略不可）。実機往復を確認したモデル。他は `opencode models` の出力から選ぶ |
 
 上記はドキュメント済みの対応モデルであり、厳密な allowlist ではない。実行先 CLI 側でも指定モデルが利用可能である必要がある。`delegate-x-research` は別途 `DELEGATE_X_RESEARCH_MODEL` を使い、ドキュメント済みモデルは `grok-build`。
 
@@ -192,17 +199,18 @@ delegate-review でこのブランチの差分をレビューして
 DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 ```
 
-| backend / model                            | 指定できる値                                     | 補足                                                                |
-| ------------------------------------------ | ------------------------------------------------ | ------------------------------------------------------------------- |
-| Claude                                     | `low`, `medium`, `high`, `xhigh`, `max`          | `--effort` として渡す                                               |
-| Codex                                      | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | reasoning config として渡す                                         |
-| `cursor-glm-5.2`                           | `high`, `max`                                    | bracket override `glm-5.2[reasoning=<effort>]` へ変換               |
-| `cursor-grok-4.5`                          | `low`, `medium`, `high`                          | catalog slug `cursor-grok-4.5-<effort>` へ変換                      |
-| `cursor-grok-4.6` / `cursor-grok-4.6-fast` | `low`, `medium`, `high`, `xhigh`                 | `cursor-grok-4.6-<effort>` / `cursor-grok-4.6-<effort>-fast` へ変換 |
-| `devin-kimi-k3`                            | `low`, `high`, `max`                             | Devin の model variant slug（`kimi-k3-high` 等）へ変換              |
-| 上記以外の Devin、imagegen、X research     | 非対応                                           | effort suffix なし                                                  |
+| backend / model                            | 指定できる値                                      | 補足                                                                |
+| ------------------------------------------ | ------------------------------------------------- | ------------------------------------------------------------------- |
+| Claude                                     | `low`, `medium`, `high`, `xhigh`, `max`           | `--effort` として渡す                                               |
+| Codex                                      | `low`, `medium`, `high`, `xhigh`, `max`, `ultra`  | reasoning config として渡す                                         |
+| `cursor-glm-5.2`                           | `high`, `max`                                     | bracket override `glm-5.2[reasoning=<effort>]` へ変換               |
+| `cursor-grok-4.5`                          | `low`, `medium`, `high`                           | catalog slug `cursor-grok-4.5-<effort>` へ変換                      |
+| `cursor-grok-4.6` / `cursor-grok-4.6-fast` | `low`, `medium`, `high`, `xhigh`                  | `cursor-grok-4.6-<effort>` / `cursor-grok-4.6-<effort>-fast` へ変換 |
+| `devin-kimi-k3`                            | `low`, `high`, `max`                              | Devin の model variant slug（`kimi-k3-high` 等）へ変換              |
+| OpenCode                                   | `--variant` へ素通し（delegate は値を検証しない） | 実行後の catalog 照合で通知する                                     |
+| 上記以外の Devin、imagegen、X research     | 非対応                                            | effort suffix なし                                                  |
 
-不正な値や非対応の組み合わせは dispatch 前に停止する。effort を model slug 自体に含む Cursor モデルと `@...` suffix は併用できない。
+不正な値や非対応の組み合わせは dispatch 前に停止する。ただし OpenCode の effort はこの限りではない。`@<effort>` は `--variant` へ素通しし、delegate 側で値を検証しない。catalog を取得できて対象モデルの行がある場合に限り、無効な effort は実行後に observe の `effort_unsupported` と response の Summary 先頭の警告で知らされる。catalog を取得できない場合は警告しない。effort を model slug 自体に含む Cursor モデルと `@...` suffix は併用できない。
 
 `cursor-` selector を使う Cursor モデルでは、先頭 `cursor-` は delegate の backend selector であり、ちょうど 1 回だけ付ける。二重 prefix（`cursor-cursor-*`）や grok の effort catalog slug の直指定（`cursor-grok-4.5-low` / `-medium` / `-high`、`cursor-grok-4.6-low` / `-medium` / `-high` / `-xhigh`、および対応する `-fast` 付き）は dispatch 前に exit 6 で停止する。代わりに `cursor-grok-4.5[@<effort>]` または `cursor-grok-4.6[-fast][@<effort>]` の表記を使うこと。既存 session がこれらの旧表記を保持している場合、その follow-up は再開できず（exit 5）、修正した表記で新規 resumable run を開始する。
 

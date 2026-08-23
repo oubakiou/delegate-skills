@@ -28,7 +28,7 @@ explore の作業を委譲する場合は、この skill の固定フローを�
 
 - **既定モデル `haiku`**: explore は read 中心・低リスクで判断比重が小さいため最安モデルを既定にする（spec.md [§3 既定モデルの根拠](spec.md#既定モデルの根拠) と同方針）。`DELEGATE_EXPLORE_MODEL` で上書き可
 - **Claude パス**: 編集を許さない read-only 調査が責務であり、Claude パスでは `delegate-claude.sh`（`claude -p` 子プロセス）で worker を起動する
-- **制約**: リポジトリのファイル編集・push はしない。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の四分岐)）
+- **制約**: リポジトリのファイル編集・push はしない。実行系の sandbox 設定はプロトコル共通（spec.md [§5](spec.md#5-実行系の五分岐)）
 - **Web / MCP の開放**: Claude パスは repo 書き込みツールだけを `--disallowedTools` で除外する denylist 方式にし、WebSearch / WebFetch / MCP ツールを技術的に開放する（MCP ツール名は実行環境の MCP 設定依存で allowlist に事前列挙できない）。他パスはプロンプト制約のみで、Web / MCP の可用性は各 CLI の能力次第。MCP 利用は読み取り系のみに常時制限するプロンプト制約を注入する（`shared/prompt-constraints.sh`）。explore は read-only 契約の skill であり、ソフト制約の on/off をオプション化しても read-only 性の保証は強まらないため、切り替えは設けない
 
 ## 4. 発火条件と段階読み取り

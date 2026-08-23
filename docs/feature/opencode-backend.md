@@ -2,7 +2,7 @@
 
 [![MKDN](https://img.shields.io/badge/MKDN-review-red?style=for-the-badge)](https://mkdn.review/?url=https%3A%2F%2Fraw.githubusercontent.com%2Foubakiou%2Fdelegate-skills%2Frefs%2Fheads%2Fmain%2Fdocs%2Ffeature%2Fopencode-backend.md)
 
-[spec.md](../design/spec.md) の §5「実行系の四分岐」と README の「How it works / Models and reasoning effort」に対応するための設計判断と実装手順をまとめる。delegate skills の委譲先バックエンドとして、Claude / Codex / Devin / Cursor に続く 5 番目として opencode CLI を追加する。完了後は spec.md に永続情報を移し、本ファイルは archive する。
+[spec.md](../design/spec.md) の §5「実行系の五分岐」と README の「How it works / Models and reasoning effort」に対応するための設計判断と実装手順をまとめる。delegate skills の委譲先バックエンドとして、Claude / Codex / Devin / Cursor に続く 5 番目として opencode CLI を追加する。完了後は spec.md に永続情報を移し、本ファイルは archive する。
 
 ## 1. 対応スコープ
 

@@ -22,13 +22,14 @@ main agent
       │   ├─ model が gpt* → wrapper codex（Codex 子プロセス）
       │   ├─ model が swe*|devin-* → wrapper devin（Devin CLI 子プロセス、devin -p）
       │   ├─ model が composer*|cursor-* → wrapper cursor（Cursor agent CLI 子プロセス、agent -p）
+      │   ├─ model が opencode/* → wrapper opencode（opencode CLI 子プロセス、opencode run）
       │   └─ それ以外 → wrapper claude（Claude 子プロセス、claude -p）
       └─ (read-response)          auto / decision 等の selector で読み取り → 検証
 ```
 
 通常 run の親側 happy path は `run.sh` が 1 回の Bash 呼び出しに畳む。`run.sh` は成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を stdout に返し、内部処理の exit code を透過する。resumable / follow-up、observe 監視、background 実行など途中で親の判断を挟む高度なフローは、従来どおり `prepare.sh` / `dispatch.sh` / `read-response.sh` 等の個別 shim を直接使う。observe JSON / run 出力の読み取りは `read-json.sh`（`jq -r <dotpath>` 相当）を使う。
 
-ファイルプロトコルは実行系（claude -p / Codex / Devin CLI / Cursor agent CLI）に依存しない。request は wrapper が worker の初期 prompt へ埋め込み、response は wrapper が worker の報告を回収して組み立てる。
+ファイルプロトコルは実行系（claude -p / Codex / Devin CLI / Cursor agent CLI / opencode CLI）に依存しない。request は wrapper が worker の初期 prompt へ埋め込み、response は wrapper が worker の報告を回収して組み立てる。target backend は 5 種、requester（delegate を起動する側）は Claude / Codex / Devin / Cursor の 4 種のままである。
 委譲するときは、task_type に対応する専用 skill（explore / implement / review / chore / imagegen / xresearch / htmldoc）を使い、generic な subagent へ直接流さない。
 
 ### 委譲メカニズムの選定理由
@@ -37,7 +38,8 @@ main agent
 - `gpt-*` は **Codex 子プロセス**（`delegate-codex.sh`）が必須（in-session の実行手段が無い）
 - `swe-*` / `devin-*` は **Devin CLI 子プロセス**（`delegate-devin.sh`）を使う。`devin -p` は `claude -p` と同じく非対話 single-turn 起動で、`--permission-mode dangerous` で `claude --dangerously-skip-permissions` と同等の権限スキップができる。AGENTS.md は devin が自動で読む（無効化不可）ため `--ignore-rules` 相当は不要。`swe-*` は devin CLI がそのまま受理する。`devin-*` は非 Cognition モデルを Devin CLI 経由で指定するバックエンド固定プレフィックスで、`delegate-devin.sh` が `devin-` を剥離して devin CLI に渡す（`devin-glm-5.2` → `glm-5.2`）。これにより `glm-*` 等のモデル名プレフィックスを Devin 専用に拘束せず、将来の他バックエンド拡張余地を残す
 - `composer-*` / `cursor-*` は **Cursor agent CLI 子プロセス**（`delegate-cursor.sh`）を使う。`agent -p` は非対話 headless 起動で `--trust` が必須。`composer-*` は Cursor 専用モデルなので agent CLI の slug をそのまま渡す（例: `composer-2.5`、`composer-2.5-fast`）。`cursor-*` は Devin 経路と同様のバックエンド固定プレフィックスで、`delegate-cursor.sh` が `cursor-` を剥離して agent CLI に渡す（`cursor-glm-5.2-high` → `glm-5.2-high`）
-- requester が Codex でも Claude でも Devin でも Cursor でも、`resolve-model.sh` の出力プレフィックスに基づき適切な子プロセス（`claude -p` / `codex exec` / `devin -p` / `agent -p`）を起動する
+- `opencode/<provider>/<model>[@<effort>]` は **opencode CLI 子プロセス**（`delegate-opencode.sh`）を使う。selector を 1 回剥離した `<provider>/<model>` を `-m` に渡し、effort は形式検証のみで `--variant` へ素通しする
+- requester が Codex でも Claude でも Devin でも Cursor でも、`resolve-model.sh` の出力プレフィックスに基づき適切な子プロセス（`claude -p` / `codex exec` / `devin -p` / `agent -p` / `opencode run`）を起動する。requester 自体は 4 種のままである
 
 ## 3. skill 一覧
 
@@ -70,30 +72,32 @@ delegate-review は README / spec / design docs / changelog などのドキュ�
 ```
 resolve-model.sh <種別env名> <skill固有デフォルト>
 解決順: $種別env → 引数デフォルト
-出力: Claude エイリアス(sonnet|haiku|opus|fable) / gpt-* / swe-* / devin-* / composer-* / cursor-* モデルID
+出力: Claude エイリアス(sonnet|haiku|opus|fable) / gpt-* / swe-* / devin-* / composer-* / cursor-* / opencode/<provider>/<model>[@<effort>] モデルID
 ```
 
-env に入れる値は Claude エイリアス（claude -p の --model 引数対応）、`gpt-*` モデルID（Codex へ渡す）、`swe-*` モデルID（Devin CLI へそのまま渡す）、`devin-*` モデルID（Devin CLI へ渡す際にプレフィックスを剥離）、`composer-*` モデルID（agent CLI へそのまま渡す）、`cursor-*` モデルID（agent CLI へ渡す際に backend selector のプレフィックスを 1 回剥がす。CLI へ渡す model 名はモデル別の変換テーブルで決まり、base model と一致しない場合がある）の6系統に限定する。
+env に入れる値は Claude エイリアス（claude -p の --model 引数対応）、`gpt-*` モデルID（Codex へ渡す）、`swe-*` モデルID（Devin CLI へそのまま渡す）、`devin-*` モデルID（Devin CLI へ渡す際にプレフィックスを剥離）、`composer-*` モデルID（agent CLI へそのまま渡す）、`cursor-*` モデルID（agent CLI へ渡す際に backend selector のプレフィックスを 1 回剥がす。CLI へ渡す model 名はモデル別の変換テーブルで決まり、base model と一致しない場合がある）、`opencode/<provider>/<model>[@<effort>]`（opencode CLI へ渡す際に selector `opencode/` を 1 回剥がし、残りは `<provider>/<model>`。effort は `--variant` へ素通しする）の7系統に限定する。
+
+`opencode/` selector を剥離した残りは `/` をちょうど 1 つ含み、provider / model がいずれも非空・各 64 文字以下・`^[A-Za-z0-9._-]+$` にマッチすること。外れた場合（provider 省略の `opencode/glm-5.2`、二重 selector、`/` を含むのに `opencode/` で始まらない省略形）は dispatch 前に exit 6 で停止する。stderr には許容形式 `opencode/<provider>/<model>[@<effort>]` と「provider は `opencode models` の出力から取る」を含める。selector 付きで grammar を満たす未知 provider は dispatch して実行後分類に回す（catalog は allowlist ではない）。
 
 `prepare.sh` / `prepare-imagegen.sh` は解決した `model` に加え、解決元を `model_source: "env" | "default"` として stdout JSON と observe JSON の `run.model_source` に記録する。種別 env が未設定または空文字の場合は `default`、非空の場合は `env` とする。
 
 モデル指定子の正規形は、reasoning effort suffix を含む解決済み文字列である。`DELEGATE_<TYPE>_MODEL=<model>@<effort>` のように指定された場合、suffix 込みの文字列が `resolve-model.sh` → `prepare.sh` stdout JSON → request JSON → `dispatch.sh` → observe JSON の `run.model` / `usage.model` / `backend_session.model` まで流れる。CLI argv を組む直前に各 wrapper 冒頭で共有ヘルパ `delegate_observe_split_model_effort` が `{base_model, effort}` へ分解し、`ORIGINAL_MODEL` は observe 記録・follow-up 検証用の suffix 込み指定子、`MODEL` は base model として扱う。target CLI に渡す最終的な model 名は base model と effort から backend 固有の変換で組み立てる。cursor はモデル別の変換テーブルで決めるため base model と一致しない場合がある（例: `cursor-grok-4.5@medium` → `cursor-grok-4.5-medium`）。follow-up は前回 observe の suffix 込み指定子を継承するため、同じ指定子から backend 固有の変換を経た argv で再起動される。
 
-effort suffix は opt-in で、`@` が無い場合の起動 argv は backend 既定のまま変えない。不正な suffix、backend 非対応の suffix、Cursor の slug（`-high` / `-max`）と `@` の二重指定は `prepare.sh` が dispatch 前に exit 6 で fail-closed し、wrapper 直接起動でも同じ共有検証で CLI 起動前に停止する。
+effort suffix は opt-in で、`@` が無い場合の起動 argv は backend 既定のまま変えない。不正な suffix、backend 非対応の suffix、Cursor の slug（`-high` / `-max`）と `@` の二重指定は `prepare.sh` が dispatch 前に exit 6 で fail-closed し、wrapper 直接起動でも同じ共有検証で CLI 起動前に停止する。**OpenCode の effort はこの限りではない。** 形式検証（`<model>@<effort>` の形、`@` の重複、空文字）だけを行い、値の allowlist では止めず `--variant` へ素通しする。未対応値は実行後の catalog 照合で `effort_unsupported` event と Summary 警告になる。他 backend は allowlist で dispatch 前に停止する。
 
-## 5. 実行系の四分岐
+## 5. 実行系の五分岐
 
 `resolve-model.sh` の出力プレフィックスで選ぶ。分岐は決定論的なので main agent には委ねず、`dispatch.sh` が行う。
 
-| 種別      | Claude パス（`claude -p -m <model>`）                                                                    | Codex パス（`codex exec -m <model>`）        | Devin パス（`devin -p --model <model>`）    | Cursor パス（`agent -p --model <model>`） |
-| --------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------- | ----------------------------------------- |
-| explore   | `--dangerously-skip-permissions` + `--disallowedTools "Edit,MultiEdit,Write,NotebookEdit"` + constraints | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       |
-| implement | `--dangerously-skip-permissions`                                                                         | `--sandbox danger-full-access`               | `--permission-mode dangerous`               | `--trust` + `--force`                     |
-| chore     | `--dangerously-skip-permissions`                                                                         | `--sandbox danger-full-access`               | `--permission-mode dangerous`               | `--trust` + `--force`                     |
-| review    | `--dangerously-skip-permissions` + `--allowedTools "Read,Bash"`                                          | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       |
-| htmldoc   | `--dangerously-skip-permissions` + constraints                                                           | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       |
+| 種別      | Claude パス（`claude -p -m <model>`）                                                                    | Codex パス（`codex exec -m <model>`）        | Devin パス（`devin -p --model <model>`）    | Cursor パス（`agent -p --model <model>`） | OpenCode パス（`opencode run -m <provider/model>`） |
+| --------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------- | ----------------------------------------- | --------------------------------------------------- |
+| explore   | `--dangerously-skip-permissions` + `--disallowedTools "Edit,MultiEdit,Write,NotebookEdit"` + constraints | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       | `edit: "deny"` + `--pure` + constraints             |
+| implement | `--dangerously-skip-permissions`                                                                         | `--sandbox danger-full-access`               | `--permission-mode dangerous`               | `--trust` + `--force`                     | 既定 permission（注入なし）                         |
+| chore     | `--dangerously-skip-permissions`                                                                         | `--sandbox danger-full-access`               | `--permission-mode dangerous`               | `--trust` + `--force`                     | 既定 permission（注入なし）                         |
+| review    | `--dangerously-skip-permissions` + `--allowedTools "Read,Bash"`                                          | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       | `edit: "deny"` + `--pure` + constraints             |
+| htmldoc   | `--dangerously-skip-permissions` + constraints                                                           | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       | `--pure` + constraints（permission は注入しない）   |
 
-Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフィックス剥離後の値。Cursor パスの `<model>` は `composer-*` はそのまま、`cursor-*` はプレフィックス剥離後の base model からモデル別の変換テーブルで組み立てた値（effort 未指定時は剥離後の値そのもの）。
+Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフィックス剥離後の値。Cursor パスの `<model>` は `composer-*` はそのまま、`cursor-*` はプレフィックス剥離後の base model からモデル別の変換テーブルで組み立てた値（effort 未指定時は剥離後の値そのもの）。OpenCode パスの `<provider/model>` は selector `opencode/` を 1 回剥離した値。effort は `--variant` へ素通しする。
 
 `delegate-imagegen` は同じモデル解決を使うが、画像生成 capability bridge のため `gpt*` → `delegate-imagegen-codex.sh` のみを許可し、非 `gpt*` では fail-closed する。
 
@@ -166,13 +170,30 @@ Cursor agent CLI の `--mode plan`（`--plan` の shorthand）は **read-only / 
 
 そのため Cursor パスは Codex / Devin パスと同方針とし、全 task_type で `--trust` + `--force` を付与する。explore / review の read-only 性は prompt に明示する制約と main の検証フェーズで担保する。
 
+### OpenCode パスの起動
+
+`delegate-opencode.sh` は `delegate-cursor.sh` と対称構造の opencode CLI 子プロセスラッパ。
+
+- PATH 上の `opencode` を `--version` で検証する。CLI 不在・応答なしは exit 3
+- `opencode run --format json -m <provider/model> [--variant <effort>] [-s <sessionID>] [--pure]` で非対話起動
+- prompt は **stdin** で渡す。positional に Markdown を置くと front-matter の `---` がオプションとして解釈され、ask 待ちでハングする
+- cwd は `$REPO_ROOT`
+- wrapper が config 全体を構築し `OPENCODE_CONFIG_CONTENT` へ載せる。呼び出し元の同名変数は継承せず破棄する
+- `--pure` は `explore` / `review` / `htmldoc` で付与し、`DELEGATE_OPENCODE_PURE` が有効なら全 task type で付与する
+- explore / review では `permission.edit: "deny"` を注入し、direct な `edit` / `write` ツールをツール一覧から外す。`bash` は既定のまま残る。implement / chore / htmldoc では permission を注入しない
+- worker は最終応答として front-matter 付き Markdown を返す。wrapper は JSONL の最終 `text` イベントから回収する（`stdout_text` 方式）
+- `DELEGATE_REQUEST_INLINE_MAX` 超過は child 起動前に fail-closed（exit 1 + failed response）。cwd 外の request file を `read-request.sh` で読む fallback は成立しない
+- 通常 run は永続 session store（実 HOME 配下）を作るため、run 後に `opencode session delete` で回収する。resumable / follow-up のときだけ保持する
+- stdout は response_file のパスのみ
+
 ### sandbox / permission を全開放に統一する理由
 
 - Codex: implement / chore / htmldoc は作業自体にリポジトリや出力先への書き込みが必要で、検証コマンドも通常の shell 権限で実行する。read-only 種別の編集抑止は sandbox ではなく prompt constraints と main の検証フェーズに依存する。構造化最終応答方式により protocol response 書き込みは wrapper 側に移ったため、今後 read-only sandbox を適用できる余地は従来より広い
 - Claude: `claude -p` は非対話なので permission prompt に応答できない。`--dangerously-skip-permissions` が必須
 - Devin: `devin -p` は非対話なので permission prompt に応答できない。`--permission-mode dangerous` が必須
 - Cursor: `agent -p` は headless なので workspace trust prompt に応答できない。`--trust` + `--force` が必須。read-only 種別の編集抑止は prompt 制約と main の検証フェーズに依存する（`--mode plan` は report.md 方式と相性が悪いため使わない）
-- トレードオフ: push 抑止・explore の read-only 性は sandbox / permission では強制されず prompt の constraints と main の検証フェーズに依存する
+- OpenCode: 例外。explore / review では `OPENCODE_CONFIG_CONTENT` の `edit: "deny"` で direct な edit / write ツールを CLI レベルで遮断できる。抑止できるのは **direct edit-tool の呼び出しだけ**で、bash 経由の書き込みと `task` 経由（permission 継承は未検証）は抑止対象外である。管理者設定は merge 順の最後で `OPENCODE_CONFIG_CONTENT` を override し得る
+- トレードオフ: Claude / Codex / Devin / Cursor では push 抑止・explore の read-only 性は sandbox / permission では強制されず prompt の constraints と main の検証フェーズに依存する。OpenCode でも bash 経由・task 経由は同じ残存リスクである
 
 ### requester Codex と外部隔離境界
 
@@ -208,7 +229,7 @@ delegate_<type>_<ts>_<token>/             # run_dir（run ごとの scratch）
 
 ### 人間向け Markdown 派生物
 
-request / response の JSON は protocol の source of truth とし、agent 間通信・互換性判定・段階読み取りは JSON だけを見る。一方、監査・デバッグで人間が読みやすいよう、JSON 書き出し後に同じ basename の `.md` を best-effort で生成する。実装は `protocol.ts` の `writeCompanionMarkdown` が `sections` を `\n\n` で結合して `<basename>.md` に書く（`build-response` / wrapper が呼ぶ）。
+request / response の JSON は protocol の source of truth とし、agent 間通信・互換性判定・段階読み取りは JSON だけを見る。一方、監査・デバッグで人間が読みやすいよう、JSON 書き出し後に同じ basename の `.md` を best-effort で生成する。実装は `protocol.ts` の `writeCompanionMarkdown` が `sections` を `\n\n` で結合して `<basename>.md` に書く（`build-request` / `build-response` / wrapper が呼ぶ）。
 
 `.md` は `sections` を結合した補助成果物であり、`task_type_chain` / `requester_session_id` / `status` / `responder_session_id` などの構造化メタデータは正本 JSON に残す。`.md` 生成に失敗しても protocol の成否は JSON 生成結果で判定する。
 
@@ -218,7 +239,7 @@ request / response と同じペアトークンから `<pair>_observe.json` と `
 
 `dispatch.sh` と各 delegate wrapper は `run_dir` を必ず受け取り、wrapper-local な scratch file（隔離 home、last-message、stdout/stderr capture file、observe lock、`tmp/` 等）をすべてその配下に置く。共有 `DELEGATE_WORK_DIR` 直下には置かず、同じ `DELEGATE_WORK_DIR` で複数 delegate が並行しても run ごとの scratch と observe JSON が混ざらないことを契約とする。
 
-observe JSON に記録する `backend` は model prefix ではなく実行系名（`claude` / `codex` / `devin` / `cursor`）に固定する。モデル名は `run.model` に持つ。
+observe JSON に記録する `backend` は model prefix ではなく実行系名（`claude` / `codex` / `devin` / `cursor` / `opencode`）に固定する。モデル名は `run.model` に持つ。
 
 ```json
 {
@@ -299,22 +320,26 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `heartbeat.last_stream_change_at`: 直近 heartbeat で stdout/stderr bytes が増えた時刻
 - `usage.measurement`: `measured | estimated`。CLI の構造化出力や Codex session JSONL から実測できた場合は `measured`、取得不能時の chars/4 fallback は `estimated`
 - `usage.cached_input_tokens`: 実測でキャッシュ読みトークンの内訳が取れた場合に入る（取れない backend では null）
+- `usage.cache_write_tokens` / `usage.reasoning_tokens`: OpenCode が `step_finish` から返す additive field。取得できない backend ではキー自体が現れない
 - `usage.cost_usd_estimated` / `usage.cost_estimate_basis` / `usage.pricing_source`: 実測トークンはあるが CLI が費用を報告しない（`cost_usd` が null の）場合に、同梱の `model-token-prices.json` から換算した概算を**実測 `cost_usd` とは別フィールドで**併記する（下流の集計が精度を区別できるようにするため）。`cached_input_tokens` が取れた場合は cached 単価を適用し `cost_estimate_basis: "cached_input_rate_applied"`、取れない場合は非キャッシュ単価による上限寄り概算で `"uncached_input_rate_upper_bound"` になる。単価表に該当モデルが無い・単価が null の場合はフィールドごと省略する（null は埋めない）
 - `usage.estimation_basis`: `estimated` のときだけ入る。`protocol_payload_only` は request/response のプロトコルペイロード分だけを数えた値で、子ワーカーの実消費（コンテキスト読み込み・ツール往復・思考）を含まない**下限値**を意味する。実測近似ではないため、実測 backend とのモデル間比較には使わないこと（cursor backend は stream-json 出力から measured usage を記録するのが既定で、構造化 usage を取得できなかった run のみこの推定に落ちる）
-- `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `chars_4` など、usage の由来
-- `mcp_config.source`: `shared | injected | none`。`shared` は親の user スコープ MCP 設定を実行環境の共有設定として自然継承したこと、`injected` は wrapper が親設定から worker 用 config を run dir / session home 配下に生成して注入したこと、`none` は親設定に利用可能な MCP サーバーが無く生成物も注入フラグも無いことを示す
+- `usage.source`: `claude_stream_json` / `codex_json` / `codex_session_jsonl` / `devin_atif_export` / `cursor_json` / `devin_json` / `opencode_step_finish` / `chars_4` など、usage の由来
+- `mcp_config.source`: `shared | injected | none`。`shared` は親の user スコープ MCP 設定を実行環境の共有設定として自然継承したこと、`injected` は wrapper が親設定から worker 用の MCP 構成を作って注入したこと（保存形式は backend 別で、run dir / session home 配下の config file か、OpenCode のように env へのインライン注入）、`none` は親設定に利用可能な MCP サーバーが無く生成物も注入フラグも無いことを示す。OpenCode は `DELEGATE_OPENCODE_MCP_SOURCE` で入力元を明示する。未指定 / 空文字は抽出も注入もせず `shared`（project config の `mcp` は継承され得る）。指定して変換できた entry が 0 件なら `none`、1 件以上なら `injected`
 - `mcp_config.servers`: wrapper が注入した MCP サーバー名の配列。`shared`（実設定の自然継承）では wrapper が構成を所有しないため列挙せず空配列にする。`none` も空配列。定義本体・command・env・認証情報は observe JSON に記録しない
 - `project_hooks.enabled`: Codex パスで `--dangerously-bypass-hook-trust` を付与して project hooks を有効化したか
 - `project_hooks.source`: `flag | disabled | task_type_excluded`。`flag` は flag 付与による有効化、`disabled` は `DELEGATE_CODEX_HOOKS` による opt-out、`task_type_excluded` は task_type が有効化 allowlist（`implement` / `chore`）外であることを示す。opt-out と allowlist 外が重なった場合は運用者の明示設定を優先して `disabled` とする。Codex パスの wrapper のみが記録し、他 backend ではキー自体が現れない
 - `events[].kind == "usage_parse_failed"`: 実測 usage が取れず推定 fallback に落ちたことを示す。usage 観測は補助情報のため、この event 自体では delegate 本体を失敗にしない
-- `timing`: 完了 run の所要時間テレメトリ。`total_ms` / `time_to_first_useful_event_ms` / `report_ready_at_ms` は monotonic clock 由来の経過 ms とし、backend stream から取れる `model_turns` / `tool_calls` と `measurement_source` を併記する。Claude / Codex の構造化最終応答方式では `structured_output_parse` に parse 成否（`true` / `false`）を記録し、report.md 方式では `null` とする
+- `events[].kind == "effort_unsupported"`: OpenCode で effort 指定があり、catalog の当該モデル行を取得でき、その `variants` に requested が無いときに出す。event は `requested` / `model` / `variants` を持つ。run は止めず、response の Summary 先頭へ固定警告 1 行を載せる
+- `events[].kind == "session_delete_skipped"`: OpenCode の通常 run で session ID を取得できず削除を試みなかったことを示す。delegate 本体は失敗させない
+- `events[].kind == "session_delete_failed"`: OpenCode の `session delete` が非 0 終了または timeout したことを示す。event は `session_id` / `timed_out` を持つ。状態の残留なので記録は残すが、delegate 本体は失敗させない
+- `timing`: 完了 run の所要時間テレメトリ。`total_ms` / `time_to_first_useful_event_ms` / `report_ready_at_ms` は monotonic clock 由来の経過 ms とし、backend stream から取れる `model_turns` / `tool_calls` と `measurement_source` を併記する。Claude / Codex の構造化最終応答方式では `structured_output_parse` に parse 成否（`true` / `false`）を記録し、`report_md` / `stdout_text` では `null` とする（front-matter parse の成否はここへ入れない）
 - `events[].kind == "superseded"`: dispatch 済みの新しい run が、放棄された古い prepared-only observe に付けるマーク。`superseded_by` に新しい observe の basename が入る。並列 dispatch 直前の observe を誤マークしても、その run の dispatch_start が phase を `running` で上書きするため自己修復する
 - `events[].kind == "stall_timeout"`: `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` 有効時、stdout/stderr bytes が指定秒数増えず wrapper が子 CLI を kill したことを示す。wrapper は exit code `124` を返し、response 未生成なら failed response を書く。event の `process_tree`（pid / ppid / 経過秒 / コマンドの行配列）に kill 時点の子プロセスツリーを残し、何を待って停滞したかを stream content の目視なしで切り分けられるようにする
 - `streams.*.content`: 終了時または preflight failure 時の状況把握用。既定で末尾 `DELEGATE_OBSERVE_STREAM_MAX_BYTES` bytes だけを残し、超過時は `truncated: true` と総 bytes を記録する
 - `lineage`: opt-in の resumable / follow-up run だけに入る。`lineage_id` と、follow-up では前回 `observe_file` への `followup_of` を持つ
 - `backend_session`: opt-in の resumable / follow-up run だけに入る backend resume metadata。`backend` / `model` / `resume_id` / `resume_source` / `persistence` / `home_dir` を持ち、`persistence: "resumable"` のときだけ follow-up 対象になる
 - `run_context`: opt-in の resumable / follow-up run だけに入る stale-context 判定情報。`repo_root` / `worktree_root` / `git_head` は必須、`git_branch` / `dirty` は補助情報
-- `error`: 子 CLI の失敗分類がついた run だけに入る optional field。分類がつかない run では**キー自体が現れない**。`kind` は `model_catalog_unavailable`（backend がモデルカタログを返せずモデル解決に失敗。一過性の可能性があり `retryable: true`）または `model_not_found`（backend が当該モデルを公開していない。恒久的で `retryable: false`）。ほかに `backend` / `model` / `detected_at`（分類時刻）を持つ。`model` は子 CLI が拒否した backend 側の model 文字列であり、delegate の model 指定子とは限らない（cursor では bracket や catalog slug を含み得る）。delegate 側の指定子は同じ observe の `run.model` / `usage.model` から取れる。failed response 生成より先に書かれるため、response 生成に失敗した run でも残る
+- `error`: 子 CLI の失敗分類がついた run だけに入る optional field。分類がつかない run では**キー自体が現れない**。`kind` は `model_catalog_unavailable`（backend がモデルカタログを返せずモデル解決に失敗。一過性の可能性があり `retryable: true`）、`model_not_found`（backend が当該モデルを公開していない。恒久的で `retryable: false`）、または `model_catalog_miss`（OpenCode で catalog を引けて指定モデルの行が無い。catalog 未掲載でも受理されるモデルがあり得るため `retryable: true`。照合は参考情報であり allowlist ではない）。ほかに `backend` / `model` / `detected_at`（分類時刻）を持つ。`model` は子 CLI が拒否した backend 側の model 文字列であり、delegate の model 指定子とは限らない（cursor では bracket や catalog slug を含み得る。OpenCode では `<provider>/<model>`）。delegate 側の指定子は同じ observe の `run.model` / `usage.model` から取れる。failed response 生成より先に書かれるため、response 生成に失敗した run でも残る
 - `schema_version`: `1` 固定。observe JSON への additive な optional field 追加（`error` 等）では bump しない。読み手は未知キーを無視し、欠落キーと `null` を区別しないこと（`read-json.sh` は両者を `null` として返す）
 
 observe JSON の更新は `shared/src/observe-{store,lock,followup,…}.ts` に集約し、observe file basename 派生の lock を `run_dir` 配下に置く。lock は **symlink lock**（`ln -s` / `fs.symlinkSync` の atomic 作成で target に保持者 `<pid> <token>` を埋め込む）に統一する（Node に `flock` が無く bash=flock / TS=symlink の混在では相互排他が破れるため）。更新は temporary file に書いてから `mv` する atomic replace とする。
@@ -376,11 +401,12 @@ present="$(read-json.sh .state.response_present "$observe_file")"
 
 ### response 組み立ての責務
 
-response_file の組み立ては wrapper 側の責務とする。worker は md2idx / jq / build-response.sh を実行せず、報告本体だけを返す。
+response_file の組み立ては wrapper 側の責務とする。worker は md2idx / jq / build-response.sh を実行せず、報告本体だけを返す。方式は 3 つある。
 
-- Claude / Codex は構造化最終応答方式。worker は `{status, report_markdown}` を最終応答として返し、wrapper が schema 強制済みの出力を回収して response_file を組み立てる。Claude は stream-json result event の `structured_output`、Codex は `--output-last-message` の内容を使う
-- Cursor / Devin / Grok は report.md 方式。worker は run_dir 配下の `report.md` に front-matter `status:` 付き Markdown を 1 回で書き、wrapper が front-matter を剥がして response_file を組み立てる
-- いずれも回収失敗（構造化出力欠落、status 不正、report.md 欠落や front-matter 不正）は wrapper が failed response を生成する fail-closed とする。構造化最終応答方式の parse 成否は observe JSON の `timing.structured_output_parse` に記録する
+- Claude / Codex は構造化最終応答方式（`structured`）。worker は `{status, report_markdown}` を最終応答として返し、wrapper が schema 強制済みの出力を回収して response_file を組み立てる。Claude は stream-json result event の `structured_output`、Codex は `--output-last-message` の内容を使う
+- Cursor / Devin / Grok は report.md 方式（`report_md`）。worker は run_dir 配下の `report.md` に front-matter `status:` 付き Markdown を 1 回で書き、wrapper が front-matter を剥がして response_file を組み立てる
+- OpenCode は stdout_text 方式（`stdout_text`）。worker は最終応答として front-matter 付き Markdown を返し、wrapper が JSONL の最終 `text` イベントから回収して response_file を組み立てる。run_dir への書き込みを worker に要求しない
+- いずれも回収失敗（構造化出力欠落、status 不正、report.md 欠落や front-matter 不正）は wrapper が failed response を生成する fail-closed とする。構造化最終応答方式の parse 成否は observe JSON の `timing.structured_output_parse` に記録する。`report_md` / `stdout_text` では `null` とする（front-matter parse の成否はここへ入れない）
 
 ### failed response（wrapper 生成）
 
@@ -393,8 +419,10 @@ response_file の組み立ては wrapper 側の責務とする。worker は md2i
 - report の Summary / `# Error` は、child の stderr capture 末尾（既定 8 KiB。上限を超える分は読まない）を backend 別 signature で分類した結果で分岐する。転記するのは signature ごとの anchored な allowlist で文字種・長さを検証済みの model 名（cursor では bracket を含み得る）と、候補名（`[A-Za-z0-9._-]{1,64}` の slug）だけで、stderr の生テキストは 1 文字も載せない（`# Logs` section は設けない）
   - `unknown`（signature 非合致、または child stderr を持たない preflight 失敗経路）: Summary は `Child CLI failed or did not write a response.` の 1 文、`# Error` は `See observe JSON:` / `Exit code:` のみ
   - `model_catalog_unavailable`（backend がモデルカタログを返せずモデル解決に失敗。一過性の可能性）: Summary がその旨 1 文、`# Error` に `Cause: model_catalog_unavailable` / `Model: <model 名>` / `Retryable: yes`
+  - `model_catalog_miss`（OpenCode で catalog を引けて指定モデルの行が無い。照合は参考情報であり allowlist ではない）: Summary がその旨 1 文、`# Error` に `Cause: model_catalog_miss` / `Model: <model 名>` / `Retryable: yes`
   - `model_not_found`（backend が当該モデルを公開していない。恒久的）: Summary がその旨 1 文、`# Error` に `Cause: model_not_found` / `Model: <model 名>` / `Retryable: no` / `Available: <候補 slug を ", " 区切りで最大 8 件。超過時は末尾に ", …">`
 - signature は実 CLI で観測できた backend にのみ登録する（現時点では Devin と Cursor）。候補の列挙書式は signature ごとに固定で、Devin は marker 行の次行以降の改行区切り、Cursor は model 行と同一行のカンマ区切りだけを受理する。判定は行単位の完全一致で行い、marker 行に suffix が付く・候補が観測済みの位置と異なる場所に並ぶ・別のエラーブロックにまたがるといった未観測の書式はすべて `unknown` に倒す。未確認の書式を推測で受理すると、恒久的な非対応を「一過性・再実行可」と誤断定し得るため
+- OpenCode は stderr signature ではなく、child 終了後の catalog 照合で分類する。catalog に行が無ければ `model_catalog_miss`、catalog 自体を引けなければ既存の `model_catalog_unavailable`、catalog に行があれば `unknown`（`error` キーは作らない）
 
 ### md2idx（トークン圧縮の核）
 
@@ -402,7 +430,7 @@ response_file の組み立ては wrapper 側の責務とする。worker は md2i
 
 response の読み手（main）は `status` → `index` → 必要 section の順で段階読み取りする。ただし段階読みは複数往復を要するため、`read-response.sh auto` は response が小さい（`DELEGATE_RESPONSE_INLINE_MAX`、既定 10KB 未満）ときは status と全 section を 1 回で丸読みし、大きいときは status + index + Summary section だけを返して残りを `<N>` のオンデマンド取得に回す（小さな report では丸読みの方が往復が少なく安く、大きな report では main が要る情報の多くは Summary で足りる）。observe JSON / run 出力の個別フィールド抽出は `read-json.sh`（`jq -r <dotpath>` 相当のバンドル内蔵リーダ）を使う。
 
-request の worker への受け渡しは、wrapper が検証済み request JSON の `.sections` と `task_type_chain` を初期 prompt へ埋め込む運用を既定とする。gate は `DELEGATE_REQUEST_INLINE_MAX`（既定 256KB）で、超過時のみ `read-request.sh` 指示へ fallback する。prompt は Claude / Codex / Cursor が stdin、Devin が `--prompt-file`。Grok と Codex follow-up は argv 渡しが残るため、未実測の暫定措置として埋め込み gate を 96KB に縮小する。md2idx はバンドルに内包されるため runtime 前提条件ではない（Node.js が動けば使える）。
+request の worker への受け渡しは、wrapper が検証済み request JSON の `.sections` と `task_type_chain` を初期 prompt へ埋め込む運用を既定とする。gate は `DELEGATE_REQUEST_INLINE_MAX`（既定 256KB）で、超過時のみ `read-request.sh` 指示へ fallback する。prompt は Claude / Codex / Cursor / OpenCode が stdin、Devin が `--prompt-file`。Grok と Codex follow-up は argv 渡しが残るため、未実測の暫定措置として埋め込み gate を 96KB に縮小する。OpenCode は cwd 外の request file を読めないため `read-request.sh` fallback は成立せず、gate 超過は child 起動前に fail-closed（exit 1 + failed response）とする。md2idx はバンドルに内包されるため runtime 前提条件ではない（Node.js が動けば使える）。
 
 ### 任意 telemetry（proxy metric）
 
@@ -427,9 +455,17 @@ follow-up は新しい request/response/observe/run_dir を作る別 run とし�
 
 `responder_session_id` は protocol v1 response の追跡 ID であり、backend resume handle ではない。resume handle は observe JSON の optional metadata `backend_session.resume_id` にだけ持つ。通常 run や handle 抽出失敗 run は follow-up 対象にしない。
 
-Claude / Codex / Devin / Cursor wrapper は resumable initial run と follow-up run を support する。Codex follow-up は `codex exec resume` が cwd を復元せず `-C` / `--sandbox` を受けないため、wrapper が `cd "$REPO_ROOT"` してから起動し、`-c sandbox_mode=...` で初回 run と同等の sandbox を指定する。
+Claude / Codex / Devin / Cursor / OpenCode wrapper は resumable initial run と follow-up run を support する。Codex follow-up は `codex exec resume` が cwd を復元せず `-C` / `--sandbox` を受けないため、wrapper が `cd "$REPO_ROOT"` してから起動し、`-c sandbox_mode=...` で初回 run と同等の sandbox を指定する。OpenCode follow-up は `-s <sessionID>` で会話を継続する。OpenCode の通常 run は永続 session store（実 HOME 配下）を作るため、run 後に `opencode session delete <id>` で回収する。session ID を取得できなかった run は削除せず `session_delete_skipped` を、削除失敗・timeout は `session_delete_failed` を observe に残す。resumable / follow-up のときだけ session を保持する。
 
-MCP 構成は backend ごとに扱いが異なる。Claude / Codex follow-up は初回 resumable run で生成した session home 配下の MCP config を再利用し、初回と同じサーバー集合を保つ。Cursor follow-up は run ごとに親 global `mcp.json` から隔離 config を再生成する。Devin は通常 run と同じく実行環境の共有設定を使う。
+MCP 構成は backend ごとに扱いが異なる。Claude / Codex follow-up は初回 resumable run で生成した session home 配下の MCP config を再利用し、初回と同じサーバー集合を保つ。Cursor follow-up は run ごとに親 global `mcp.json` から隔離 config を再生成する。Devin は通常 run と同じく実行環境の共有設定を使う。OpenCode は `DELEGATE_OPENCODE_MCP_SOURCE`（`claude` / `cursor` / `codex`）で入力元を明示し、初回・follow-up とも run ごとに親設定から再生成する。未指定 / 空文字は抽出も注入もせず `mcp_config.source: "shared"`（project config の `mcp` は継承され得る）。指定して変換できた entry が 0 件なら `none`、1 件以上なら `injected`（server 名のみ記録）。
+
+| backend  | session reuse                 | 通常 run の session                                 | MCP                                                                                              |
+| -------- | ----------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| claude   | resumable / follow-up         | `--no-session-persistence`                          | 通常 run は `shared`。resumable は session home へ注入し follow-up で再利用                      |
+| codex    | resumable / follow-up         | 隔離 `CODEX_HOME`（run 後 prune）                   | 隔離 config へ注入。follow-up は初回 config を再利用                                             |
+| devin    | resumable / follow-up         | cloud 側（local store なし）                        | `shared`                                                                                         |
+| cursor   | resumable / follow-up         | 隔離 `CURSOR_CONFIG_DIR`                            | run ごとに親設定から再生成（`injected`）                                                         |
+| opencode | resumable / follow-up（`-s`） | 通常 run 後に `session delete`。opt-in run だけ保持 | `DELEGATE_OPENCODE_MCP_SOURCE`。未指定は `shared`、指定して 0 件は `none`、注入成功は `injected` |
 
 Codex パスの `--dangerously-bypass-hook-trust` は argv を起動のたびに構成するため、`DELEGATE_CODEX_HOOKS` による opt-out は **run ごと**に当該 run の env が効く（follow-up でも初回 run の設定に引きずられない）。初回 run の設定を lineage に固定する MCP config とは挙動が異なる。
 
@@ -475,25 +511,25 @@ skill 昇格提案と同じ精神で、**LLM の判断を要さず決定論的�
 
 実装は `shared/src/*.ts` の TS モジュールが正本で、`delegate-cli` のサブコマンドとして公開する。各 `*.sh` shim はそのサブコマンドへ委譲する。
 
-| shim / サブコマンド                       | 実装モジュール                                                             | 役割                                                                                                           |
-| ----------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `resolve-model.sh`                        | `resolve-model.ts`                                                         | モデル解決（種別非依存の汎用部品）                                                                             |
-| `check-delegate-chain.sh`                 | `check-delegate-chain.ts`                                                  | 多段委譲の再帰防止チェック                                                                                     |
-| `run.sh`                                  | `run-oneshot.ts`                                                           | 通常 run の one-shot（prepare→dispatch→read-response）。単一 JSON stdout と内部 exit code 透過                 |
-| `dispatch.sh`                             | `dispatch.ts`                                                              | モデル名プレフィックスによる実行系分岐（決定論的分岐を main の推論から下ろし 1 呼び出しに畳む）                |
-| `delegate-{claude,codex,devin,cursor}.sh` | `wrapper-{claude,codex,devin,cursor}.ts` + `wrapper-common/wait/report.ts` | backend 別の子プロセス起動（devin-\* / cursor-\* はプレフィックス剥離）                                        |
-| `prepare.sh`                              | `prepare.ts`                                                               | 準備の集約（モデル解決→チェーン確認→リクエスト生成を 1 呼び出しに畳み main の bash 往復と context 出力を削減） |
-| `build-request.sh`                        | `build-request.ts`                                                         | リクエスト生成（命名・md2idx・envelope 付与）。telemetry 有効時は request/body サイズを記録                    |
-| `read-request.sh`                         | `read-request.ts`                                                          | request prompt 埋め込み gate 超過時の fallback 読み取り。telemetry 有効時は selector と出力量を記録            |
-| `build-response.sh`                       | `build-response.ts`                                                        | wrapper 側のレスポンス生成（md2idx・envelope 付与）。telemetry 有効時は response/body サイズを記録             |
-| `read-response.sh`                        | `read-response.ts`                                                         | レスポンスの段階読み取り（main 側）。`auto` でサイズゲート丸読み。telemetry 有効時は inline 判定と size 記録   |
-| `read-json.sh`                            | `read-json.ts`                                                             | `jq -r <dotpath>` 相当の最小 JSON リーダ（observe JSON / run 出力の抽出用）                                    |
-| （internal）                              | `delegate-mcp.ts`                                                          | 親 user スコープ MCP 設定の抽出と backend 別 config 生成（Claude/Cursor JSON、Codex TOML）                     |
-| （internal）                              | `observe-{store,lock,followup,usage,timing,cost,effort}.ts`                | observe JSON 更新、usage/timing 正規化、wrapper 側 response 組み立て helper                                    |
-| `summarize-metrics.ts`                    | —                                                                          | telemetry JSONL の集計（human table / `--json`）                                                               |
-| `run-metrics-fixtures.sh`                 | —                                                                          | 固定 fixture を protocol scripts に通して metrics と summary を生成                                            |
-| `check-metrics-baseline.sh`               | —                                                                          | fixture 現在値と `fixtures/metrics/baseline.json` の drift 検出                                                |
-| `check-no-jq-md2idx.sh`                   | —                                                                          | 配布 tree に jq / md2idx 参照が残っていないことの静的検査（CI / pre-commit）                                   |
+| shim / サブコマンド                                | 実装モジュール                                                                      | 役割                                                                                                           |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `resolve-model.sh`                                 | `resolve-model.ts`                                                                  | モデル解決（種別非依存の汎用部品）                                                                             |
+| `check-delegate-chain.sh`                          | `check-delegate-chain.ts`                                                           | 多段委譲の再帰防止チェック                                                                                     |
+| `run.sh`                                           | `run-oneshot.ts`                                                                    | 通常 run の one-shot（prepare→dispatch→read-response）。単一 JSON stdout と内部 exit code 透過                 |
+| `dispatch.sh`                                      | `dispatch.ts`                                                                       | モデル名プレフィックスによる実行系分岐（決定論的分岐を main の推論から下ろし 1 呼び出しに畳む）                |
+| `delegate-{claude,codex,devin,cursor,opencode}.sh` | `wrapper-{claude,codex,devin,cursor,opencode}.ts` + `wrapper-common/wait/report.ts` | backend 別の子プロセス起動（devin-\* / cursor-\* はプレフィックス剥離、opencode は `opencode/` selector 剥離） |
+| `prepare.sh`                                       | `prepare.ts`                                                                        | 準備の集約（モデル解決→チェーン確認→リクエスト生成を 1 呼び出しに畳み main の bash 往復と context 出力を削減） |
+| `build-request.sh`                                 | `build-request.ts`                                                                  | リクエスト生成（命名・md2idx・envelope 付与）。telemetry 有効時は request/body サイズを記録                    |
+| `read-request.sh`                                  | `read-request.ts`                                                                   | request prompt 埋め込み gate 超過時の fallback 読み取り。telemetry 有効時は selector と出力量を記録            |
+| `build-response.sh`                                | `build-response.ts`                                                                 | wrapper 側のレスポンス生成（md2idx・envelope 付与）。telemetry 有効時は response/body サイズを記録             |
+| `read-response.sh`                                 | `read-response.ts`                                                                  | レスポンスの段階読み取り（main 側）。`auto` でサイズゲート丸読み。telemetry 有効時は inline 判定と size 記録   |
+| `read-json.sh`                                     | `read-json.ts`                                                                      | `jq -r <dotpath>` 相当の最小 JSON リーダ（observe JSON / run 出力の抽出用）                                    |
+| （internal）                                       | `delegate-mcp.ts`                                                                   | 親 user スコープ MCP 設定の抽出と backend 別 config 生成（Claude/Cursor JSON、Codex TOML、OpenCode config）    |
+| （internal）                                       | `observe-{store,lock,followup,usage,timing,cost,effort}.ts`                         | observe JSON 更新、usage/timing 正規化、wrapper 側 response 組み立て helper                                    |
+| `summarize-metrics.ts`                             | —                                                                                   | telemetry JSONL の集計（human table / `--json`）                                                               |
+| `run-metrics-fixtures.sh`                          | —                                                                                   | 固定 fixture を protocol scripts に通して metrics と summary を生成                                            |
+| `check-metrics-baseline.sh`                        | —                                                                                   | fixture 現在値と `fixtures/metrics/baseline.json` の drift 検出                                                |
+| `check-no-jq-md2idx.sh`                            | —                                                                                   | 配布 tree に jq / md2idx 参照が残っていないことの静的検査（CI / pre-commit）                                   |
 
 | exit | 意味                                                                                    |
 | ---- | --------------------------------------------------------------------------------------- |
@@ -504,6 +540,8 @@ skill 昇格提案と同じ精神で、**LLM の判断を要さず決定論的�
 | 4    | 委譲サイクル検出（同一種別の多段委譲）                                                  |
 | 5    | follow-up 検証失敗（resume 不可・context 不一致・継承 model 名が無効）                  |
 | 6    | model 名・effort 指定不正（無効な model 表記・effort 不正値・backend 非対応・二重指定） |
+
+OpenCode 固有: 不正な `DELEGATE_OPENCODE_MCP_SOURCE`（`claude` / `cursor` / `codex` の完全一致でない値。前後空白を含む値も含む）は child 起動前に exit 3。`DELEGATE_REQUEST_INLINE_MAX` 超過は child 起動前に exit 1 と failed response（`read-request.sh` fallback は cwd 外を読めないため成立しない）。
 
 ## 11. リポジトリ構成と配布
 
@@ -530,13 +568,13 @@ delegate-skills/
     src/                         # TypeScript 実装の正本（in-source test 隣接）
       main.ts                    # サブコマンド dispatch
       prepare.ts dispatch.ts run-oneshot.ts read-json.ts backend.ts
-      wrapper-{common,wait,report,dedicated,claude,codex,cursor,devin,imagegen,xresearch}.ts
+      wrapper-{common,wait,report,dedicated,claude,codex,cursor,devin,opencode,imagegen,xresearch}.ts
       observe-{store,lock,followup,usage,timing,cost,effort}.ts
       prompt-constraints.ts delegate-mcp.ts build-*.ts read-*.ts resolve-model.ts
     dist/delegate-cli.mjs        # vp build 生成の単一ファイル CLI（md2idx 内包・コミット対象）
     resolve-model.sh check-delegate-chain.sh run.sh dispatch.sh prepare.sh   # exec shim（→ サブコマンド）
     build-request.sh read-request.sh build-response.sh read-response.sh read-json.sh
-    delegate-claude.sh delegate-codex.sh delegate-devin.sh delegate-cursor.sh
+    delegate-claude.sh delegate-codex.sh delegate-devin.sh delegate-cursor.sh delegate-opencode.sh
   vite.cli.config.ts             # CLI バンドル専用の vite-plus config
   scripts/
     sync-shared.ts               # shared/（dist + shim + asset）→ 各 skill scripts/ への同期
@@ -552,29 +590,31 @@ delegate-skills/
   README.md
 ```
 
-- Claude パスは `delegate-claude.sh`（`claude -p` 子プロセス）、Codex パスは `delegate-codex.sh`（`codex exec` 子プロセス）、Devin パスは `delegate-devin.sh`（`devin -p` 子プロセス）、Cursor パスは `delegate-cursor.sh`（`agent -p` 子プロセス）で、いずれも `delegate-cli wrapper <backend>` への exec shim。SKILL.md から同じ呼び出し形式で起動する
+- Claude パスは `delegate-claude.sh`（`claude -p` 子プロセス）、Codex パスは `delegate-codex.sh`（`codex exec` 子プロセス）、Devin パスは `delegate-devin.sh`（`devin -p` 子プロセス）、Cursor パスは `delegate-cursor.sh`（`agent -p` 子プロセス）、OpenCode パスは `delegate-opencode.sh`（`opencode run` 子プロセス）で、いずれも `delegate-cli wrapper <backend>` への exec shim。SKILL.md から同じ呼び出し形式で起動する
 - **self-contained 配布**: 実装の正本は `shared/src/`、配布物はバンドル `shared/dist/delegate-cli.mjs`（md2idx 内包）と直接実行エントリの `.sh` shim。`shared/ → 各 skill の scripts/ へコピー同期`パターンで各 skill に同梱する。`gh skill install` 後の呼び出しパスは Claude Code では `.claude/skills/delegate-<type>/scripts/...`、Codex では `.agents/skills/delegate-<type>/scripts/...` になり、同じ相対構造を保つ。SKILL.md のコマンド例は Claude Code の allowed-tools と整合するよう `.claude/...` を示し、Codex では `.agents/...` に読み替える。同期は `sync-shared.ts`（`npm run sync-shared` / `:check`）が担い、コピーの直接編集や dist ドリフトは fail-closed で検出する
 - TypeScript 実装は Vitest の in-source testing で単体検証し、CLI レベルの契約は fake CLI golden（`delegate-wrapper-session.test.ts` / `delegate-run.test.ts`）で end-to-end 検証する。実行時に必要なのは Node.js 24+ と対象 backend CLI のみ
 
 ## 12. 環境変数
 
-| 環境変数                                 | 既定                                     | 説明                                                                                                        |
-| ---------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                                                                        |
-| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                                                                       |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値                                             |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384`（バイト、`0` は無制限）          | one-shot `run.sh` JSON の `content` 上限                                                                    |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144`（バイト）                       | request を worker prompt に埋め込むサイズ閾値                                                               |
-| `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先                                            |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                                                                          |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000`（ミリ秒、`0` は注入なし）       | claude backend の子へ注入する Bash tool の timeout 上限                                                     |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に cache を削除。auth copy は設定によらず常に削除                                                 |
-| `DELEGATE_CODEX_HOOKS`                   | `1`（有効、`0` / `false` / `no` で無効） | Codex パスの `implement` / `chore` で `--dangerously-bypass-hook-trust` を付与し project hooks を有効化する |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する                                               |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限                                                        |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する                                                |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                                                            |
-| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル                                                        |
+| 環境変数                                 | 既定                                     | 説明                                                                                                                                                      |
+| ---------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                                                                                                                      |
+| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                                                                                                                     |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値                                                                                           |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384`（バイト、`0` は無制限）          | one-shot `run.sh` JSON の `content` 上限                                                                                                                  |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144`（バイト）                       | request を worker prompt に埋め込むサイズ閾値                                                                                                             |
+| `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先                                                                                          |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                                                                                                                        |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000`（ミリ秒、`0` は注入なし）       | claude backend の子へ注入する Bash tool の timeout 上限                                                                                                   |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に cache を削除。auth copy は設定によらず常に削除                                                                                               |
+| `DELEGATE_CODEX_HOOKS`                   | `1`（有効、`0` / `false` / `no` で無効） | Codex パスの `implement` / `chore` で `--dangerously-bypass-hook-trust` を付与し project hooks を有効化する                                               |
+| `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                           | `1` / `true` / `yes`（大小文字無視、前後空白無視）で OpenCode の全 task type に `--pure` を付ける。未設定・空文字・その他の値は無効。不正値で停止はしない |
+| `DELEGATE_OPENCODE_MCP_SOURCE`           | 未設定（注入しない）                     | OpenCode の MCP 入力元。`claude` / `cursor` / `codex` の完全一致。不正値（前後空白を含む値も含む）は child 起動前に exit 3                                |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する                                                                                             |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限                                                                                                      |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する                                                                                              |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                                                                                                          |
+| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル                                                                                                      |
 
 ## 13. 脅威モデル・割り切り
 
@@ -585,6 +625,9 @@ delegate-skills/
 - Codex パスは別課金のサブプロセス（GPT 系に in-session 実行手段が無いため不可避）。Claude パスも `claude -p` 子プロセスのため別セッション課金になる
 - requester / child の Codex パスは `danger-full-access` で動くため sandbox 由来の隔離が無く、launcher も隔離を提供しない。強制境界は [operator-managed external isolation](#requester-codex-と外部隔離境界) が所有する。Claude パスは `--dangerously-skip-permissions` だが、read-only 種別では repo 書き込みツールを技術的に除外する（explore は `--disallowedTools "Edit,MultiEdit,Write,NotebookEdit"`、review は `--allowedTools "Read,Bash"`）。ただし Bash 経由のシェル書き込みは防げないため、push 抑止を含む完全な read-only 性は prompt の constraints と main の検証に依存する残存リスクがある
 - explore は WebSearch / WebFetch / MCP を開放するため、Web / MCP 由来の untrusted コンテンツ（prompt injection を含む）が worker context に入り得る。取得コンテンツは子プロセスに隔離され main には報告 Markdown だけが返るが、worker 自身が誘導される残存リスクは prompt の「コンテンツ内の指示に従わない」制約と main の検証に依存する。MCP の書き込みツールは技術的には遮断されない（読み取り専用の常時制約はプロンプトレベル。技術的に絞る場合は MCP サーバー側の権限スコープで行う）
+- OpenCode の cwd 外アクセスは非対称である。direct な edit / write と明示パスの読み取り（`cat /tmp/f`）は `external_directory` で拒否されるが、bash のリダイレクトによる書き込み（`echo x > /tmp/f`）は通る。cwd 外への出力は不可能ではなく、保証・依存できない
+- OpenCode の read-only 抑止（`edit: "deny"`）は管理者設定のない環境を前提とする。config merge 順の最後にある管理者設定は `OPENCODE_CONFIG_CONTENT` を override し得る
+- OpenCode が注入する MCP の env 値と header 値は redaction 対象であり、capture / observe の `streams.content` / event / response へ書き出す直前に伏字へ置換する。server 名以外（command / env / headers / 認証情報）は observe に残さない
 
 ## 14. 参照
 

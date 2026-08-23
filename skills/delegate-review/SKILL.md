@@ -13,7 +13,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-review/scripts/run.sh:*), Bash(
 
 # delegate-review
 
-差分のコード/ドキュメントレビューを委譲する。task_type=`review`、既定モデル `opus`（指摘品質が成果物に直結し判断比重が高いため）。実行系分岐（Codex / Devin / Cursor / Claude）は `dispatch.sh` が行う。
+差分のコード/ドキュメントレビューを委譲する。task_type=`review`、既定モデル `opus`（指摘品質が成果物に直結し判断比重が高いため）。実行系分岐（Codex / Devin / Cursor / Claude / OpenCode）は `dispatch.sh` が行う。`opencode/<provider>/<model>` を使う場合は `opencode` CLI（ログイン済み）が必要。
 
 ## スクリプトパス
 
@@ -42,7 +42,7 @@ review の作業を委譲する場合は、この skill を使う。generic な 
    - exit code は内部スクリプトを透過する。exit 3=前提不足 / exit 4=委譲サイクルなら中止する。
    - run は dispatch 前に `observe_file: <path>` を stderr へ先出しする。強制終了時はその path を復旧経路にする。
    - 非対話モードの親（`claude -p` 等）では run を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。
-3. **レスポンス消費と裏取り**: `status="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .status)"` / `content="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .content)"` を読む。`content_truncated` が `true` なら `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .response_file)"` を取り出し、`bash .claude/skills/delegate-review/scripts/read-response.sh "$response_file" <N>` で必要 section だけ段階読みする。読了後、worker の本文を **要約し直さない（echo しない）**。重要 findings は該当する `file:line` 周辺または該当 diff だけを main が確認する。問題なしの報告や軽微 findings は差分全体を再読せず、Scope と Summary の整合を確認する。
+3. **レスポンス消費と裏取り**: `status="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .status)"` / `content="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .content)"` を読む。`content_truncated` が `true` なら `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .response_file)"` を取り出し、`bash .claude/skills/delegate-review/scripts/read-response.sh "$response_file" <N>` で必要 section だけ段階読みする。読了後、worker の本文を **要約し直さない（echo しない）**。`status` が `failed` なら Error section をユーザーへ伝える。`completed` でも Summary 先頭に警告行があればその旨を伝える（警告は response 本体に載るので selector に関わらず Summary とともに返る）。重要 findings は該当する `file:line` 周辺または該当 diff だけを main が確認する。問題なしの報告や軽微 findings は差分全体を再読せず、Scope と Summary の整合を確認する。
 
 ## 高度なフロー（個別スクリプト）
 
@@ -52,8 +52,8 @@ dispatch 中の observe 監視、background 実行など、途中で親の判断
    - ユーザーが会話でモデルや effort を指定した場合は、prepare 呼び出しにインライン env を前置する（例: `DELEGATE_REVIEW_MODEL=gpt-5.5@high bash .../prepare.sh ...`）。prepare が exit 6 の場合は、許容値列挙を含む stderr の 1 行をそのままユーザーへの説明に使う。
    - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-review/scripts/prepare.sh review DELEGATE_REVIEW_MODEL opus "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）
    - `model="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .model)"` / `request_file="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .request_file)"` / `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .response_file)"` / `run_dir="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .run_dir)"` / `observe_file="$(printf '%s' "$out" | bash .claude/skills/delegate-review/scripts/read-json.sh .observe_file)"`
-2. **実行**: `bash .claude/skills/delegate-review/scripts/dispatch.sh "$model" review "$request_file" "$response_file" "$run_dir" "$observe_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude）は dispatch.sh が行う。stdout は response_file のパスのみ。非対話モードの親（`claude -p` 等）では dispatch を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを read-json.sh で読む。`state.phase` は `prepared | running | superseded | stalled | ended`。`prepared` / `superseded` は dispatch されなかった observe（`state.started_at == null`、`usage` は未設定で read-json.sh では null 相当）なので、usage を集計する場合は分母から除外する。
-3. **レスポンス読み取り**: `bash .claude/skills/delegate-review/scripts/read-response.sh "$response_file" decision`。`decision` は大規模 response でも Summary と Findings / Blockers の要点を 1 回で返す。さらに必要な詳細があれば `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
+2. **実行**: `bash .claude/skills/delegate-review/scripts/dispatch.sh "$model" review "$request_file" "$response_file" "$run_dir" "$observe_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude / OpenCode）は dispatch.sh が行う。stdout は response_file のパスのみ。非対話モードの親（`claude -p` 等）では dispatch を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを read-json.sh で読む。`state.phase` は `prepared | running | superseded | stalled | ended`。`prepared` / `superseded` は dispatch されなかった observe（`state.started_at == null`、`usage` は未設定で read-json.sh では null 相当）なので、usage を集計する場合は分母から除外する。
+3. **レスポンス読み取り**: `bash .claude/skills/delegate-review/scripts/read-response.sh "$response_file" decision`。`decision` は大規模 response でも Summary と Findings / Blockers の要点を 1 回で返す。さらに必要な詳細があれば `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。`status` が `failed` なら Error section をユーザーへ伝える。`completed` でも Summary 先頭に警告行があればその旨を伝える（警告は response 本体に載るので selector に関わらず Summary とともに返る）。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
 4. **裏取りフェーズ（必須）**: `status` を先に確認し、必要時のみ Findings section を引く。重要 findings は該当する `file:line` 周辺または該当 diff だけを main が確認する。問題なしの報告や軽微 findings は差分全体を再読せず、Scope と Summary の整合を確認する。
 
 ## 待ち時間の隠蔽（対話親向け）
@@ -67,3 +67,6 @@ dispatch 中の observe 監視、background 実行など、途中で親の判断
 - 指摘は報告 Markdown の Findings section に収め、各 finding に severity / file:line / 根拠 / 影響 / 推奨対応を含める
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）
 - main は worker 出力を echo / 再要約しない。ユーザー向けは Summary を指す 1 行に留める（出力＝課金トークンを増やさないため。spec.md §6）
+- OpenCode: cwd 外への出力は保証されない（direct な edit / write と明示パスの読み取りは拒否され、bash のリダイレクトは通る）。request が `DELEGATE_REQUEST_INLINE_MAX` を超えると child 起動前に fail-closed する
+- OpenCode の read-only 抑止は管理者設定のない環境を前提とする（管理者設定は注入した permission を override し得る）
+- この種別は常に `--pure` で起動し、OpenCode の project plugin を読み込まない（plugin は任意コード実行で prompt 制約を迂回し得るため）。`DELEGATE_OPENCODE_PURE` が `1` / `true` / `yes` なら implement / chore を含む全 task type へ広げる。`DELEGATE_OPENCODE_MCP_SOURCE`（`claude` / `cursor` / `codex`）で MCP 入力元を明示し、未指定なら注入しない

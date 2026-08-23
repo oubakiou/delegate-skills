@@ -15,11 +15,12 @@ main agent
       │   ├─ model が gpt* → wrapper codex で Codex 子プロセス
       │   ├─ model が swe*|devin-* → wrapper devin で Devin CLI 子プロセス
       │   ├─ model が composer*|cursor-* → wrapper cursor で Cursor agent CLI 子プロセス
+      │   ├─ model が opencode/* → wrapper opencode で opencode CLI 子プロセス
       │   └─ それ以外 → wrapper claude で Claude 子プロセス（claude -p）
       └─ (read-response)    selector で読み取り（review 既定は decision、他は auto）→ 検証
 ```
 
-直接実行される `.sh` shim は `run.sh` / `prepare.sh` / `dispatch.sh` / `resolve-model.sh` / `check-delegate-chain.sh` / `build-request.sh` / `read-request.sh` / `build-response.sh` / `read-response.sh` / `read-json.sh` / `delegate-{claude,codex,cursor,devin}.sh`（backend wrapper は `delegate-cli wrapper <backend>`）で、それぞれ対応するサブコマンドへ委譲する。`read-json.sh` は `jq -r <dotpath>` 相当の最小 JSON リーダで、SKILL.md の run 出力 / observe JSON 読み取りに使う（jq 依存の撤廃用）。
+直接実行される `.sh` shim は `run.sh` / `prepare.sh` / `dispatch.sh` / `resolve-model.sh` / `check-delegate-chain.sh` / `build-request.sh` / `read-request.sh` / `build-response.sh` / `read-response.sh` / `read-json.sh` / `delegate-{claude,codex,cursor,devin,opencode}.sh`（backend wrapper は `delegate-cli wrapper <backend>`）で、それぞれ対応するサブコマンドへ委譲する。`read-json.sh` は `jq -r <dotpath>` 相当の最小 JSON リーダで、SKILL.md の run 出力 / observe JSON 読み取りに使う（jq 依存の撤廃用）。
 
 `run.sh` は成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を stdout へ返し、内部処理の exit code を透過する。resumable / follow-up・observe 監視・background 実行など途中で親の判断を挟むフローは、従来どおり個別 shim（`prepare.sh` / `dispatch.sh` / `read-response.sh`）を直接使う。
 
@@ -61,7 +62,7 @@ delegate-skills/
       main.ts                      # サブコマンド dispatch（run / prepare / dispatch / wrapper … / read-json）
       prepare.ts  dispatch.ts  run-oneshot.ts  read-json.ts
       wrapper-common.ts  wrapper-wait.ts  wrapper-report.ts  wrapper-dedicated.ts
-      wrapper-{claude,codex,cursor,devin,imagegen,xresearch}.ts
+      wrapper-{claude,codex,cursor,devin,opencode,imagegen,xresearch}.ts
       observe-{store,lock,followup,effort,usage,cost,timing}.ts
       prompt-constraints.ts  delegate-mcp.ts  backend.ts  build-*.ts  read-*.ts  resolve-model.ts
       test-scratch.ts                # テスト用スクラッチの生成・回収 (テスト専用・非配布)
@@ -69,7 +70,7 @@ delegate-skills/
     resolve-model.sh  check-delegate-chain.sh          # 直接実行エントリの exec shim
     build-request.sh  read-request.sh  build-response.sh  read-response.sh  read-json.sh
     prepare.sh  dispatch.sh  run.sh
-    delegate-claude.sh  delegate-codex.sh  delegate-devin.sh  delegate-cursor.sh
+    delegate-claude.sh  delegate-codex.sh  delegate-devin.sh  delegate-cursor.sh  delegate-opencode.sh
   vite.cli.config.ts               # CLI バンドル専用の vite-plus config（build.ssr / ssr.noExternal）
   scripts/
     sync-shared.ts                 # shared/（dist + shim + asset）→ 各 skill（+ in-source test）
@@ -253,7 +254,7 @@ docker rm "${QUAL_CONTAINER_NAME}"
 
 正本（canonical）は `shared/src/` 側に置き、各 skill 配下の生成コピー（バンドル）はテストを重複実行しない。CLI レベルの契約（argv / stdout / exit code / observe JSON）は fake CLI golden で end-to-end 検証する:
 
-- `scripts/delegate-wrapper-session.test.ts`: 4 backend の session mode（通常 run / `resumable` / `followup` / handle 欠落時の fail-closed / response_file 未生成時の failed response）を fake CLI を PATH 先頭に置いて検証。Codex は3 session mode × child error / response 欠落 / child signal、wrapper SIGTERM、stage / cleanup 中と spawn / child exit 境界の signal race、imagegen の同終了条件、stale auth destination、実 `copyFileSync` failure、destination 作成後の partial-copy failure と staging cleanup、cleanup failure、cleanup-before-finalize、同期 operation exception の exactly-once terminal state、unsafe follow-up home、prune 無効時の session/config 保持、MCP observe の server-name-only 契約を検証する。follow-up validation は `delegate-cli validate-followup` internal subcommand 経由で TS 実装を叩く。
+- `scripts/delegate-wrapper-session.test.ts`: 5 target backend の session mode（通常 run / `resumable` / `followup` / handle 欠落時の fail-closed / response_file 未生成時の failed response）を fake CLI を PATH 先頭に置いて検証。opencode の fake CLI golden も同ファイルに入っている。Codex は3 session mode × child error / response 欠落 / child signal、wrapper SIGTERM、stage / cleanup 中と spawn / child exit 境界の signal race、imagegen の同終了条件、stale auth destination、実 `copyFileSync` failure、destination 作成後の partial-copy failure と staging cleanup、cleanup failure、cleanup-before-finalize、同期 operation exception の exactly-once terminal state、unsafe follow-up home、prune 無効時の session/config 保持、MCP observe の server-name-only 契約を検証する。follow-up validation は `delegate-cli validate-followup` internal subcommand 経由で TS 実装を叩く。
 - `scripts/delegate-run.test.ts`: run / run-imagegen / run-x-research の one-shot 契約。
 - `scripts/delegate-mcp.test.ts` は TS 化に伴い削除し、MCP 抽出/描画のカバレッジは `shared/src/delegate-mcp.ts` の in-source test（fake codex CLI 含む）へ移設した。
 
@@ -286,6 +287,8 @@ backend の CLI 出力を observe JSON へ正規化する処理は `shared/src/o
 6. **テスト追加**: 価格解決やコスト推定の挙動が変わる場合（新 provider、prefix 解決、alias 変更等）は `shared/src/observe-cost.ts` の in-source test にケースを追加する
 7. **検証**: `npm run sync-shared:check` / `vp check` / `npm test`
 
+`opencode models --verbose` の `name` は catalog 側で重複することがある（`opencode/x-preview-f-free` と `opencode-go/ox-alpha-free` が同じ表示名を返す実例がある）。価格表の `display_name` はチャートの軸ラベルに使うため、重複する場合だけ model ID から読める名前へ置き換える。単価は catalog の値をそのまま使い、置き換えない。
+
 ### Cursor catalog drift の確認
 
 Cursor は catalog 側の model 名と effort の渡し方を予告なく変える。`shared/src/wrapper-cursor.ts` の `cursorCliModelOf` は「実 CLI で受理を確認できた変換だけを持つ」テーブルなので、変えたつもりがなくても陳腐化する。Cursor 関連のモデルを追加・変更するとき、および Cursor backend の委譲が `Cannot use this model` で失敗したときは次を確認する。
@@ -300,6 +303,20 @@ agent --list-models
 - 実効値は run 後の隔離 cli-config（`selectedModel` / `modelParameters`）で確認できる。`CURSOR_CONFIG_DIR` を一時ディレクトリへ向けて 1 回 run し、期待した effort が記録されるかを見る。既定値を確認したいときは別の値を seed してから run し、上書きされるかで判定する
 
 drift は実行時にも検知できる。Cursor の model 解決失敗は `shared/src/failure-classify.ts` の signature で分類され、observe JSON の `error.kind`（`read-json.sh .error.kind`）に出る。`error.model` は**子 CLI が拒否した backend 側の文字列**で、delegate の指定子（`run.model` / `usage.model`）とは別物である点に注意する。
+
+### opencode catalog drift の確認
+
+opencode は catalog 側の model 名と variant（effort）を予告なく変える。opencode 関連のモデルを追加・変更するとき、および opencode backend の委譲が catalog に無いモデルで失敗したときは次を確認する。
+
+```sh
+opencode models --verbose
+```
+
+- **出力は JSON 配列ではない**。`<provider>/<model>` の行と、その直後の JSON ブロックの繰り返しである
+- **`variants` に有効な effort 名が入る**。非対応モデルは空オブジェクトになる。値はモデルごとに異なる
+- **`cost` に単価が入る**（input / output / cache read / write）。価格表の一次ソースはこの catalog cost である
+
+catalog 照合は参考情報であり allowlist ではない。実行時の失敗分類は Cursor と同様に observe JSON の `error.kind` に出る。
 
 ## git hooks（pre-commit）
 

@@ -13,7 +13,7 @@ allowed-tools: Bash(bash .claude/skills/delegate-implement/scripts/run.sh:*), Ba
 
 # delegate-implement
 
-コード実装を委譲する。task_type=`implement`、既定モデル `sonnet`（編集の判断を要するため）。実行系分岐（Codex / Devin / Cursor / Claude）は `dispatch.sh` が行う。
+コード実装を委譲する。task_type=`implement`、既定モデル `sonnet`（編集の判断を要するため）。実行系分岐（Codex / Devin / Cursor / Claude / OpenCode）は `dispatch.sh` が行う。`opencode/<provider>/<model>` を使う場合は `opencode` CLI（ログイン済み）が必要。
 
 ## スクリプトパス
 
@@ -40,7 +40,7 @@ implement は、調査・編集・検証を worker にまとめて任せる価�
    - exit code は内部スクリプトを透過する。exit 3=前提不足 / exit 4=委譲サイクルなら中止する。
    - run は dispatch 前に `observe_file: <path>` を stderr へ先出しする。強制終了時はその path を復旧経路にする。
    - 非対話モードの親（`claude -p` 等）では run を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。
-3. **レスポンス消費と検証**: `status="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .status)"` / `content="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .content)"` を読む。`content_truncated` が `true` なら `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .response_file)"` を取り出し、`bash .claude/skills/delegate-implement/scripts/read-response.sh "$response_file" <N>` で Verification / Changed files など必要 section だけ段階読みする。読了後、worker の本文を **要約し直さない（echo しない）**。`status` が `completed` でない時、pass 申告の裏取りが要る時、差分が広い時、worker が Verification にリスクや未検証項目を書いた時は main 側で `git diff` / test result を裏取りする。
+3. **レスポンス消費と検証**: `status="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .status)"` / `content="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .content)"` を読む。`content_truncated` が `true` なら `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .response_file)"` を取り出し、`bash .claude/skills/delegate-implement/scripts/read-response.sh "$response_file" <N>` で Verification / Changed files など必要 section だけ段階読みする。読了後、worker の本文を **要約し直さない（echo しない）**。`status` が `failed` なら Error section をユーザーへ伝える。`completed` でも Summary 先頭に警告行があればその旨を伝える（警告は response 本体に載るので selector に関わらず Summary とともに返る）。`status` が `completed` でない時、pass 申告の裏取りが要る時、差分が広い時、worker が Verification にリスクや未検証項目を書いた時は main 側で `git diff` / test result を裏取りする。
 
 ## 高度なフロー（個別スクリプト）
 
@@ -50,15 +50,15 @@ dispatch 中の observe 監視、background 実行、resumable / follow-up な�
    - ユーザーが会話でモデルや effort を指定した場合は、prepare 呼び出しにインライン env を前置する（例: `DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high bash .../prepare.sh ...`）。prepare が exit 6 の場合は、許容値列挙を含む stderr の 1 行をそのままユーザーへの説明に使う。
    - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-implement/scripts/prepare.sh implement DELEGATE_IMPLEMENT_MODEL sonnet "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID")"`（top-level 起動なら `$PARENT_TASK_TYPE_CHAIN` は空でよい）
    - `model="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .model)"` / `request_file="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .request_file)"` / `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .response_file)"` / `run_dir="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .run_dir)"` / `observe_file="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .observe_file)"`
-2. **実行**: `bash .claude/skills/delegate-implement/scripts/dispatch.sh "$model" implement "$request_file" "$response_file" "$run_dir" "$observe_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude）は dispatch.sh が行う。stdout は response_file のパスのみ。非対話モードの親（`claude -p` 等）では dispatch を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを read-json.sh で読む。`state.phase` は `prepared | running | superseded | stalled | ended`。`prepared` / `superseded` は dispatch されなかった observe（`state.started_at == null`、`usage` は未設定で read-json.sh では null 相当）なので、usage を集計する場合は分母から除外する。
-3. **レスポンス読み取り**: `bash .claude/skills/delegate-implement/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合は status + index + Summary section を返すので、Verification / Changed files など必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
+2. **実行**: `bash .claude/skills/delegate-implement/scripts/dispatch.sh "$model" implement "$request_file" "$response_file" "$run_dir" "$observe_file"`。モデル名プレフィックスによる実行系分岐（Codex / Devin / Cursor / Claude / OpenCode）は dispatch.sh が行う。stdout は response_file のパスのみ。非対話モードの親（`claude -p` 等）では dispatch を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。実行中の通常監視は `observe_file` から `state.phase` / `state.started_at` / `heartbeat.ts` / `heartbeat.stdout_bytes` / `heartbeat.stderr_bytes` / `heartbeat.last_stream_change_at` だけを read-json.sh で読む。`state.phase` は `prepared | running | superseded | stalled | ended`。`prepared` / `superseded` は dispatch されなかった observe（`state.started_at == null`、`usage` は未設定で read-json.sh では null 相当）なので、usage を集計する場合は分母から除外する。
+3. **レスポンス読み取り**: `bash .claude/skills/delegate-implement/scripts/read-response.sh "$response_file" auto`。`auto` は response が小さい（既定 10KB 未満）なら status と全 section を 1 回で丸読みし、大きい場合は status + index + Summary section を返すので、Verification / Changed files など必要 section だけ `... "$response_file" <N>` で追加取得する。読了後、worker の本文を **要約し直さない（echo しない）**。`status` が `failed` なら Error section をユーザーへ伝える。`completed` でも Summary 先頭に警告行があればその旨を伝える（警告は response 本体に載るので selector に関わらず Summary とともに返る）。main のユーザー向け応答は Summary を指す 1 行に留める（main の出力＝課金トークンを増やさないため。spec.md §6）。
 4. **検証フェーズ（必須）**: `status` を先に確認し、必要時のみ Verification / Changed files section を引く。決定論的検証（`vp check` の lint/型・テスト）の exit code は信頼し、意味的・受け入れ基準は Summary と `git diff` を中心に確認する。`status` が `completed` でない時、pass 申告の裏取りが要る時、差分が広い時、worker が Verification にリスクや未検証項目を書いた時は main 側で `git diff` / test result を裏取りする
 
 ## セッション再利用（resumable / follow-up）
 
 resumable / follow-up は one-shot 対象外のため、個別スクリプトを使う。
 
-既定は通常 run。複数ファイル実装や大きめ修正など、親レビューで差し戻す可能性が高い場合だけ初回から resumable initial run を明示する。過剰使用しない。
+既定は通常 run。複数ファイル実装や大きめ修正など、親レビューで差し戻す可能性が高い場合だけ初回から resumable initial run を明示する。過剰使用しない。Claude / Codex / Devin / Cursor / OpenCode が resumable / follow-up に対応する。
 
 - resumable initial run: `prepare.sh` の第 6 引数に `resumable` を渡す。dispatch は第 7 引数に `resumable`、第 8・9 引数に空文字を渡す。
   - `out="$(printf '%s' "$req_md" | bash .claude/skills/delegate-implement/scripts/prepare.sh implement DELEGATE_IMPLEMENT_MODEL sonnet "$PARENT_TASK_TYPE_CHAIN" "$REQUESTER_SESSION_ID" resumable)"`
@@ -80,3 +80,6 @@ resumable / follow-up は one-shot 対象外のため、個別スクリプトを
 - 編集は可。ただし **push はしない**（push・PR は親エージェントが直接扱う）
 - task_type_chain 内種別への再委譲はしない（別種別 delegate は可）
 - main は worker 出力を echo / 再要約しない。ユーザー向けは Summary を指す 1 行に留める（出力＝課金トークンを増やさないため。spec.md §6）
+- OpenCode: cwd 外への出力は保証されない（direct な edit / write と明示パスの読み取りは拒否され、bash のリダイレクトは通る）。出力先を cwd 外に指定すると成功は保証されない。request が `DELEGATE_REQUEST_INLINE_MAX` を超えると child 起動前に fail-closed する
+- OpenCode の read-only 抑止は管理者設定のない環境を前提とする（管理者設定は注入した permission を override し得る）
+- この種別は project plugin を継承する。`DELEGATE_OPENCODE_PURE` が `1` / `true` / `yes` なら `--pure` を付けて無効化する（read-only 種別と htmldoc は既定で `--pure`）。`DELEGATE_OPENCODE_MCP_SOURCE`（`claude` / `cursor` / `codex`）で MCP 入力元を明示し、未指定なら注入しない

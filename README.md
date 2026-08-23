@@ -9,13 +9,13 @@
 
 **A skill set for LLM agents that delegates implementation, exploration, review, and chores to a subagent running a cheaper model or a model from another vendor (Claude → Codex, etc.) — compressing token cost.**
 
-Keep an expensive model as the main agent and offload routine "read, investigate, fix" work to a cheaper-model child process. For example, when the main agent is Claude Fable 5 (input \$10 / output \$50 per 1M tokens), delegating code exploration to Claude Haiku 4.5 (\$1 / \$5) cuts the token cost of that work to 1/10. Delegation targets are not limited to Claude models: models available through Codex (`gpt-*`), Devin CLI, and Cursor agent CLI can be selected by model name alone. Results come back through files and are read incrementally, so the main agent's context stays small.
+Keep an expensive model as the main agent and offload routine "read, investigate, fix" work to a cheaper-model child process. For example, when the main agent is Claude Fable 5 (input \$10 / output \$50 per 1M tokens), delegating code exploration to Claude Haiku 4.5 (\$1 / \$5) cuts the token cost of that work to 1/10. Delegation targets are not limited to Claude models: models available through Codex (`gpt-*`), Devin CLI, Cursor agent CLI, and opencode CLI can be selected by model name alone. Results come back through files and are read incrementally, so the main agent's context stays small.
 
 ## Features
 
 - **Token cost compression** — delegate read/write-heavy routine work to cheaper models, reserving the expensive model's consumption for decision-making and final responsibility
 - **Context isolation** — bulk file reading and trial-and-error logs stay in the child process; the main agent reads only the result's index → required sections
-- **Multi-CLI support** — works whether the requester is Claude Code, Codex, Devin CLI, or Cursor, and delegation targets across the same four backends are selected by model name alone
+- **Multi-CLI support** — works whether the requester is Claude Code, Codex, Devin CLI, or Cursor, and delegation targets across Claude, Codex, Devin, Cursor, and opencode are selected by model name alone
 - **Capability bridge** — bridges capabilities the main agent lacks, such as image generation (`delegate-imagegen`) and x.com research (`delegate-x-research`), through child processes
 - **Fail-safe design** — recursion guard for multi-hop delegation, fail-closed on missing preconditions, and tool-permission limits such as no-push / read-only for delegation targets
 
@@ -29,6 +29,7 @@ Keep an expensive model as the main agent and offload routine "read, investigate
 - When using `gpt-*`: the `codex` CLI (logged in)
 - When using `swe-*` / `devin-*`: the `devin` CLI (logged in)
 - When using `composer-*` / `cursor-*`: the Cursor agent CLI (command name `agent`; logged in or `CURSOR_API_KEY` set)
+- When using `opencode/*`: the `opencode` CLI (logged in)
 - When using `delegate-x-research` with the current backend: the `grok` CLI (logged in, with access to X research)
 
 When using Codex as the requester, add the following to `.codex/config.toml` in the project where you installed the delegate skills, then restart Codex:
@@ -103,12 +104,15 @@ The model-name prefix selects the execution backend:
 | `gpt-*`                               | Codex            |
 | `swe-*` / `devin-*`                   | Devin CLI        |
 | `composer-*` / `cursor-*`             | Cursor agent CLI |
+| `opencode/<provider>/<model>`         | opencode CLI     |
 
 Each backend runs as a child process and exchanges request/response files with the main agent, keeping detailed work out of the main context. Runs are one-shot by default. See [protocol-v1](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fprotocol-v1.md) and [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for details.
 
 ### Resumable worker sessions
 
-For larger `delegate-implement` or `delegate-chore` tasks that may need a review/fix loop, the main agent can opt into a resumable session. If resume validation fails, it does not silently start a replacement; the agent issues a normal run instead. Claude, Codex, Devin, and Cursor support this mode.
+For larger `delegate-implement` or `delegate-chore` tasks that may need a review/fix loop, the main agent can opt into a resumable session. If resume validation fails, it does not silently start a replacement; the agent issues a normal run instead. Claude, Codex, Devin, Cursor, and opencode support this mode.
+
+OpenCode does not guarantee output outside the repository cwd: direct edit/write and explicit-path reads are rejected, while bash redirects can still write. The edit/write block for read-only task types assumes an environment without a managed OpenCode config, which can override the permissions delegate-skills injects. If the request exceeds `DELEGATE_REQUEST_INLINE_MAX`, the run fails before the child starts. Catalog lookup is advisory, not an allowlist; `retryable` is a classification hint, not an instruction to retry automatically.
 
 ## Skills
 
@@ -147,27 +151,29 @@ Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
 ### Advanced settings
 
-| Variable                                 | Default                          | Purpose                                                                   |
-| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                    | Response inline/stepwise threshold                                        |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes (`0` = unlimited)  | Maximum inline content in one-shot JSON output                            |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                   | Maximum request embedded in the worker prompt                             |
-| `DELEGATE_METRICS_FILE`                  | unset                            | Optional JSONL telemetry output                                           |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                     | Observe heartbeat interval                                                |
-| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` seconds                     | Observe lock timeout                                                      |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection) | Claude child Bash timeout                                                 |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (`0` = keep)                 | Prune successful-run caches; auth is always removed                       |
-| `DELEGATE_CODEX_HOOKS`                   | `1` (`0`/`false`/`no` = off)     | Run project hooks on Codex `implement`/`chore` runs (bypasses hook trust) |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                   | Stop a child after this many seconds without stream growth                |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)  | Maximum stdout/stderr retained in observe JSON                            |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                   | Delete old per-run scratch directories                                    |
+| Variable                                 | Default                          | Purpose                                                                                                             |
+| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                    | Response inline/stepwise threshold                                                                                  |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes (`0` = unlimited)  | Maximum inline content in one-shot JSON output                                                                      |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                   | Maximum request embedded in the worker prompt                                                                       |
+| `DELEGATE_METRICS_FILE`                  | unset                            | Optional JSONL telemetry output                                                                                     |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                     | Observe heartbeat interval                                                                                          |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` seconds                     | Observe lock timeout                                                                                                |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection) | Claude child Bash timeout                                                                                           |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (`0` = keep)                 | Prune successful-run caches; auth is always removed                                                                 |
+| `DELEGATE_CODEX_HOOKS`                   | `1` (`0`/`false`/`no` = off)     | Run project hooks on Codex `implement`/`chore` runs (bypasses hook trust)                                           |
+| `DELEGATE_OPENCODE_PURE`                 | unset (off)                      | `1` / `true` / `yes` extends `--pure` to every task type. `explore` / `review` / `htmldoc` always run with `--pure` |
+| `DELEGATE_OPENCODE_MCP_SOURCE`           | unset (do not inject)            | `claude` / `cursor` / `codex` selects the MCP source; unset means do not inject                                     |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                   | Stop a child after this many seconds without stream growth                                                          |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)  | Maximum stdout/stderr retained in observe JSON                                                                      |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                   | Delete old per-run scratch directories                                                                              |
 
 ### Work files and telemetry
 
 For reproducible local debugging and external watchdogs, set `DELEGATE_WORK_DIR=.temp/delegate/work` so request, response, observe JSON, and per-run scratch files stay under a repo-local ignored directory.
 Set `DELEGATE_RUN_RETENTION_DAYS` to prune old per-run scratch directories in that work directory; request, response, and observe JSON files are kept for audit/debugging.
 Completed runs record usage and timing in observe JSON. Usage is marked `measured` when the backend exposes it; otherwise, a request/response-only estimate is recorded and must not be compared with measured usage. Set `DELEGATE_METRICS_FILE` for JSONL telemetry and use `scripts/summarize-metrics.ts` to aggregate it. See [spec.md](https://mkdn.review/?url=https%3A%2F%2Fgithub.com%2Foubakiou%2Fdelegate-skills%2Fblob%2Fmain%2Fdocs%2Fdesign%2Fspec.md) for the field-level contract.
-When a child CLI fails with a recognized model-resolution error signature (currently Devin and Cursor), the run's observe JSON records the classification (transient vs permanent) in `error`, and the parent can read it with `read-json.sh .error.kind`. Unrecognized failures leave `error` absent.
+When a child CLI fails with a recognized model-resolution error signature (currently Devin and Cursor), the run's observe JSON records the classification (transient vs permanent) in `error`, and the parent can read it with `read-json.sh .error.kind`. Unrecognized failures leave `error` absent. OpenCode records catalog misses as `error.kind = model_catalog_miss` (advisory lookup, not an allowlist).
 
 ## Models and reasoning effort
 
@@ -175,12 +181,13 @@ When a child CLI fails with a recognized model-resolution error signature (curre
 
 Use these documented names with `DELEGATE_<TYPE>_MODEL`:
 
-| Runtime          | Model names                                                                                                                                                                                                                                                                                                                          | Notes                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`, `claude-fable-5`, `claude-opus-5`, `claude-opus-5[1m]`, `claude-opus-4-8`, `claude-opus-4-8[1m]`, `claude-sonnet-5`, `claude-sonnet-5[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5`                                                                                                              | Aliases for Claude family models, plus full `claude-*` model IDs for version pinning (`[1m]` = 1M-context variant) |
-| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                                                                                                                                      | `delegate-imagegen` only accepts the `gpt*` / Codex branch                                                         |
-| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`, `devin-nemotron-3-ultra`, `devin-kimi-k3`                                                                                                                                                                                       | `devin-*` strips the prefix before passing the model to Devin CLI                                                  |
-| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-grok-4.6`, `cursor-grok-4.6-fast`, `cursor-gemini-3.1-pro`, `cursor-gemini-3.6-flash-minimal`, `cursor-gemini-3.6-flash-low`, `cursor-gemini-3.6-flash-medium`, `cursor-gemini-3.6-flash-high`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` strips the backend selector once, then converts per model (e.g. grok effort → a catalog slug)           |
+| Runtime          | Model names                                                                                                                                                                                                                                                                                                                          | Notes                                                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Claude CLI       | `fable`, `opus`, `sonnet`, `haiku`, `claude-fable-5`, `claude-opus-5`, `claude-opus-5[1m]`, `claude-opus-4-8`, `claude-opus-4-8[1m]`, `claude-sonnet-5`, `claude-sonnet-5[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5`                                                                                                              | Aliases for Claude family models, plus full `claude-*` model IDs for version pinning (`[1m]` = 1M-context variant)     |
+| Codex CLI        | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex-spark`                                                                                                                                                                                      | `delegate-imagegen` only accepts the `gpt*` / Codex branch                                                             |
+| Devin CLI        | `swe-1.7`, `swe-1.7-lightning`, `swe-1.6`, `swe-1.6-fast`, `devin-glm-5.2`, `devin-deepseek-v4-pro`, `devin-nemotron-3-ultra`, `devin-kimi-k3`                                                                                                                                                                                       | `devin-*` strips the prefix before passing the model to Devin CLI                                                      |
+| Cursor agent CLI | `composer-2.5`, `composer-2.5-fast`, `cursor-grok-4.5`, `cursor-grok-4.6`, `cursor-grok-4.6-fast`, `cursor-gemini-3.1-pro`, `cursor-gemini-3.6-flash-minimal`, `cursor-gemini-3.6-flash-low`, `cursor-gemini-3.6-flash-medium`, `cursor-gemini-3.6-flash-high`, `cursor-kimi-k2.7-code`, `cursor-glm-5.2-high`, `cursor-glm-5.2-max` | `cursor-*` strips the backend selector once, then converts per model (e.g. grok effort → a catalog slug)               |
+| opencode CLI     | `opencode/opencode-go/glm-5.2`                                                                                                                                                                                                                                                                                                       | Notation is `opencode/<provider>/<model>` (provider required). Round-trip verified; pick others from `opencode models` |
 
 The list above is documented support, not a hard allowlist. The target CLI must also expose the requested model. `delegate-x-research` uses `DELEGATE_X_RESEARCH_MODEL` instead, with documented model `grok-build`.
 
@@ -200,9 +207,10 @@ DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 | `cursor-grok-4.5`                          | `low`, `medium`, `high`                          | Converted to the catalog slug `cursor-grok-4.5-<effort>`                  |
 | `cursor-grok-4.6` / `cursor-grok-4.6-fast` | `low`, `medium`, `high`, `xhigh`                 | Converted to `cursor-grok-4.6-<effort>` / `cursor-grok-4.6-<effort>-fast` |
 | `devin-kimi-k3`                            | `low`, `high`, `max`                             | Converted to the Devin model variant slug (`kimi-k3-high`, etc.)          |
+| OpenCode                                   | Passed through to `--variant`                    | Delegate does not validate the value                                      |
 | Other Devin models, imagegen, X research   | Not supported                                    | No effort suffix                                                          |
 
-Invalid values and unsupported combinations stop before dispatch. Do not combine a Cursor model slug that already encodes the effort with an `@...` suffix.
+Invalid values and unsupported combinations stop before dispatch, except OpenCode effort. OpenCode passes `@<effort>` through to `--variant` without validating the value; when the catalog can be read and lists the requested model, an unsupported effort is reported after the run via the observe event `effort_unsupported` and a warning at the start of the response Summary; if the catalog cannot be read, no warning is emitted. Do not combine a Cursor model slug that already encodes the effort with an `@...` suffix.
 
 For Cursor models that use the `cursor-` selector, the selector is the delegate backend selector and must appear exactly once. A doubled prefix (`cursor-cursor-*`) or a direct grok effort catalog slug (`cursor-grok-4.5-low` / `-medium` / `-high`, `cursor-grok-4.6-low` / `-medium` / `-high` / `-xhigh`, or the corresponding `-fast` forms) stops before dispatch with exit 6; use the `cursor-grok-4.5[@<effort>]` or `cursor-grok-4.6[-fast][@<effort>]` notation instead. A follow-up that inherits one of these legacy notations from an existing session cannot resume (exit 5); start a new resumable run with the corrected notation.
 
