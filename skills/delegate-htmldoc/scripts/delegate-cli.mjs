@@ -658,7 +658,7 @@ var lockEntryExists = (target) => {
 };
 var removeQuietly = (target) => {
 	try {
-		rmSync(target, { force: true });
+		unlinkSync(target);
 	} catch {}
 };
 var tryCreateLock = (lockPath, owner) => {

@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
+import { lstatSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 
 // bash 版 observe-json.sh の symlink lock と同一プロトコル。
@@ -63,7 +63,9 @@ const lockEntryExists = (target: string): boolean => {
 
 const removeQuietly = (target: string): void => {
   try {
-    rmSync(target, { force: true })
+    // lock の symlink target は "<pid> <token>" で実在パスではない。Node 24 の rmSync は
+    // dangling symlink を ENOENT 扱いして symlink 自体を残し、release が no-op になる
+    unlinkSync(target)
   } catch {
     // 除去失敗は次の周回・bounded wait に委ねる
   }
@@ -164,7 +166,7 @@ export const withObserveLock = <ResultType>(
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { writeFileSync, existsSync } = await import('node:fs')
+  const { writeFileSync } = await import('node:fs')
   const { createTestScratchDir } = await import('./test-scratch.ts')
 
   const makeLockTestDir = (): string => createTestScratchDir('observe-lock-test')
@@ -193,7 +195,7 @@ if (import.meta.vitest) {
         })
       }
       expect(maxConcurrent).toBe(1)
-      expect(existsSync(observeLockPath(observeFile, dir))).toBe(false)
+      expect(lockEntryExists(observeLockPath(observeFile, dir))).toBe(false)
     })
 
     it('releases only when the token matches the current owner', () => {
@@ -204,7 +206,7 @@ if (import.meta.vitest) {
       releaseObserveLock(lockPath, 'someone-else')
       expect(readlinkOrNull(lockPath)).toBe(`${process.pid} ${token}`)
       releaseObserveLock(lockPath, token)
-      expect(existsSync(lockPath)).toBe(false)
+      expect(lockEntryExists(lockPath)).toBe(false)
     })
   })
 
