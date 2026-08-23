@@ -34,6 +34,7 @@ interface FakeCliLog {
     CLAUDE_CONFIG_DIR: string | null
     CODEX_HOME: string | null
     CURSOR_CONFIG_DIR: string | null
+    OPENCODE_CONFIG_CONTENT: string | null
     TMPDIR: string | null
   }
 }
@@ -137,6 +138,7 @@ const readLog = (filePath: string): FakeCliLog => {
       CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
       CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
       CURSOR_CONFIG_DIR: stringOrNullValue(record.env.CURSOR_CONFIG_DIR),
+      OPENCODE_CONFIG_CONTENT: stringOrNullValue(record.env.OPENCODE_CONFIG_CONTENT),
       TMPDIR: stringOrNullValue(record.env.TMPDIR),
     },
     prompt: stringOrNullValue(record.prompt),
@@ -162,6 +164,7 @@ const readLogs = (filePath: string): FakeCliLog[] => {
         CLAUDE_CONFIG_DIR: stringOrNullValue(record.env.CLAUDE_CONFIG_DIR),
         CODEX_HOME: stringOrNullValue(record.env.CODEX_HOME),
         CURSOR_CONFIG_DIR: stringOrNullValue(record.env.CURSOR_CONFIG_DIR),
+        OPENCODE_CONFIG_CONTENT: stringOrNullValue(record.env.OPENCODE_CONFIG_CONTENT),
         TMPDIR: stringOrNullValue(record.env.TMPDIR),
       },
       prompt: stringOrNullValue(record.prompt),
@@ -516,7 +519,63 @@ if (reportFile) {
 console.log(JSON.stringify({type: 'result', subtype: 'success', usage: {inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0}}))
 `
 
-type Backend = 'claude' | 'codex' | 'devin' | 'cursor'
+const OPENCODE_FAKE_SESSION_ID = 'ses_fake_opencode_1'
+const OPENCODE_FAKE_MODEL = 'opencode/opencode-go/glm-5.2'
+const OPENCODE_CLI_MODEL = 'opencode-go/glm-5.2'
+const OPENCODE_EFFORT_WARNING =
+  'Warning: requested effort is not listed in the model catalog variants.'
+const OPENCODE_TASK_TYPES = ['explore', 'implement', 'chore', 'review', 'htmldoc'] as const
+
+const opencodeFakeScript = (): string => `#!/usr/bin/env node
+import fs from 'node:fs'
+const args = process.argv.slice(2)
+const loggedEnv = () => ({
+  OPENCODE_CONFIG_CONTENT: process.env.OPENCODE_CONFIG_CONTENT,
+  TMPDIR: process.env.TMPDIR,
+})
+const appendAux = () => {
+  fs.appendFileSync(process.env.FAKE_CLI_LOG + '.aux', JSON.stringify({args, cwd: process.cwd(), env: loggedEnv()}) + '\\n')
+}
+if (args[0] === '--version') {
+  appendAux()
+  console.log('1.18.21')
+  process.exit(0)
+}
+if (args[0] === 'models') {
+  appendAux()
+  console.log('${OPENCODE_CLI_MODEL}')
+  console.log(JSON.stringify({id: 'glm-5.2', providerID: 'opencode-go', variants: {high: {}, max: {}}}))
+  process.exit(0)
+}
+if (args[0] === 'export') {
+  appendAux()
+  console.log('Exporting session: ' + (args[1] || ''))
+  console.log(JSON.stringify({info: {model: {id: 'glm-5.2', providerID: 'opencode-go', variant: 'high'}}, messages: []}))
+  process.exit(0)
+}
+if (args[0] === 'session') {
+  appendAux()
+  process.exit(0)
+}
+let prompt = ''
+try { prompt = fs.readFileSync(0, 'utf8') } catch {}
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, command: 'opencode', cwd: process.cwd(), env: loggedEnv()}))
+if (process.env.FAKE_OPENCODE_EXIT_WITHOUT_RESPONSE === '1') process.exit(9)
+if (process.env.FAKE_OPENCODE_NO_TEXT !== '1') {
+  const status = process.env.FAKE_OPENCODE_FAILED_RESPONSE === '1' ? 'failed' : 'completed'
+  const report = '---\\nstatus: ' + status + '\\n---\\n# Summary\\nok\\n'
+  const sessionID = '${OPENCODE_FAKE_SESSION_ID}'
+  console.log(JSON.stringify({type: 'text', sessionID, part: {text: report}}))
+  console.log(JSON.stringify({type: 'step_finish', sessionID, part: {tokens: {input: 4, output: 2, reasoning: 1, cache: {read: 3, write: 1}}, cost: 0.125}}))
+}
+if (process.env.FAKE_OPENCODE_SIGNAL_SELF === '1') {
+  process.kill(process.pid, 'SIGTERM')
+  await new Promise(() => {})
+}
+if (process.env.FAKE_OPENCODE_EXIT_CODE) process.exit(Number(process.env.FAKE_OPENCODE_EXIT_CODE))
+`
+
+type Backend = 'claude' | 'codex' | 'devin' | 'cursor' | 'opencode'
 
 const fakeScript = (name: Backend): string => {
   if (name === 'claude') {
@@ -527,6 +586,9 @@ const fakeScript = (name: Backend): string => {
   }
   if (name === 'devin') {
     return devinFakeScript()
+  }
+  if (name === 'opencode') {
+    return opencodeFakeScript()
   }
   return cursorFakeScript()
 }
@@ -624,7 +686,8 @@ const runWrapper = (
     | 'delegate-claude.sh'
     | 'delegate-codex.sh'
     | 'delegate-devin.sh'
-    | 'delegate-cursor.sh',
+    | 'delegate-cursor.sh'
+    | 'delegate-opencode.sh',
   args: string[],
   env: NodeJS.ProcessEnv
 ): { status: number } => {
@@ -729,6 +792,114 @@ const runCursorTaskType = (
   env: NodeJS.ProcessEnv = fixture.env
 ): { status: number } =>
   runWrapper('delegate-cursor.sh', taskTypeArgs(fixture, 'cursor-glm-5.2-high', taskType), env)
+
+const opencodeArgs = (fixture: Fixture, modeArgs: string[] = []): string[] => [
+  OPENCODE_FAKE_MODEL,
+  'implement',
+  fixture.requestFile,
+  fixture.responseFile,
+  fixture.runDir,
+  fixture.observeFile,
+  ...modeArgs,
+]
+
+const runOpencode = (
+  fixture: Fixture,
+  modeArgs: string[] = [],
+  env: NodeJS.ProcessEnv = fixture.env
+): { status: number } => runWrapper('delegate-opencode.sh', opencodeArgs(fixture, modeArgs), env)
+
+const runOpencodeTaskType = (
+  fixture: Fixture,
+  taskType: string,
+  options: { env?: NodeJS.ProcessEnv; model?: string } = {}
+): { status: number } =>
+  runWrapper(
+    'delegate-opencode.sh',
+    taskTypeArgs(fixture, options.model ?? OPENCODE_FAKE_MODEL, taskType),
+    options.env ?? fixture.env
+  )
+
+const parseLoggedOpencodeConfig = (log: FakeCliLog): unknown => {
+  const raw = log.env.OPENCODE_CONFIG_CONTENT
+  if (raw === null || raw === '') {
+    return null
+  }
+  return JSON.parse(raw)
+}
+
+const opencodePermissionConfig = (taskType: string): Record<string, unknown> => {
+  if (taskType === 'explore' || taskType === 'review') {
+    return { permission: { edit: 'deny' } }
+  }
+  return {}
+}
+
+const opencodeUsesPure = (taskType: string): boolean =>
+  taskType === 'explore' || taskType === 'review' || taskType === 'htmldoc'
+
+const auxCallsOf = (fixture: Fixture): string[][] => {
+  const sentinel = `${fixture.logFile}.aux`
+  if (!existsSync(sentinel)) {
+    return []
+  }
+  return readFileSync(sentinel, 'utf8')
+    .trimEnd()
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line): string[] => {
+      const record: unknown = JSON.parse(line)
+      if (!isRecord(record) || !Array.isArray(record.args)) {
+        throw new Error('invalid opencode aux log')
+      }
+      return record.args.map(String)
+    })
+}
+
+const auxHasSessionDelete = (fixture: Fixture, sessionId: string): boolean =>
+  auxCallsOf(fixture).some(
+    (args) => args[0] === 'session' && args[1] === 'delete' && args[2] === sessionId
+  )
+
+const readObserveUsage = (filePath: string): Record<string, unknown> | null => {
+  const value = readUnknownJson(filePath)
+  if (!isRecord(value) || !isRecord(value.usage)) {
+    return null
+  }
+  return value.usage
+}
+
+const expectOpencodeStoppedBeforeChild = (
+  fixture: Fixture,
+  result: { status: number },
+  status: number
+): void => {
+  expect(result.status).toBe(status)
+  expect(readResponseStatus(fixture.responseFile)).toBe('failed')
+  expect(existsSync(fixture.logFile)).toBe(false)
+  expect(auxCallsOf(fixture)).toEqual([])
+}
+
+const expectedOpencodeInjectedMcp = {
+  alpha: {
+    type: 'local',
+    command: ['alpha-server', '--fast'],
+    environment: { TOKEN: 'secret' },
+    enabled: true,
+  },
+  beta: {
+    type: 'remote',
+    url: 'https://example.test/mcp',
+    enabled: true,
+  },
+}
+
+const expectOpencodeRunArgv = (log: FakeCliLog, extras: string[] = []): void => {
+  expect(log.args.slice(0, 5)).toEqual(['run', '--format', 'json', '-m', OPENCODE_CLI_MODEL])
+  expect(log.args.slice(5)).toEqual(extras)
+  expect(log.prompt).toContain('<request>')
+  expect(log.args.join('\0')).not.toContain('<request>')
+}
 
 // request が prompt へ埋め込まれる既定経路では read-request.sh の許可も不要
 const claudeMinimalAllowedTools = (): string => 'Read'
@@ -3096,6 +3267,20 @@ const structuredParseFrom = (observeFile: string): boolean | null => {
   return null
 }
 
+const expectOpencodeStdoutProtocol = (
+  fixture: Fixture,
+  result: { status: number },
+  log: FakeCliLog
+): void => {
+  const response = protocolResponse(fixture.responseFile)
+  expect(result.status).toBe(0)
+  expect(response.status).toBe('completed')
+  expect(response.responder_session_id).toMatch(/^opencode:/)
+  expect(response.sections.join('\n')).toContain('# Summary')
+  expect(structuredParseFrom(fixture.observeFile)).toBeNull()
+  expect(log.prompt).toContain('最終応答として front-matter 付き Markdown')
+}
+
 describe('wrapper report collection', () => {
   it('builds the response from the claude structured final answer', () => {
     const fixture = makeFixture('claude')
@@ -3407,5 +3592,277 @@ describe('argv-path inline gate', () => {
 
     expect(result.status).toBe(0)
     expect(prompt).toContain('<request>')
+  })
+})
+
+describe('delegate-opencode.sh argv and stdin', () => {
+  it('runs with run --format json -m and a stdin prompt, not a positional prompt', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture)
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.cwd).toBe(repoRoot)
+    expectOpencodeRunArgv(log)
+    expect(log.prompt).toContain('task_type=implement')
+  })
+
+  it('passes --variant when an effort suffix is specified', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencodeTaskType(fixture, 'implement', {
+      model: `${OPENCODE_FAKE_MODEL}@high`,
+    })
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expectOpencodeRunArgv(log, ['--variant', 'high'])
+  })
+})
+
+describe('delegate-opencode.sh session modes', () => {
+  it('keeps normal runs without -s and deletes the captured session', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture)
+    const log = readLog(fixture.logFile)
+    const observe = readObserve(fixture.observeFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args).not.toContain('-s')
+    expect(observe.backend_session).toBeNull()
+    expect(auxHasSessionDelete(fixture, OPENCODE_FAKE_SESSION_ID)).toBe(true)
+    expect(requireMcpConfig(observe).source).toBe('shared')
+  })
+
+  it('records resume_id for resumable runs and skips session delete', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, ['resumable', '', ''])
+    const log = readLog(fixture.logFile)
+    const backendSession = requireBackendSession(readObserve(fixture.observeFile))
+
+    expect(result.status).toBe(0)
+    expect(log.args).not.toContain('-s')
+    expect(backendSession.persistence).toBe('resumable')
+    expect(backendSession.resume_id).toBe(OPENCODE_FAKE_SESSION_ID)
+    expect(backendSession.resume_source).toBe('opencode_json')
+    expect(auxHasSessionDelete(fixture, OPENCODE_FAKE_SESSION_ID)).toBe(false)
+  })
+
+  it('resumes follow-up runs with -s and keeps the session', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, ['followup', OPENCODE_FAKE_SESSION_ID, ''])
+    const log = readLog(fixture.logFile)
+    const backendSession = requireBackendSession(readObserve(fixture.observeFile))
+
+    expect(result.status).toBe(0)
+    expectOpencodeRunArgv(log, ['-s', OPENCODE_FAKE_SESSION_ID])
+    expect(backendSession.resume_id).toBe(OPENCODE_FAKE_SESSION_ID)
+    expect(auxHasSessionDelete(fixture, OPENCODE_FAKE_SESSION_ID)).toBe(false)
+  })
+
+  it('fails closed before launching when the follow-up handle is missing', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, ['followup', '', ''])
+
+    expectOpencodeStoppedBeforeChild(fixture, result, 5)
+  })
+})
+
+describe('delegate-opencode.sh child failures', () => {
+  it('fails closed when the child exits without a stdout text event', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      FAKE_OPENCODE_NO_TEXT: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(1)
+    expect(response.status).toBe('failed')
+    expect(existsSync(fixture.logFile)).toBe(true)
+  })
+
+  it('forces a failed response when the child exits non-zero', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      FAKE_OPENCODE_EXIT_CODE: '7',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(7)
+    expect(response.status).toBe('failed')
+    expect(response.sections.join('\n')).toContain('# Error')
+  })
+
+  it('forces a failed response when the child receives a signal', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      FAKE_OPENCODE_SIGNAL_SELF: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(143)
+    expect(response.status).toBe('failed')
+  })
+})
+
+describe('delegate-opencode.sh config contract', () => {
+  it.each(OPENCODE_TASK_TYPES)(
+    'injects permission and --pure for %s according to the task type',
+    (taskType) => {
+      const fixture = makeFixture('opencode')
+      const result = runOpencodeTaskType(fixture, taskType)
+      const log = readLog(fixture.logFile)
+
+      expect(result.status).toBe(0)
+      expect(parseLoggedOpencodeConfig(log)).toEqual(opencodePermissionConfig(taskType))
+      expect(log.args.includes('--pure')).toBe(opencodeUsesPure(taskType))
+    }
+  )
+
+  it('discards the caller OPENCODE_CONFIG_CONTENT instead of inheriting it', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      OPENCODE_CONFIG_CONTENT: '{"leaked":true}',
+    })
+    const log = readLog(fixture.logFile)
+    const config = log.env.OPENCODE_CONFIG_CONTENT ?? ''
+
+    expect(result.status).toBe(0)
+    expect(config).not.toContain('leaked')
+    expect(parseLoggedOpencodeConfig(log)).toEqual({})
+  })
+
+  it.each([
+    { value: '1', enabled: true },
+    { value: 'true', enabled: true },
+    { value: ' YES ', enabled: true },
+    { value: '0', enabled: false },
+    { value: '', enabled: false },
+    { value: 'on', enabled: false },
+  ])('treats DELEGATE_OPENCODE_PURE=$value as enabled=$enabled', ({ value, enabled }) => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], { ...fixture.env, DELEGATE_OPENCODE_PURE: value })
+    const log = readLog(fixture.logFile)
+
+    expect(result.status).toBe(0)
+    expect(log.args.includes('--pure')).toBe(enabled)
+  })
+})
+
+describe('delegate-opencode.sh MCP source table', () => {
+  it('records shared and omits config.mcp when the source is unset', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture)
+    const config = parseLoggedOpencodeConfig(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(config).toEqual({})
+    expect(requireMcpConfig(readObserve(fixture.observeFile))).toEqual({
+      source: 'shared',
+      servers: [],
+    })
+  })
+
+  it('injects converted parent MCP and records injected server names', () => {
+    const fixture = makeFixture('opencode')
+    writeClaudeUserMcp(fixture)
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      DELEGATE_OPENCODE_MCP_SOURCE: 'claude',
+    })
+    const config = parseLoggedOpencodeConfig(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(config).toEqual({ mcp: expectedOpencodeInjectedMcp })
+    expectInjectedMcpObserve(readObserve(fixture.observeFile))
+    expectNoMcpPayloadInObserve(fixture.observeFile)
+  })
+
+  it('records none when extraction yields zero servers', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      DELEGATE_OPENCODE_MCP_SOURCE: 'claude',
+    })
+    const config = parseLoggedOpencodeConfig(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(config).toEqual({})
+    expect(requireMcpConfig(readObserve(fixture.observeFile))).toEqual({
+      source: 'none',
+      servers: [],
+    })
+  })
+
+  it('fails closed with exit 3 for an invalid MCP source before child start', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      DELEGATE_OPENCODE_MCP_SOURCE: 'gemini',
+    })
+
+    expectOpencodeStoppedBeforeChild(fixture, result, 3)
+  })
+})
+
+describe('delegate-opencode.sh stdout_text protocol matrix', () => {
+  it.each(OPENCODE_TASK_TYPES)('assembles stdout_text for %s', (taskType) => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencodeTaskType(fixture, taskType)
+    const log = readLog(fixture.logFile)
+
+    expectOpencodeStdoutProtocol(fixture, result, log)
+    expect(log.prompt).toContain(`task_type=${taskType}`)
+  })
+
+  it('records measured usage from step_finish', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture)
+
+    expect(result.status).toBe(0)
+    expect(readObserveUsage(fixture.observeFile)).toMatchObject({
+      backend: 'opencode',
+      cached_input_tokens: 3,
+      cache_write_tokens: 1,
+      cost_usd: 0.125,
+      input_tokens: 4,
+      measurement: 'measured',
+      model: OPENCODE_FAKE_MODEL,
+      output_tokens: 2,
+      reasoning_tokens: 1,
+      source: 'opencode_step_finish',
+      total_tokens: 6,
+    })
+  })
+
+  it('records effort_unsupported and inserts a Summary warning', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencodeTaskType(fixture, 'chore', {
+      model: `${OPENCODE_FAKE_MODEL}@low`,
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expect(result.status).toBe(0)
+    expect(response.status).toBe('completed')
+    expect(response.sections.join('\n')).toContain(OPENCODE_EFFORT_WARNING)
+    expect(readObserve(fixture.observeFile).event_kinds).toContain('effort_unsupported')
+  })
+})
+
+describe('delegate-opencode.sh request inline gate', () => {
+  it('fails closed before launching when the request exceeds the inline gate', () => {
+    const fixture = makeFixture('opencode')
+    const result = runOpencode(fixture, [], {
+      ...fixture.env,
+      DELEGATE_REQUEST_INLINE_MAX: '1',
+    })
+    const response = protocolResponse(fixture.responseFile)
+
+    expectOpencodeStoppedBeforeChild(fixture, result, 1)
+    expect(response.sections.join('\n')).toContain('request を分割する')
+    expect(response.sections.join('\n')).toContain('他 backend')
   })
 })

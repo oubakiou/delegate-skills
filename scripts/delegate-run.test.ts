@@ -75,6 +75,30 @@ if (lastMsgIndex !== -1) {
 console.log(JSON.stringify({type: 'turn.completed', usage: {input_tokens: 1, output_tokens: 1}}))
 `
 
+const fakeOpencodeScript = `#!/usr/bin/env node
+const args = process.argv.slice(2)
+if (args[0] === '--version') {
+  console.log('1.18.21')
+  process.exit(0)
+}
+if (args[0] === 'models') {
+  console.log('opencode-go/glm-5.2')
+  console.log(JSON.stringify({id: 'glm-5.2', providerID: 'opencode-go', variants: {high: {}, max: {}}}))
+  process.exit(0)
+}
+if (args[0] === 'export') {
+  console.log('Exporting session: ' + (args[1] || ''))
+  console.log(JSON.stringify({info: {model: {id: 'glm-5.2', providerID: 'opencode-go', variant: 'low'}}, messages: []}))
+  process.exit(0)
+}
+if (args[0] === 'session') process.exit(0)
+if (process.env.FAKE_OPENCODE_EXIT_WITHOUT_RESPONSE === '1') process.exit(9)
+if (process.env.FAKE_OPENCODE_EXIT_CODE) process.exit(Number(process.env.FAKE_OPENCODE_EXIT_CODE))
+const report = '---\\nstatus: completed\\n---\\n# Summary\\nok from fake opencode\\n'
+console.log(JSON.stringify({type: 'text', sessionID: 'ses_fake_opencode_1', part: {text: report}}))
+console.log(JSON.stringify({type: 'step_finish', sessionID: 'ses_fake_opencode_1', part: {tokens: {input: 1, output: 1, reasoning: 0, cache: {read: 0, write: 0}}, cost: 0}}))
+`
+
 interface Harness {
   env: NodeJS.ProcessEnv
   metricsFile: string
@@ -85,10 +109,14 @@ interface Harness {
 const DROPPED_ENV_KEYS = new Set([
   'DELEGATE_IMAGEGEN_MODEL',
   'DELEGATE_METRICS_FILE',
+  'DELEGATE_OPENCODE_MCP_SOURCE',
+  'DELEGATE_OPENCODE_PURE',
+  'DELEGATE_REQUEST_INLINE_MAX',
   'DELEGATE_RUN_CONTENT_MAX',
   'DELEGATE_RUN_TEST_MODEL',
   'DELEGATE_WORK_DIR',
   'DELEGATE_X_RESEARCH_MODEL',
+  'OPENCODE_CONFIG_CONTENT',
 ])
 
 const writeFakeCli = (binDir: string, name: string, script: string): void => {
@@ -103,6 +131,7 @@ const makeFakeBinDir = (workDir: string): string => {
   writeFakeCli(binDir, 'claude', fakeClaudeScript)
   writeFakeCli(binDir, 'grok', fakeGrokScript)
   writeFakeCli(binDir, 'codex', fakeCodexScript)
+  writeFakeCli(binDir, 'opencode', fakeOpencodeScript)
   return binDir
 }
 
@@ -325,6 +354,101 @@ describe('run.sh one-shot', () => {
     expect(outcome.status).toBe(0)
     expect(parseRunJson(outcome.stdout).content.trimEnd()).toBe('completed')
     expect(readResponseSelectors(harness)).toEqual(['status'])
+  })
+})
+
+const OPENCODE_ONESHOT_MODEL = 'opencode/opencode-go/glm-5.2'
+const OPENCODE_EFFORT_WARNING =
+  'Warning: requested effort is not listed in the model catalog variants.'
+
+const opencodeArgs = (selector = ''): string[] => {
+  const args = [
+    'shared/run.sh',
+    'chore',
+    'DELEGATE_RUN_TEST_MODEL',
+    OPENCODE_ONESHOT_MODEL,
+    '[]',
+    'run-test',
+  ]
+  if (selector !== '') {
+    args.push(selector)
+  }
+  return args
+}
+
+const runOpencodeOneShot = (
+  extraEnv: NodeJS.ProcessEnv = {},
+  selector = ''
+): { harness: Harness; outcome: RunOutcome } => {
+  const harness = makeHarness()
+  return {
+    harness,
+    outcome: runOneShot(harness, opencodeArgs(selector), {
+      DELEGATE_RUN_TEST_MODEL: OPENCODE_ONESHOT_MODEL,
+      ...extraEnv,
+    }),
+  }
+}
+
+describe('run.sh one-shot opencode', () => {
+  it('returns the single JSON contract via the opencode wrapper', () => {
+    const { outcome } = runOpencodeOneShot()
+    expect(outcome.status).toBe(0)
+    const json = parseRunJson(outcome.stdout)
+    expect(json.exit_code).toBe(0)
+    expect(json.status).toBe('completed')
+    expect(json.content).toContain('ok from fake opencode')
+    expect(json.content_truncated).toBe(false)
+    expectRunPaths(json)
+    expect(outcome.stderr).toContain('observe_file: ')
+  })
+
+  it('propagates a child exit code and surfaces the failed response', () => {
+    const { outcome } = runOpencodeOneShot({ FAKE_OPENCODE_EXIT_WITHOUT_RESPONSE: '1' })
+    expect(outcome.status).toBe(9)
+    const json = parseRunJson(outcome.stdout)
+    expect(json.exit_code).toBe(9)
+    expect(json.status).toBe('failed')
+    expectRunPaths(json)
+  })
+
+  it('passes an invalid opencode selector through as exit 6', () => {
+    const harness = makeHarness()
+    const outcome = runOneShot(harness, opencodeArgs(), {
+      DELEGATE_RUN_TEST_MODEL: 'opencode/glm-5.2',
+    })
+    expect(outcome.status).toBe(6)
+    const json = parseRunJson(outcome.stdout)
+    expect(json.exit_code).toBe(6)
+    expect(json.status).toBe('failed')
+    expectNullPaths(json)
+  })
+
+  it('puts effort_unsupported on the completed Summary content', () => {
+    const { outcome } = runOpencodeOneShot({
+      DELEGATE_RUN_TEST_MODEL: `${OPENCODE_ONESHOT_MODEL}@low`,
+    })
+    expect(outcome.status).toBe(0)
+    const json = parseRunJson(outcome.stdout)
+    expect(json.exit_code).toBe(0)
+    expect(json.status).toBe('completed')
+    expect(json.content).toContain(OPENCODE_EFFORT_WARNING)
+    expect(json.content).toContain('ok from fake opencode')
+    expectRunPaths(json)
+  })
+
+  it('surfaces model_catalog_miss in the Error section of a failed one-shot', () => {
+    const harness = makeHarness()
+    const outcome = runOneShot(harness, opencodeArgs(), {
+      DELEGATE_RUN_TEST_MODEL: 'opencode/opencode-go/missing-model',
+      FAKE_OPENCODE_EXIT_CODE: '1',
+    })
+    expect(outcome.status).toBe(1)
+    const json = parseRunJson(outcome.stdout)
+    expect(json.exit_code).toBe(1)
+    expect(json.status).toBe('failed')
+    expect(json.content).toContain('Cause: model_catalog_miss')
+    expectRunPaths(json)
   })
 })
 
