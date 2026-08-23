@@ -2309,7 +2309,8 @@ var RESUMABLE_BACKENDS = /* @__PURE__ */ new Set([
 	"claude",
 	"codex",
 	"devin",
-	"cursor"
+	"cursor",
+	"opencode"
 ]);
 var backendSupportsResume = (backend) => RESUMABLE_BACKENDS.has(backend);
 var unavailable = (message) => ({
@@ -6656,7 +6657,17 @@ var OPENCODE_VERSION_MAX_BYTES = 16384;
 var OPENCODE_AUX_TIMEOUT_MS = 1e4;
 var OPENCODE_MODELS_MAX_BYTES = 262144;
 var OPENCODE_EXPORT_MAX_BYTES = 2097152;
+var OPENCODE_SESSION_DELETE_TIMEOUT_MS = 2e3;
+var OPENCODE_SESSION_DELETE_MAX_BYTES = 16384;
 var OPENCODE_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+var OPENCODE_SESSION_EVENT_TYPES = /* @__PURE__ */ new Set([
+	"step_start",
+	"text",
+	"tool_use",
+	"step_finish",
+	"error"
+]);
+var OPENCODE_IDENTITY_READ_BYTES = 65536;
 var PURE_TASK_TYPES = /* @__PURE__ */ new Set([
 	"explore",
 	"review",
@@ -6752,6 +6763,8 @@ var auxLimitsOf = (limits, fallback) => {
 	if (typeof limits.maxBytes === "number") resolved.maxBytes = limits.maxBytes;
 	return resolved;
 };
+var auxSpawnTimedOut = (error) => typeof error !== "undefined" && "code" in error && error.code === "ETIMEDOUT";
+var auxSpawnFailed = (result) => Boolean(result.error) || result.status !== 0 || result.signal !== null;
 var opencodeAuxArgs = (args, pure) => {
 	if (pure) return [...args, "--pure"];
 	return [...args];
@@ -6772,15 +6785,18 @@ var runOpencodeAux = (input) => {
 	});
 	const stdout = result.stdout ?? "";
 	const stdoutBytes = Buffer.byteLength(stdout);
-	if (result.error || result.status !== 0 || result.signal !== null) return {
+	const timedOut = auxSpawnTimedOut(result.error);
+	if (auxSpawnFailed(result)) return {
 		ok: false,
 		stdout: "",
-		stdoutBytes: 0
+		stdoutBytes: 0,
+		timedOut
 	};
 	return {
 		ok: true,
 		stdout,
-		stdoutBytes
+		stdoutBytes,
+		timedOut: false
 	};
 };
 var auxResultAuthoritative = (result, maxBytes) => result.ok && result.stdoutBytes < maxBytes;
@@ -6813,6 +6829,27 @@ var fetchOpencodeExport = (input) => {
 	});
 	if (!auxResultAuthoritative(result, limits.maxBytes)) return null;
 	return result.stdout;
+};
+var deleteOpencodeSession = (input) => {
+	const limits = auxLimitsOf(input.limits ?? {}, {
+		timeoutMs: OPENCODE_SESSION_DELETE_TIMEOUT_MS,
+		maxBytes: OPENCODE_SESSION_DELETE_MAX_BYTES
+	});
+	const result = runOpencodeAux({
+		command: input.command,
+		args: opencodeAuxArgs([
+			"session",
+			"delete",
+			input.sessionID
+		], input.pure === true),
+		env: input.env,
+		cwd: input.cwd,
+		limits
+	});
+	return {
+		ok: result.ok,
+		timedOut: result.timedOut
+	};
 };
 var opencodePromptTailLines = [
 	"3. 作業完了後、最終応答として front-matter 付き Markdown だけを返す。先頭に",
@@ -6859,6 +6896,10 @@ var opencodeConfigContent = (taskType) => {
 	if (taskType === "explore" || taskType === "review") config.permission = { edit: "deny" };
 	return JSON.stringify(config);
 };
+var opencodeSessionCliArgs = (context) => {
+	if (context.args.sessionMode === "followup" && context.args.resumeArg !== "") return ["-s", context.args.resumeArg];
+	return [];
+};
 var opencodeCliArgs = (context, cliModel) => {
 	const args = [
 		"run",
@@ -6868,6 +6909,7 @@ var opencodeCliArgs = (context, cliModel) => {
 		cliModel
 	];
 	if (context.effort !== "") args.push("--variant", context.effort);
+	args.push(...opencodeSessionCliArgs(context));
 	if (usePureMode(context)) args.push("--pure");
 	return args;
 };
@@ -6912,26 +6954,10 @@ var inlineFailureTarget = (context) => ({
 	responseFile: context.args.responseFile,
 	runDir: context.workDir
 });
-var sessionModeFailureReport = (message) => [
-	"---",
-	"status: failed",
-	"---",
-	"# Summary",
-	"OpenCode session reuse is unavailable.",
-	"",
-	"# Error",
-	message,
-	""
-].join("\n");
-var finishSessionModeFailure = (context, exitCode, message) => {
-	const result = finishWithoutChild(context, exitCode, message);
-	buildResponseFromStdoutText(sessionModeFailureReport(message), inlineFailureTarget(context), context.env);
-	return result;
-};
 var sessionModeFailure = (context) => {
-	const { sessionMode } = context.args;
+	const { sessionMode, resumeArg } = context.args;
+	if (sessionMode === "followup" && resumeArg === "") return finishWithoutChild(context, 5, "ERROR: follow-up requires resume_id.");
 	if (sessionMode !== "" && sessionMode !== "resumable" && sessionMode !== "followup") return finishWithoutChild(context, 2, `ERROR: session_mode must be empty, resumable, or followup: ${sessionMode}`);
-	if (sessionMode === "resumable" || sessionMode === "followup") return finishSessionModeFailure(context, 5, "ERROR: opencode backend の session reuse は未実装です。");
 	return null;
 };
 var inlineFailureReport = (context) => {
@@ -6995,12 +7021,126 @@ var catalogForClassify = (catalog) => {
 	if (catalog === null) return { ok: false };
 	return catalog;
 };
-var sessionIdFromCapture = (captureFile) => {
-	const summary = summarizeOpencodeCapture(captureFile);
-	if (summary === null || summary.sessionID === null) return null;
-	if (!OPENCODE_SESSION_ID_PATTERN.test(summary.sessionID)) return null;
-	return summary.sessionID;
+var emptyOpencodeSessionIdentity = () => ({
+	id: null,
+	conflict: false
+});
+var opencodeIdentityScan = () => ({
+	identity: emptyOpencodeSessionIdentity(),
+	decoder: new StringDecoder("utf8"),
+	line: "",
+	lineBytes: 0,
+	totalBytes: 0,
+	overflowed: false
+});
+var recognizedOpencodeSessionId = (event) => {
+	if (typeof event.type !== "string" || !OPENCODE_SESSION_EVENT_TYPES.has(event.type)) return null;
+	if (typeof event.sessionID !== "string" || event.sessionID === "") return null;
+	if (!OPENCODE_SESSION_ID_PATTERN.test(event.sessionID)) return null;
+	return event.sessionID;
 };
+var acceptOpencodeSessionCandidate = (identity, candidate) => {
+	if (candidate === null || identity.conflict) return;
+	if (identity.id === null) {
+		identity.id = candidate;
+		return;
+	}
+	if (identity.id !== candidate) {
+		identity.conflict = true;
+		identity.id = null;
+	}
+};
+var consumeOpencodeSessionLine = (line, identity) => {
+	const value = parseJsonLine$1(line);
+	if (!isRecord$3(value)) return;
+	acceptOpencodeSessionCandidate(identity, recognizedOpencodeSessionId(value));
+};
+var finishIdentityLine = (scan) => {
+	consumeOpencodeSessionLine(scan.line, scan.identity);
+	scan.line = "";
+	scan.lineBytes = 0;
+};
+var identityLineByteCount = (text, hasNewline) => {
+	if (hasNewline) return Buffer.byteLength(text) + 1;
+	return Buffer.byteLength(text);
+};
+var nextIdentityFragment = (text, offset) => {
+	const newline = text.indexOf("\n", offset);
+	if (newline === -1) return {
+		text: text.slice(offset),
+		next: text.length,
+		hasNewline: false
+	};
+	return {
+		text: text.slice(offset, newline),
+		next: newline + 1,
+		hasNewline: true
+	};
+};
+var appendIdentityFragment = (scan, fragment) => {
+	scan.lineBytes += identityLineByteCount(fragment.text, fragment.hasNewline);
+	if (scan.lineBytes > 1048576) {
+		scan.overflowed = true;
+		return false;
+	}
+	scan.line += fragment.text;
+	if (fragment.hasNewline) finishIdentityLine(scan);
+	return true;
+};
+var appendIdentityText = (scan, text) => {
+	let offset = 0;
+	while (offset < text.length) {
+		const fragment = nextIdentityFragment(text, offset);
+		if (fragment.next <= offset) return false;
+		if (!appendIdentityFragment(scan, fragment)) return false;
+		offset = fragment.next;
+	}
+	return true;
+};
+var consumeIdentityChunk = (scan, chunk) => {
+	scan.totalBytes += chunk.length;
+	if (scan.totalBytes > 8388608) {
+		scan.overflowed = true;
+		return false;
+	}
+	return appendIdentityText(scan, scan.decoder.write(chunk));
+};
+var readIdentityChunk = (fd, buffer, cursor) => {
+	const want = Math.min(buffer.length, cursor.size - cursor.offset);
+	const bytesRead = readSync(fd, buffer, 0, want, cursor.offset);
+	if (bytesRead <= 0) return null;
+	return buffer.subarray(0, bytesRead);
+};
+var scanIdentityFd = (fd, scan) => {
+	const buffer = Buffer.alloc(OPENCODE_IDENTITY_READ_BYTES);
+	const cursor = {
+		offset: 0,
+		size: fstatSync(fd).size
+	};
+	while (cursor.offset < cursor.size && !scan.overflowed) {
+		const chunk = readIdentityChunk(fd, buffer, cursor);
+		if (chunk === null) return;
+		cursor.offset += chunk.length;
+		consumeIdentityChunk(scan, chunk);
+	}
+};
+var finishIdentityScan = (scan) => {
+	if (scan.overflowed) return;
+	if (!appendIdentityText(scan, scan.decoder.end())) return;
+	if (scan.line !== "") finishIdentityLine(scan);
+};
+var sessionIdentityFromCapture = (captureFile) => {
+	const scan = opencodeIdentityScan();
+	const fd = openSync(captureFile, "r");
+	try {
+		scanIdentityFd(fd, scan);
+		finishIdentityScan(scan);
+		return scan.identity;
+	} finally {
+		closeSync(fd);
+	}
+};
+var sessionIdFromCapture = (captureFile) => sessionIdentityFromCapture(captureFile).id;
 var recordOpencodeChildFailure = (context, failure) => {
 	quietly(() => {
 		recordChildFailure(context.args.observeFile, context.workDir, {
@@ -7116,29 +7256,107 @@ var recordOpencodeExportEffort = (context, command, sessionID) => {
 var applyOpencodeEffort = (input) => {
 	if (input.context.effort === "") return "";
 	const warning = opencodeEffortWarning(input.context, input.cliModel, input.catalog);
-	recordOpencodeExportEffort(input.context, input.command, sessionIdFromCapture(input.context.stdoutCapture));
+	recordOpencodeExportEffort(input.context, input.command, input.sessionID);
 	return warning;
 };
 var opencodeStdoutText = (input) => {
 	if (input.wait.childStatus !== 0) return classifiedFailureReport(input.context, input.failure, input.wait.childStatus);
 	return opencodeCapturedText(input.context, input.wait);
 };
-var finalizeOpencodeRun = (input) => {
-	const { context, launch, cliModel, wait } = input;
-	const catalog = catalogIfNeeded(launch.command, context, wait.childStatus);
+var OPENCODE_RESUME_SOURCE = "opencode_json";
+var recordOpencodeResumable = (context, sessionID, outcome) => {
+	recordResumableOutcome(context, {
+		childStatus: outcome.childStatus,
+		responseAllowsResume: outcome.responseAllowsResume,
+		resumeId: sessionID ?? "",
+		resumeSource: OPENCODE_RESUME_SOURCE,
+		homeDir: "",
+		failReason: "OpenCode run did not complete successfully",
+		missingIdReason: "OpenCode sessionID was not found"
+	});
+};
+var opencodeFollowupFailReason = (matched, outcome) => {
+	if (outcome.childStatus === 0 && outcome.responseAllowsResume && !matched) return "OpenCode follow-up sessionID did not match resume_id";
+	return "OpenCode follow-up did not complete successfully";
+};
+var recordOpencodeFollowup = (context, sessionID, outcome) => {
+	const matched = sessionID === context.args.resumeArg;
+	recordFollowupOutcome(context, {
+		childStatus: outcome.childStatus,
+		responseAllowsResume: outcome.responseAllowsResume && matched,
+		resumeId: sessionID ?? "",
+		resumeSource: OPENCODE_RESUME_SOURCE,
+		homeDir: "",
+		failReason: opencodeFollowupFailReason(matched, outcome)
+	});
+};
+var recordOpencodeSessionOutcome = (context, sessionID, outcome) => {
+	if (context.args.sessionMode === "resumable") {
+		recordOpencodeResumable(context, sessionID, outcome);
+		return;
+	}
+	if (context.args.sessionMode === "followup") recordOpencodeFollowup(context, sessionID, outcome);
+};
+var keepOpencodeSession = (sessionMode) => sessionMode === "resumable" || sessionMode === "followup";
+var emitSessionDeleteSkipped = (context) => {
+	quietly(() => {
+		appendObserveEvent(context.args.observeFile, context.workDir, {
+			kind: "session_delete_skipped",
+			ts: metricsTimestamp()
+		});
+	});
+};
+var emitSessionDeleteFailed = (context, sessionID, timedOut) => {
+	quietly(() => {
+		appendObserveEvent(context.args.observeFile, context.workDir, {
+			kind: "session_delete_failed",
+			ts: metricsTimestamp(),
+			session_id: sessionID,
+			timed_out: timedOut
+		});
+	});
+};
+var deleteCapturedSession = (context, command, sessionID) => {
+	const aux = opencodeAuxLaunchOf(context);
+	const result = deleteOpencodeSession({
+		command,
+		sessionID,
+		env: aux.env,
+		cwd: aux.cwd,
+		pure: aux.pure
+	});
+	if (!result.ok) emitSessionDeleteFailed(context, sessionID, result.timedOut);
+};
+var reclaimOpencodeSession = (context, command, sessionID) => {
+	if (keepOpencodeSession(context.args.sessionMode)) return;
+	if (sessionID === null) {
+		emitSessionDeleteSkipped(context);
+		return;
+	}
+	deleteCapturedSession(context, command, sessionID);
+};
+var observeOpencodeChild = (input) => {
+	const catalog = catalogIfNeeded(input.launch.command, input.context, input.wait.childStatus);
 	const failure = classifyOpencodeRunFailure({
-		context,
-		cliModel,
-		childStatus: wait.childStatus,
+		context: input.context,
+		cliModel: input.cliModel,
+		childStatus: input.wait.childStatus,
 		catalog
 	});
-	recordFailureIfNeeded(context, wait.childStatus, failure);
-	const summaryWarning = applyOpencodeEffort({
-		context,
-		command: launch.command,
-		cliModel,
-		catalog
-	});
+	recordFailureIfNeeded(input.context, input.wait.childStatus, failure);
+	return {
+		failure,
+		summaryWarning: applyOpencodeEffort({
+			context: input.context,
+			command: input.launch.command,
+			cliModel: input.cliModel,
+			catalog,
+			sessionID: input.sessionID
+		})
+	};
+};
+var assembleOpencodeResult = (input) => {
+	const { context, cliModel, wait, sessionID, failure, summaryWarning } = input;
 	completeResponse(context, {
 		responderSessionId: responderSessionIdOf(context, cliModel),
 		reportMode: reportModeForBackend("opencode"),
@@ -7151,38 +7369,137 @@ var finalizeOpencodeRun = (input) => {
 	}, wait);
 	const outcome = finalizeResponse(context, wait.childStatus);
 	recordOpencodeUsage(context);
+	recordOpencodeSessionOutcome(context, sessionID, {
+		childStatus: wait.childStatus,
+		responseAllowsResume: outcome.responseAllowsResume
+	});
 	return wrapperResult(context, outcome);
 };
-var runOpencodeChild = async (context, launch) => {
-	const cliModel = stripOpencodeSelector(context.baseModel);
-	const promptFile = writePromptFile(context, workerPrompt(context, launch.requestStep.step, {
-		constraints: promptConstraints(context.args.taskType, "", "stdout"),
+var opencodeRunOverrides = /* @__PURE__ */ new Map();
+var opencodeOverrideOf = (observeFile) => opencodeRunOverrides.get(observeFile) ?? null;
+var applyOpencodeAfterWait = (observeFile) => {
+	const override = opencodeOverrideOf(observeFile);
+	if (override === null) return;
+	if (override.afterWait !== null) override.afterWait();
+	if (override.waitErrorAfterChild !== null) throw override.waitErrorAfterChild;
+};
+var throwIfIdentityOverride = (observeFile) => {
+	const override = opencodeOverrideOf(observeFile);
+	if (override === null || override.identityError === null) return;
+	throw override.identityError;
+};
+var sessionIdForObserveFile = (captureFile, observeFile) => {
+	try {
+		throwIfIdentityOverride(observeFile);
+		return sessionIdFromCapture(captureFile);
+	} catch {
+		return null;
+	}
+};
+var assembleObservedOpencode = (input) => {
+	const sessionID = sessionIdForObserveFile(input.context.stdoutCapture, input.context.args.observeFile);
+	const observed = observeOpencodeChild({
+		...input,
+		sessionID
+	});
+	return assembleOpencodeResult({
+		...input,
+		sessionID,
+		...observed
+	});
+};
+var opencodeSignalHoldOf = (observeFile) => {
+	const override = opencodeOverrideOf(observeFile);
+	return {
+		pending: null,
+		swallow: override !== null && override.swallowLifecycleSignal
+	};
+};
+var bindOpencodeSignalHold = (hold, signal) => {
+	const onSignal = () => {
+		hold.pending = signal;
+	};
+	process.on(signal, onSignal);
+	return onSignal;
+};
+var releaseOpencodeSignalHold = (hold, listeners) => {
+	process.removeListener("SIGINT", listeners.sigint);
+	process.removeListener("SIGTERM", listeners.sigterm);
+	if (hold.pending === null || hold.swallow) return;
+	process.kill(process.pid, hold.pending);
+};
+var attachOpencodeSignalHold = (observeFile) => {
+	const hold = opencodeSignalHoldOf(observeFile);
+	const listeners = {
+		sigint: bindOpencodeSignalHold(hold, "SIGINT"),
+		sigterm: bindOpencodeSignalHold(hold, "SIGTERM")
+	};
+	return () => {
+		releaseOpencodeSignalHold(hold, listeners);
+	};
+};
+var waitForOpencodeChild = async (run) => {
+	const wait = await waitWithHeartbeat({
+		observeFile: run.context.args.observeFile,
+		runDir: run.context.workDir,
+		backend: run.context.backend,
+		worker: run.worker,
+		stdoutCapture: run.context.stdoutCapture,
+		stderrCapture: run.context.stderrCapture,
+		responseFile: run.context.args.responseFile,
+		env: run.context.env
+	});
+	applyOpencodeAfterWait(run.context.args.observeFile);
+	return wait;
+};
+var reclaimObservedOpencodeSession = (run) => {
+	reclaimOpencodeSession(run.context, run.launch.command, sessionIdForObserveFile(run.context.stdoutCapture, run.context.args.observeFile));
+};
+var finishOpencodeChild = async (run) => {
+	try {
+		const wait = await waitForOpencodeChild(run);
+		return assembleObservedOpencode({
+			...run,
+			wait
+		});
+	} finally {
+		reclaimObservedOpencodeSession(run);
+	}
+};
+var opencodePromptFile = (context, launch) => {
+	const constraints = promptConstraints(context.args.taskType, "", "stdout");
+	return writePromptFile(context, workerPrompt(context, launch.requestStep.step, {
+		constraints,
 		tailLines: opencodePromptTailLines
 	}));
-	const worker = spawnWorker({
-		command: launch.command,
-		args: opencodeCliArgs(context, cliModel),
-		cwd: context.repoRoot,
-		env: opencodeChildEnv(context),
-		stdinFile: promptFile,
-		stdoutCapture: context.stdoutCapture,
-		stderrCapture: context.stderrCapture
-	});
-	return finalizeOpencodeRun({
-		context,
-		launch,
+};
+var spawnOpencodeWorker = (context, launch) => {
+	const cliModel = stripOpencodeSelector(context.baseModel);
+	return {
 		cliModel,
-		wait: await waitWithHeartbeat({
-			observeFile: context.args.observeFile,
-			runDir: context.workDir,
-			backend: context.backend,
-			worker,
+		worker: spawnWorker({
+			command: launch.command,
+			args: opencodeCliArgs(context, cliModel),
+			cwd: context.repoRoot,
+			env: opencodeChildEnv(context),
+			stdinFile: opencodePromptFile(context, launch),
 			stdoutCapture: context.stdoutCapture,
-			stderrCapture: context.stderrCapture,
-			responseFile: context.args.responseFile,
-			env: context.env
+			stderrCapture: context.stderrCapture
 		})
-	});
+	};
+};
+var runOpencodeChild = async (context, launch) => {
+	const spawned = spawnOpencodeWorker(context, launch);
+	const releaseHold = attachOpencodeSignalHold(context.args.observeFile);
+	try {
+		return await finishOpencodeChild({
+			context,
+			launch,
+			...spawned
+		});
+	} finally {
+		releaseHold();
+	}
 };
 var wrapperOpencodeWithContext = async (context) => {
 	const launch = prepareOpencodeLaunch(context);

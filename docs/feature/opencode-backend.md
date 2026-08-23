@@ -371,6 +371,10 @@ MCP の入力元は実行時に自動判別できない。protocol v1 の reques
 - **通常 run の session lifecycle を決める**: opencode は opt-in でない通常 run でも永続 session store（`~/.local/share/opencode/`）を作る。通常 run は非永続という既存契約に合わせ、run 後に `opencode session delete <id>` で回収し、resumable / follow-up のときだけ保持する
   - 削除は `export` など session を参照する処理をすべて終えた後、`finally` 相当で行う
   - event 到達前の child kill / timeout / schema drift では session ID を取得できない穴がある
+  - session ID は**認識済みイベント**（`step_start` / `text` / `tool_use` / `step_finish` / `error`）の `sessionID` だけを候補にし、全候補が一致した場合にだけ使う。相異なる ID が現れたら削除を試みない（並列 run の session を誤削除しないため）。不正形式の候補が後続の正しい ID を隠さないようにする
+  - session identity は report / usage の妥当性と分離する。capture / 行の上限超過で report を failed にしても、検証済みの session ID による回収は行う
+  - child spawn 後の wait・export・response finalize は lifecycle レベルの `try/finally` で囲み、例外や signal でも回収（または skipped / failed の記録）が必ず走るようにする
+  - follow-up では capture の ID が `resume_id` と一致することを確認し、欠落・不一致なら成功として古い handle を再記録しない
   - session ID を取得できなかった run では削除を試みず `session_delete_skipped` event を残す（`session list` 差分による推測削除は並列 run の session を誤削除するため採らない）
   - child failure・signal 受信・response parse 失敗の各経路でも削除する（成功パスだけで削除しない）
   - **削除失敗は telemetry 欠落ではなく状態の残留**なので、observe event（`session_delete_failed`）として記録する。delegate 本体は失敗させないが、記録は必ず残す

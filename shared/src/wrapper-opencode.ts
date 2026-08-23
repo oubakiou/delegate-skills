@@ -1,9 +1,11 @@
 import { spawnSync } from 'node:child_process'
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import type { Env } from './build-request.ts'
 import type { CliResult } from './cli-result.ts'
 import { sanitizeFailureModel, type ChildFailure } from './failure-classify.ts'
-import { isRecord } from './jq-compat.ts'
+import { isRecord, parseJsonLine } from './jq-compat.ts'
 import {
   effortFromOpencodeExport,
   OPENCODE_EFFORT_UNSUPPORTED_WARNING,
@@ -34,6 +36,8 @@ import {
   parseWrapperArgs,
   quietly,
   readTailBytes,
+  recordFollowupOutcome,
+  recordResumableOutcome,
   responderSessionIdOf,
   STDERR_TAIL_MAX_BYTES,
   workerPrompt,
@@ -48,7 +52,13 @@ import {
   requestInlineMax,
   type RequestPromptStep,
 } from './wrapper-report.ts'
-import { executablePaths, spawnWorker, waitWithHeartbeat, type WaitResult } from './wrapper-wait.ts'
+import {
+  executablePaths,
+  spawnWorker,
+  waitWithHeartbeat,
+  type SpawnedWorker,
+  type WaitResult,
+} from './wrapper-wait.ts'
 
 const OPENCODE_SELECTOR = 'opencode/'
 const OPENCODE_VERSION_TIMEOUT_MS = 10_000
@@ -56,7 +66,17 @@ const OPENCODE_VERSION_MAX_BYTES = 16_384
 const OPENCODE_AUX_TIMEOUT_MS = 10_000
 const OPENCODE_MODELS_MAX_BYTES = 256 * 1024
 const OPENCODE_EXPORT_MAX_BYTES = 2 * 1024 * 1024
+const OPENCODE_SESSION_DELETE_TIMEOUT_MS = 2000
+const OPENCODE_SESSION_DELETE_MAX_BYTES = 16_384
 const OPENCODE_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
+const OPENCODE_SESSION_EVENT_TYPES = new Set([
+  'step_start',
+  'text',
+  'tool_use',
+  'step_finish',
+  'error',
+])
+const OPENCODE_IDENTITY_READ_BYTES = 64 * 1024
 const PURE_TASK_TYPES = new Set(['explore', 'review', 'htmldoc'])
 
 export interface OpencodeCatalogModel {
@@ -226,7 +246,17 @@ interface OpencodeAuxResult {
   ok: boolean
   stdout: string
   stdoutBytes: number
+  timedOut: boolean
 }
+
+const auxSpawnTimedOut = (error: Error | undefined): boolean =>
+  typeof error !== 'undefined' && 'code' in error && error.code === 'ETIMEDOUT'
+
+const auxSpawnFailed = (result: {
+  error?: Error | undefined
+  status: number | null
+  signal: NodeJS.Signals | null
+}): boolean => Boolean(result.error) || result.status !== 0 || result.signal !== null
 
 const opencodeAuxArgs = (args: readonly string[], pure: boolean): string[] => {
   if (pure) {
@@ -253,10 +283,11 @@ const runOpencodeAux = (input: {
   })
   const stdout = result.stdout ?? ''
   const stdoutBytes = Buffer.byteLength(stdout)
-  if (result.error || result.status !== 0 || result.signal !== null) {
-    return { ok: false, stdout: '', stdoutBytes: 0 }
+  const timedOut = auxSpawnTimedOut(result.error)
+  if (auxSpawnFailed(result)) {
+    return { ok: false, stdout: '', stdoutBytes: 0, timedOut }
   }
-  return { ok: true, stdout, stdoutBytes }
+  return { ok: true, stdout, stdoutBytes, timedOut: false }
 }
 
 const auxResultAuthoritative = (result: OpencodeAuxResult, maxBytes: number): boolean =>
@@ -309,6 +340,28 @@ export const fetchOpencodeExport = (input: {
   return result.stdout
 }
 
+export const deleteOpencodeSession = (input: {
+  command: string
+  sessionID: string
+  env: Env
+  limits?: Partial<OpencodeAuxLimits>
+  cwd?: string
+  pure?: boolean
+}): { ok: boolean; timedOut: boolean } => {
+  const limits = auxLimitsOf(input.limits ?? {}, {
+    timeoutMs: OPENCODE_SESSION_DELETE_TIMEOUT_MS,
+    maxBytes: OPENCODE_SESSION_DELETE_MAX_BYTES,
+  })
+  const result = runOpencodeAux({
+    command: input.command,
+    args: opencodeAuxArgs(['session', 'delete', input.sessionID], input.pure === true),
+    env: input.env,
+    cwd: input.cwd,
+    limits,
+  })
+  return { ok: result.ok, timedOut: result.timedOut }
+}
+
 const opencodePromptTailLines = [
   '3. 作業完了後、最終応答として front-matter 付き Markdown だけを返す。先頭に',
   '   ---',
@@ -319,7 +372,8 @@ const opencodePromptTailLines = [
   '   JSON やコードフェンスで全体をラップせず、md2idx / jq / build-response.sh によるレスポンス生成はしない。',
 ] as const
 
-const opencodeTextEvent = (text: string): string => JSON.stringify({ type: 'text', part: { text } })
+const opencodeTextEvent = (text: string, sessionID = 'ses_test_default'): string =>
+  JSON.stringify({ type: 'text', sessionID, part: { text } })
 
 const versionOutputOf = (candidate: string, env: Env, timeoutMs: number): string | null => {
   const result = spawnSync(candidate, ['--version'], {
@@ -375,11 +429,19 @@ export const opencodeConfigContent = (taskType: string): string => {
   return JSON.stringify(config)
 }
 
+const opencodeSessionCliArgs = (context: WrapperContext): string[] => {
+  if (context.args.sessionMode === 'followup' && context.args.resumeArg !== '') {
+    return ['-s', context.args.resumeArg]
+  }
+  return []
+}
+
 export const opencodeCliArgs = (context: WrapperContext, cliModel: string): string[] => {
   const args = ['run', '--format', 'json', '-m', cliModel]
   if (context.effort !== '') {
     args.push('--variant', context.effort)
   }
+  args.push(...opencodeSessionCliArgs(context))
   if (usePureMode(context)) {
     args.push('--pure')
   }
@@ -442,47 +504,16 @@ const inlineFailureTarget = (context: WrapperContext): InlineFailureTarget => ({
   runDir: context.workDir,
 })
 
-const sessionModeFailureReport = (message: string): string =>
-  [
-    '---',
-    'status: failed',
-    '---',
-    '# Summary',
-    'OpenCode session reuse is unavailable.',
-    '',
-    '# Error',
-    message,
-    '',
-  ].join('\n')
-
-const finishSessionModeFailure = (
-  context: WrapperContext,
-  exitCode: number,
-  message: string
-): CliResult => {
-  const result = finishWithoutChild(context, exitCode, message)
-  buildResponseFromStdoutText(
-    sessionModeFailureReport(message),
-    inlineFailureTarget(context),
-    context.env
-  )
-  return result
-}
-
 const sessionModeFailure = (context: WrapperContext): CliResult | null => {
-  const { sessionMode } = context.args
+  const { sessionMode, resumeArg } = context.args
+  if (sessionMode === 'followup' && resumeArg === '') {
+    return finishWithoutChild(context, 5, 'ERROR: follow-up requires resume_id.')
+  }
   if (sessionMode !== '' && sessionMode !== 'resumable' && sessionMode !== 'followup') {
     return finishWithoutChild(
       context,
       2,
       `ERROR: session_mode must be empty, resumable, or followup: ${sessionMode}`
-    )
-  }
-  if (sessionMode === 'resumable' || sessionMode === 'followup') {
-    return finishSessionModeFailure(
-      context,
-      5,
-      'ERROR: opencode backend の session reuse は未実装です。'
     )
   }
   return null
@@ -590,16 +621,191 @@ const catalogForClassify = (catalog: OpencodeCatalogLookup | null): OpencodeCata
   return catalog
 }
 
-const sessionIdFromCapture = (captureFile: string): string | null => {
-  const summary = summarizeOpencodeCapture(captureFile)
-  if (summary === null || summary.sessionID === null) {
-    return null
-  }
-  if (!OPENCODE_SESSION_ID_PATTERN.test(summary.sessionID)) {
-    return null
-  }
-  return summary.sessionID
+interface OpencodeSessionIdentity {
+  id: string | null
+  conflict: boolean
 }
+
+interface OpencodeIdentityFragment {
+  text: string
+  next: number
+  hasNewline: boolean
+}
+
+interface OpencodeIdentityScan {
+  identity: OpencodeSessionIdentity
+  decoder: StringDecoder
+  line: string
+  lineBytes: number
+  totalBytes: number
+  overflowed: boolean
+}
+
+const emptyOpencodeSessionIdentity = (): OpencodeSessionIdentity => ({
+  id: null,
+  conflict: false,
+})
+
+const opencodeIdentityScan = (): OpencodeIdentityScan => ({
+  identity: emptyOpencodeSessionIdentity(),
+  decoder: new StringDecoder('utf8'),
+  line: '',
+  lineBytes: 0,
+  totalBytes: 0,
+  overflowed: false,
+})
+
+const recognizedOpencodeSessionId = (event: Record<string, unknown>): string | null => {
+  if (typeof event.type !== 'string' || !OPENCODE_SESSION_EVENT_TYPES.has(event.type)) {
+    return null
+  }
+  if (typeof event.sessionID !== 'string' || event.sessionID === '') {
+    return null
+  }
+  if (!OPENCODE_SESSION_ID_PATTERN.test(event.sessionID)) {
+    return null
+  }
+  return event.sessionID
+}
+
+const acceptOpencodeSessionCandidate = (
+  identity: OpencodeSessionIdentity,
+  candidate: string | null
+): void => {
+  if (candidate === null || identity.conflict) {
+    return
+  }
+  if (identity.id === null) {
+    identity.id = candidate
+    return
+  }
+  if (identity.id !== candidate) {
+    identity.conflict = true
+    identity.id = null
+  }
+}
+
+const consumeOpencodeSessionLine = (line: string, identity: OpencodeSessionIdentity): void => {
+  const value = parseJsonLine(line)
+  if (!isRecord(value)) {
+    return
+  }
+  acceptOpencodeSessionCandidate(identity, recognizedOpencodeSessionId(value))
+}
+
+const finishIdentityLine = (scan: OpencodeIdentityScan): void => {
+  consumeOpencodeSessionLine(scan.line, scan.identity)
+  scan.line = ''
+  scan.lineBytes = 0
+}
+
+const identityLineByteCount = (text: string, hasNewline: boolean): number => {
+  if (hasNewline) {
+    return Buffer.byteLength(text) + 1
+  }
+  return Buffer.byteLength(text)
+}
+
+const nextIdentityFragment = (text: string, offset: number): OpencodeIdentityFragment => {
+  const newline = text.indexOf('\n', offset)
+  if (newline === -1) {
+    return { text: text.slice(offset), next: text.length, hasNewline: false }
+  }
+  return { text: text.slice(offset, newline), next: newline + 1, hasNewline: true }
+}
+
+const appendIdentityFragment = (
+  scan: OpencodeIdentityScan,
+  fragment: OpencodeIdentityFragment
+): boolean => {
+  scan.lineBytes += identityLineByteCount(fragment.text, fragment.hasNewline)
+  if (scan.lineBytes > OPENCODE_CAPTURE_MAX_LINE_BYTES) {
+    scan.overflowed = true
+    return false
+  }
+  scan.line += fragment.text
+  if (fragment.hasNewline) {
+    finishIdentityLine(scan)
+  }
+  return true
+}
+
+const appendIdentityText = (scan: OpencodeIdentityScan, text: string): boolean => {
+  let offset = 0
+  while (offset < text.length) {
+    const fragment = nextIdentityFragment(text, offset)
+    if (fragment.next <= offset) {
+      return false
+    }
+    if (!appendIdentityFragment(scan, fragment)) {
+      return false
+    }
+    offset = fragment.next
+  }
+  return true
+}
+
+const consumeIdentityChunk = (scan: OpencodeIdentityScan, chunk: Buffer): boolean => {
+  scan.totalBytes += chunk.length
+  if (scan.totalBytes > OPENCODE_CAPTURE_MAX_BYTES) {
+    scan.overflowed = true
+    return false
+  }
+  return appendIdentityText(scan, scan.decoder.write(chunk))
+}
+
+const readIdentityChunk = (
+  fd: number,
+  buffer: Buffer,
+  cursor: { offset: number; size: number }
+): Buffer | null => {
+  const want = Math.min(buffer.length, cursor.size - cursor.offset)
+  const bytesRead = readSync(fd, buffer, 0, want, cursor.offset)
+  if (bytesRead <= 0) {
+    return null
+  }
+  return buffer.subarray(0, bytesRead)
+}
+
+const scanIdentityFd = (fd: number, scan: OpencodeIdentityScan): void => {
+  const buffer = Buffer.alloc(OPENCODE_IDENTITY_READ_BYTES)
+  const cursor = { offset: 0, size: fstatSync(fd).size }
+  while (cursor.offset < cursor.size && !scan.overflowed) {
+    const chunk = readIdentityChunk(fd, buffer, cursor)
+    if (chunk === null) {
+      return
+    }
+    cursor.offset += chunk.length
+    consumeIdentityChunk(scan, chunk)
+  }
+}
+
+const finishIdentityScan = (scan: OpencodeIdentityScan): void => {
+  if (scan.overflowed) {
+    return
+  }
+  if (!appendIdentityText(scan, scan.decoder.end())) {
+    return
+  }
+  if (scan.line !== '') {
+    finishIdentityLine(scan)
+  }
+}
+
+const sessionIdentityFromCapture = (captureFile: string): OpencodeSessionIdentity => {
+  const scan = opencodeIdentityScan()
+  const fd = openSync(captureFile, 'r')
+  try {
+    scanIdentityFd(fd, scan)
+    finishIdentityScan(scan)
+    return scan.identity
+  } finally {
+    closeSync(fd)
+  }
+}
+
+const sessionIdFromCapture = (captureFile: string): string | null =>
+  sessionIdentityFromCapture(captureFile).id
 
 const recordOpencodeChildFailure = (context: WrapperContext, failure: ChildFailure): void => {
   quietly(() => {
@@ -777,16 +983,13 @@ const applyOpencodeEffort = (input: {
   command: string
   cliModel: string
   catalog: OpencodeCatalogLookup | null
+  sessionID: string | null
 }): string => {
   if (input.context.effort === '') {
     return ''
   }
   const warning = opencodeEffortWarning(input.context, input.cliModel, input.catalog)
-  recordOpencodeExportEffort(
-    input.context,
-    input.command,
-    sessionIdFromCapture(input.context.stdoutCapture)
-  )
+  recordOpencodeExportEffort(input.context, input.command, input.sessionID)
   return warning
 }
 
@@ -801,27 +1004,158 @@ const opencodeStdoutText = (input: {
   return opencodeCapturedText(input.context, input.wait)
 }
 
-const finalizeOpencodeRun = (input: {
+const OPENCODE_RESUME_SOURCE = 'opencode_json'
+
+const recordOpencodeResumable = (
+  context: WrapperContext,
+  sessionID: string | null,
+  outcome: { childStatus: number; responseAllowsResume: boolean }
+): void => {
+  recordResumableOutcome(context, {
+    childStatus: outcome.childStatus,
+    responseAllowsResume: outcome.responseAllowsResume,
+    resumeId: sessionID ?? '',
+    resumeSource: OPENCODE_RESUME_SOURCE,
+    homeDir: '',
+    failReason: 'OpenCode run did not complete successfully',
+    missingIdReason: 'OpenCode sessionID was not found',
+  })
+}
+
+const opencodeFollowupFailReason = (
+  matched: boolean,
+  outcome: { childStatus: number; responseAllowsResume: boolean }
+): string => {
+  if (outcome.childStatus === 0 && outcome.responseAllowsResume && !matched) {
+    return 'OpenCode follow-up sessionID did not match resume_id'
+  }
+  return 'OpenCode follow-up did not complete successfully'
+}
+
+const recordOpencodeFollowup = (
+  context: WrapperContext,
+  sessionID: string | null,
+  outcome: { childStatus: number; responseAllowsResume: boolean }
+): void => {
+  const matched = sessionID === context.args.resumeArg
+  recordFollowupOutcome(context, {
+    childStatus: outcome.childStatus,
+    responseAllowsResume: outcome.responseAllowsResume && matched,
+    resumeId: sessionID ?? '',
+    resumeSource: OPENCODE_RESUME_SOURCE,
+    homeDir: '',
+    failReason: opencodeFollowupFailReason(matched, outcome),
+  })
+}
+
+const recordOpencodeSessionOutcome = (
+  context: WrapperContext,
+  sessionID: string | null,
+  outcome: { childStatus: number; responseAllowsResume: boolean }
+): void => {
+  if (context.args.sessionMode === 'resumable') {
+    recordOpencodeResumable(context, sessionID, outcome)
+    return
+  }
+  if (context.args.sessionMode === 'followup') {
+    recordOpencodeFollowup(context, sessionID, outcome)
+  }
+}
+
+const keepOpencodeSession = (sessionMode: string): boolean =>
+  sessionMode === 'resumable' || sessionMode === 'followup'
+
+const emitSessionDeleteSkipped = (context: WrapperContext): void => {
+  quietly(() => {
+    appendObserveEvent(context.args.observeFile, context.workDir, {
+      kind: 'session_delete_skipped',
+      ts: metricsTimestamp(),
+    })
+  })
+}
+
+const emitSessionDeleteFailed = (
+  context: WrapperContext,
+  sessionID: string,
+  timedOut: boolean
+): void => {
+  quietly(() => {
+    appendObserveEvent(context.args.observeFile, context.workDir, {
+      kind: 'session_delete_failed',
+      ts: metricsTimestamp(),
+      session_id: sessionID,
+      timed_out: timedOut,
+    })
+  })
+}
+
+const deleteCapturedSession = (
+  context: WrapperContext,
+  command: string,
+  sessionID: string
+): void => {
+  const aux = opencodeAuxLaunchOf(context)
+  const result = deleteOpencodeSession({
+    command,
+    sessionID,
+    env: aux.env,
+    cwd: aux.cwd,
+    pure: aux.pure,
+  })
+  if (!result.ok) {
+    emitSessionDeleteFailed(context, sessionID, result.timedOut)
+  }
+}
+
+const reclaimOpencodeSession = (
+  context: WrapperContext,
+  command: string,
+  sessionID: string | null
+): void => {
+  if (keepOpencodeSession(context.args.sessionMode)) {
+    return
+  }
+  if (sessionID === null) {
+    emitSessionDeleteSkipped(context)
+    return
+  }
+  deleteCapturedSession(context, command, sessionID)
+}
+
+const observeOpencodeChild = (input: {
   context: WrapperContext
   launch: OpencodeLaunch
   cliModel: string
   wait: WaitResult
-}): CliResult => {
-  const { context, launch, cliModel, wait } = input
-  const catalog = catalogIfNeeded(launch.command, context, wait.childStatus)
+  sessionID: string | null
+}): { failure: ChildFailure; summaryWarning: string } => {
+  const catalog = catalogIfNeeded(input.launch.command, input.context, input.wait.childStatus)
   const failure = classifyOpencodeRunFailure({
-    context,
-    cliModel,
-    childStatus: wait.childStatus,
+    context: input.context,
+    cliModel: input.cliModel,
+    childStatus: input.wait.childStatus,
     catalog,
   })
-  recordFailureIfNeeded(context, wait.childStatus, failure)
+  recordFailureIfNeeded(input.context, input.wait.childStatus, failure)
   const summaryWarning = applyOpencodeEffort({
-    context,
-    command: launch.command,
-    cliModel,
+    context: input.context,
+    command: input.launch.command,
+    cliModel: input.cliModel,
     catalog,
+    sessionID: input.sessionID,
   })
+  return { failure, summaryWarning }
+}
+
+const assembleOpencodeResult = (input: {
+  context: WrapperContext
+  cliModel: string
+  wait: WaitResult
+  sessionID: string | null
+  failure: ChildFailure
+  summaryWarning: string
+}): CliResult => {
+  const { context, cliModel, wait, sessionID, failure, summaryWarning } = input
   completeResponse(
     context,
     {
@@ -834,45 +1168,214 @@ const finalizeOpencodeRun = (input: {
   )
   const outcome = finalizeResponse(context, wait.childStatus)
   recordOpencodeUsage(context)
+  recordOpencodeSessionOutcome(context, sessionID, {
+    childStatus: wait.childStatus,
+    responseAllowsResume: outcome.responseAllowsResume,
+  })
   return wrapperResult(context, outcome)
+}
+
+interface OpencodeRunOverride {
+  afterWait: (() => void) | null
+  waitErrorAfterChild: Error | null
+  identityError: Error | null
+  swallowLifecycleSignal: boolean
+}
+
+const opencodeOverride = (partial: Partial<OpencodeRunOverride>): OpencodeRunOverride => ({
+  afterWait: partial.afterWait ?? null,
+  waitErrorAfterChild: partial.waitErrorAfterChild ?? null,
+  identityError: partial.identityError ?? null,
+  swallowLifecycleSignal: partial.swallowLifecycleSignal === true,
+})
+
+const opencodeRunOverrides = new Map<string, OpencodeRunOverride>()
+
+const opencodeOverrideOf = (observeFile: string): OpencodeRunOverride | null =>
+  opencodeRunOverrides.get(observeFile) ?? null
+
+const applyOpencodeAfterWait = (observeFile: string): void => {
+  const override = opencodeOverrideOf(observeFile)
+  if (override === null) {
+    return
+  }
+  if (override.afterWait !== null) {
+    override.afterWait()
+  }
+  if (override.waitErrorAfterChild !== null) {
+    throw override.waitErrorAfterChild
+  }
+}
+
+const throwIfIdentityOverride = (observeFile: string): void => {
+  const override = opencodeOverrideOf(observeFile)
+  if (override === null || override.identityError === null) {
+    return
+  }
+  throw override.identityError
+}
+
+const sessionIdForObserveFile = (captureFile: string, observeFile: string): string | null => {
+  try {
+    throwIfIdentityOverride(observeFile)
+    return sessionIdFromCapture(captureFile)
+  } catch {
+    return null
+  }
+}
+
+const assembleObservedOpencode = (input: {
+  context: WrapperContext
+  launch: OpencodeLaunch
+  cliModel: string
+  wait: WaitResult
+}): CliResult => {
+  const sessionID = sessionIdForObserveFile(
+    input.context.stdoutCapture,
+    input.context.args.observeFile
+  )
+  const observed = observeOpencodeChild({ ...input, sessionID })
+  return assembleOpencodeResult({ ...input, sessionID, ...observed })
+}
+
+interface OpencodeChildRun {
+  context: WrapperContext
+  launch: OpencodeLaunch
+  cliModel: string
+  worker: SpawnedWorker
+}
+
+interface OpencodeSignalHold {
+  pending: NodeJS.Signals | null
+  swallow: boolean
+}
+
+const opencodeSignalHoldOf = (observeFile: string): OpencodeSignalHold => {
+  const override = opencodeOverrideOf(observeFile)
+  return {
+    pending: null,
+    swallow: override !== null && override.swallowLifecycleSignal,
+  }
+}
+
+const bindOpencodeSignalHold = (hold: OpencodeSignalHold, signal: NodeJS.Signals): (() => void) => {
+  const onSignal = (): void => {
+    hold.pending = signal
+  }
+  process.on(signal, onSignal)
+  return onSignal
+}
+
+const releaseOpencodeSignalHold = (
+  hold: OpencodeSignalHold,
+  listeners: { sigint: () => void; sigterm: () => void }
+): void => {
+  process.removeListener('SIGINT', listeners.sigint)
+  process.removeListener('SIGTERM', listeners.sigterm)
+  if (hold.pending === null || hold.swallow) {
+    return
+  }
+  process.kill(process.pid, hold.pending)
+}
+
+const attachOpencodeSignalHold = (observeFile: string): (() => void) => {
+  const hold = opencodeSignalHoldOf(observeFile)
+  const listeners = {
+    sigint: bindOpencodeSignalHold(hold, 'SIGINT'),
+    sigterm: bindOpencodeSignalHold(hold, 'SIGTERM'),
+  }
+  return (): void => {
+    releaseOpencodeSignalHold(hold, listeners)
+  }
+}
+
+const waitForOpencodeChild = async (run: OpencodeChildRun): Promise<WaitResult> => {
+  const wait = await waitWithHeartbeat({
+    observeFile: run.context.args.observeFile,
+    runDir: run.context.workDir,
+    backend: run.context.backend,
+    worker: run.worker,
+    stdoutCapture: run.context.stdoutCapture,
+    stderrCapture: run.context.stderrCapture,
+    responseFile: run.context.args.responseFile,
+    env: run.context.env,
+  })
+  applyOpencodeAfterWait(run.context.args.observeFile)
+  return wait
+}
+
+const reclaimObservedOpencodeSession = (run: OpencodeChildRun): void => {
+  reclaimOpencodeSession(
+    run.context,
+    run.launch.command,
+    sessionIdForObserveFile(run.context.stdoutCapture, run.context.args.observeFile)
+  )
+}
+
+const finishOpencodeChild = async (run: OpencodeChildRun): Promise<CliResult> => {
+  try {
+    const wait = await waitForOpencodeChild(run)
+    return assembleObservedOpencode({ ...run, wait })
+  } finally {
+    reclaimObservedOpencodeSession(run)
+  }
+}
+
+const opencodePromptFile = (context: WrapperContext, launch: OpencodeLaunch): string => {
+  const constraints = promptConstraints(context.args.taskType, '', 'stdout')
+  return writePromptFile(
+    context,
+    workerPrompt(context, launch.requestStep.step, {
+      constraints,
+      tailLines: opencodePromptTailLines,
+    })
+  )
+}
+
+const spawnOpencodeWorker = (
+  context: WrapperContext,
+  launch: OpencodeLaunch
+): { cliModel: string; worker: SpawnedWorker } => {
+  const cliModel = stripOpencodeSelector(context.baseModel)
+  const worker = spawnWorker({
+    command: launch.command,
+    args: opencodeCliArgs(context, cliModel),
+    cwd: context.repoRoot,
+    env: opencodeChildEnv(context),
+    stdinFile: opencodePromptFile(context, launch),
+    stdoutCapture: context.stdoutCapture,
+    stderrCapture: context.stderrCapture,
+  })
+  return { cliModel, worker }
 }
 
 const runOpencodeChild = async (
   context: WrapperContext,
   launch: OpencodeLaunch
 ): Promise<CliResult> => {
-  const cliModel = stripOpencodeSelector(context.baseModel)
-  const prompt = workerPrompt(context, launch.requestStep.step, {
-    constraints: promptConstraints(context.args.taskType, '', 'stdout'),
-    tailLines: opencodePromptTailLines,
-  })
-  const promptFile = writePromptFile(context, prompt)
-  const worker = spawnWorker({
-    command: launch.command,
-    args: opencodeCliArgs(context, cliModel),
-    cwd: context.repoRoot,
-    env: opencodeChildEnv(context),
-    stdinFile: promptFile,
-    stdoutCapture: context.stdoutCapture,
-    stderrCapture: context.stderrCapture,
-  })
-  const wait = await waitWithHeartbeat({
-    observeFile: context.args.observeFile,
-    runDir: context.workDir,
-    backend: context.backend,
-    worker,
-    stdoutCapture: context.stdoutCapture,
-    stderrCapture: context.stderrCapture,
-    responseFile: context.args.responseFile,
-    env: context.env,
-  })
-  return finalizeOpencodeRun({ context, launch, cliModel, wait })
+  const spawned = spawnOpencodeWorker(context, launch)
+  const releaseHold = attachOpencodeSignalHold(context.args.observeFile)
+  try {
+    return await finishOpencodeChild({ context, launch, ...spawned })
+  } finally {
+    releaseHold()
+  }
 }
 
 interface TestContextOptions {
   model?: string
   taskType?: string
   env?: Env
+  sessionMode?: string
+  resumeArg?: string
+  sessionHome?: string
+}
+
+const testContextSessionArgs = (options: TestContextOptions): string[] => {
+  if (typeof options.sessionMode !== 'string') {
+    return []
+  }
+  return [options.sessionMode, options.resumeArg ?? '', options.sessionHome ?? '']
 }
 
 const makeTestContext = (dir: string, options: TestContextOptions = {}): WrapperContext => {
@@ -887,6 +1390,7 @@ const makeTestContext = (dir: string, options: TestContextOptions = {}): Wrapper
       path.join(dir, 'response.json'),
       dir,
       path.join(dir, 'observe.json'),
+      ...testContextSessionArgs(options),
     ],
     'delegate-opencode.sh'
   )
@@ -986,6 +1490,7 @@ if (import.meta.vitest) {
   }
 
   const completedReport = '---\nstatus: completed\n---\n# Summary\nlast\n'
+  const TEST_SESSION_ID = 'ses_test_default'
 
   const OPENCODE_OBSERVE_EPOCH_MS = 1_787_360_343_099
 
@@ -1004,7 +1509,12 @@ if (import.meta.vitest) {
   }
 
   const opencodeObserveEvent = (type: string, part: Record<string, unknown>, offset = 0): string =>
-    JSON.stringify({ type, timestamp: OPENCODE_OBSERVE_EPOCH_MS + offset, part })
+    JSON.stringify({
+      type,
+      timestamp: OPENCODE_OBSERVE_EPOCH_MS + offset,
+      sessionID: TEST_SESSION_ID,
+      part,
+    })
 
   const opencodeObserveEventLines = (mode: string): string[] => {
     const reportText = '---\nstatus: completed\n---\n# Summary\nlast'
@@ -1078,6 +1588,26 @@ if (import.meta.vitest) {
       ).toContain('--pure')
       expect(opencodeCliArgs(makeTestContext(dir), 'provider/model')).not.toContain('--pure')
     })
+
+    it('adds -s for follow-up resume ids', () => {
+      const dir = createTestScratchDir('wrapper-opencode-followup-args-test')
+      expect(
+        opencodeCliArgs(
+          makeTestContext(dir, { sessionMode: 'followup', resumeArg: 'ses_follow_1' }),
+          'opencode-go/glm-5.2'
+        )
+      ).toEqual([
+        'run',
+        '--format',
+        'json',
+        '-m',
+        'opencode-go/glm-5.2',
+        '--variant',
+        'high',
+        '-s',
+        'ses_follow_1',
+      ])
+    })
   })
 
   describe('resolveOpencode', () => {
@@ -1124,10 +1654,78 @@ if (import.meta.vitest) {
     })
   })
 
+  describe('sessionIdFromCapture', () => {
+    const writeCapture = (name: string, body: string | Buffer): string => {
+      const capture = path.join(createTestScratchDir(name), 'stdout.capture')
+      writeFileSync(capture, body)
+      return capture
+    }
+
+    it('keeps a later valid id when an earlier candidate is invalid', () => {
+      const capture = writeCapture(
+        'wrapper-opencode-session-id-invalid-then-valid',
+        `${[
+          JSON.stringify({ type: 'text', sessionID: '', part: { text: 'x' } }),
+          JSON.stringify({ type: 'text', sessionID: 1, part: { text: 'y' } }),
+          JSON.stringify({ type: 'plugin', sessionID: 'ses_plugin' }),
+          JSON.stringify({ type: 'text', sessionID: 'ses_valid_1', part: { text: 'z' } }),
+        ].join('\n')}\n`
+      )
+      expect(sessionIdFromCapture(capture)).toBe('ses_valid_1')
+    })
+
+    it('returns null when recognized session ids disagree', () => {
+      const capture = writeCapture(
+        'wrapper-opencode-session-id-conflict',
+        `${[
+          JSON.stringify({ type: 'text', sessionID: 'ses_a', part: { text: 'a' } }),
+          JSON.stringify({ type: 'step_finish', sessionID: 'ses_b', part: {} }),
+        ].join('\n')}\n`
+      )
+      expect(sessionIdFromCapture(capture)).toBeNull()
+    })
+
+    it('keeps a verified id after a later oversized line', () => {
+      const event = JSON.stringify({
+        type: 'text',
+        sessionID: 'ses_keep_1',
+        part: { text: 'ok' },
+      })
+      const capture = writeCapture(
+        'wrapper-opencode-session-id-oversized-line',
+        `${event}\n${'x'.repeat(OPENCODE_CAPTURE_MAX_LINE_BYTES + 1)}\n`
+      )
+      expect(sessionIdFromCapture(capture)).toBe('ses_keep_1')
+      expect(lastTextFromCapture(capture)).toBeNull()
+    })
+
+    it('keeps a verified id after a later oversized capture', () => {
+      const event = JSON.stringify({
+        type: 'text',
+        sessionID: 'ses_keep_1',
+        part: { text: 'ok' },
+      })
+      const capture = writeCapture(
+        'wrapper-opencode-session-id-oversized-capture',
+        Buffer.concat([Buffer.from(`${event}\n`), Buffer.alloc(OPENCODE_CAPTURE_MAX_BYTES, 120)])
+      )
+      expect(sessionIdFromCapture(capture)).toBe('ses_keep_1')
+      expect(lastTextFromCapture(capture)).toBeNull()
+    })
+
+    it('returns null when the capture file cannot be read', () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-id-missing-file')
+      expect(
+        sessionIdForObserveFile(path.join(dir, 'missing.capture'), path.join(dir, 'obs.json'))
+      ).toBeNull()
+    })
+  })
+
   interface FakeRunFixture {
     argsFile: string
     auxLog: string
     cli: string
+    cmdLog: string
     configFile: string
     dir: string
     observeFile: string
@@ -1136,10 +1734,18 @@ if (import.meta.vitest) {
     responseFile: string
   }
 
+  const cmdLogOf = (fixture: FakeRunFixture): string => {
+    if (!existsSync(fixture.cmdLog)) {
+      return ''
+    }
+    return readFileSync(fixture.cmdLog, 'utf8')
+  }
+
   const makeFakeRunFixture = (dir: string): FakeRunFixture => {
     const files = {
       argsFile: path.join(dir, 'args.log'),
       auxLog: path.join(dir, 'aux.log'),
+      cmdLog: path.join(dir, 'cmd.log'),
       configFile: path.join(dir, 'config.log'),
       observeFile: path.join(dir, 'observe.json'),
       promptFile: path.join(dir, 'prompt.log'),
@@ -1152,6 +1758,11 @@ if (import.meta.vitest) {
       dir,
       'opencode',
       `#!/bin/sh
+log_cmd() {
+  if [ -n "$OPENCODE_TEST_CMD_LOG" ]; then
+    printf '%s\\n' "$1" >> "$OPENCODE_TEST_CMD_LOG"
+  fi
+}
 if [ "$1" = "--version" ]; then
   printf '%s\\n' '1.0.0'
   exit 0
@@ -1162,6 +1773,7 @@ if [ "$1" = "models" ]; then
     printf '%s\\n' "cwd=$(pwd)" >> "$OPENCODE_TEST_AUX_LOG"
     printf '%s\\n' "config=$OPENCODE_CONFIG_CONTENT" >> "$OPENCODE_TEST_AUX_LOG"
   fi
+  log_cmd "models $*"
   if [ "$OPENCODE_TEST_MODELS_MODE" = "fail" ]; then
     exit 1
   fi
@@ -1184,6 +1796,7 @@ if [ "$1" = "export" ]; then
     printf '%s\\n' "cwd=$(pwd)" >> "$OPENCODE_TEST_AUX_LOG"
     printf '%s\\n' "config=$OPENCODE_CONFIG_CONTENT" >> "$OPENCODE_TEST_AUX_LOG"
   fi
+  log_cmd "export $*"
   if [ "$OPENCODE_TEST_EXPORT_MODE" = "fail" ]; then
     exit 1
   fi
@@ -1195,6 +1808,21 @@ if [ "$1" = "export" ]; then
   printf '%s\\n' '{"info":{"model":{"id":"glm-5.2","providerID":"opencode-go","variant":"high"}},"messages":[]}'
   exit 0
 fi
+if [ "$1" = "session" ]; then
+  if [ -n "$OPENCODE_TEST_CMD_LOG" ]; then
+    printf '%s\\n' "session $*" >> "$OPENCODE_TEST_CMD_LOG"
+    printf '%s\\n' "cwd=$(pwd)" >> "$OPENCODE_TEST_CMD_LOG"
+    printf '%s\\n' "config=$OPENCODE_CONFIG_CONTENT" >> "$OPENCODE_TEST_CMD_LOG"
+  fi
+  if [ "$OPENCODE_TEST_SESSION_MODE" = "fail" ]; then
+    exit 1
+  fi
+  if [ "$OPENCODE_TEST_SESSION_MODE" = "timeout" ]; then
+    sleep 10
+    exit 0
+  fi
+  exit 0
+fi
 printf '%s\\n' "$@" > "$OPENCODE_TEST_ARGS"
 printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$OPENCODE_TEST_CONFIG"
 cat > "$OPENCODE_TEST_PROMPT"
@@ -1204,6 +1832,26 @@ if [ "$OPENCODE_TEST_OUTPUT_MODE" = "oversized-line" ]; then
   exit 0
 fi
 if [ "$OPENCODE_TEST_OUTPUT_MODE" = "oversized-capture" ]; then
+  i=0
+  while [ "$i" -lt ${Math.floor(OPENCODE_CAPTURE_MAX_BYTES / 65_536) + 1} ]; do
+    head -c 65536 /dev/zero | tr '\\0' 'x'
+    printf '\\n'
+    i=$((i + 1))
+  done
+  exit 0
+fi
+if [ "$OPENCODE_TEST_OUTPUT_MODE" = "session-then-oversized-line" ]; then
+  if [ -n "$OPENCODE_TEST_EVENTS_FILE" ]; then
+    cat "$OPENCODE_TEST_EVENTS_FILE"
+  fi
+  head -c ${OPENCODE_CAPTURE_MAX_LINE_BYTES + 1} /dev/zero | tr '\\0' 'x'
+  printf '\\n'
+  exit 0
+fi
+if [ "$OPENCODE_TEST_OUTPUT_MODE" = "session-then-oversized-capture" ]; then
+  if [ -n "$OPENCODE_TEST_EVENTS_FILE" ]; then
+    cat "$OPENCODE_TEST_EVENTS_FILE"
+  fi
   i=0
   while [ "$i" -lt ${Math.floor(OPENCODE_CAPTURE_MAX_BYTES / 65_536) + 1} ]; do
     head -c 65536 /dev/zero | tr '\\0' 'x'
@@ -1253,6 +1901,7 @@ fi
         OPENCODE_TEST_PROMPT: fixture.promptFile,
         OPENCODE_TEST_CONFIG: fixture.configFile,
         OPENCODE_TEST_AUX_LOG: fixture.auxLog,
+        OPENCODE_TEST_CMD_LOG: fixture.cmdLog,
         ...options.env,
       },
       { scriptsDir: fixture.dir }
@@ -1276,19 +1925,13 @@ fi
       expect(JSON.stringify(readTestJson(fixture.responseFile))).toContain('last')
     })
 
-    it.each([
-      { mode: 'resumable', sessionArgs: ['resumable', '', ''] },
-      { mode: 'followup', sessionArgs: ['followup', 'session-1', '/tmp/session-1'] },
-    ])('fails closed before child startup for the $mode session mode', async ({ sessionArgs }) => {
-      const dir = createTestScratchDir(`wrapper-opencode-${sessionArgs[0]}-test`)
+    it('fails closed when follow-up is missing a resume handle', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-followup-missing-handle-test')
       const fixture = makeFakeRunFixture(dir)
-      const result = await runFake(fixture, { sessionArgs })
+      const result = await runFake(fixture, { sessionArgs: ['followup', '', ''] })
       expect(result.exitCode).toBe(5)
       expect(existsSync(fixture.argsFile)).toBe(false)
       expectFailedResponse(fixture)
-      expect(JSON.stringify(readTestJson(fixture.responseFile))).toContain(
-        'opencode backend の session reuse は未実装'
-      )
     })
 
     it('forces a failed response when the child exits non-zero after writing text', async () => {
@@ -1383,7 +2026,7 @@ fi
           requester_session_id: '',
           effort: {
             requested: 'high',
-            effective: { value: null, source: 'not_exposed' },
+            effective: { value: 'high', source: 'opencode_export' },
           },
         },
         state: {
@@ -1746,6 +2389,348 @@ fi
           },
         },
       })
+    })
+  })
+
+  const expectSessionDeleted = (fixture: FakeRunFixture, sessionID: string): void => {
+    expect(cmdLogOf(fixture)).toContain(`session delete ${sessionID}`)
+  }
+
+  const expectSessionKept = (fixture: FakeRunFixture): void => {
+    expect(cmdLogOf(fixture)).not.toContain('session delete')
+  }
+
+  const writeTextEvents = (dir: string, payload: Record<string, unknown>): string => {
+    const eventsFile = path.join(dir, 'session-events.jsonl')
+    writeFileSync(eventsFile, `${JSON.stringify({ type: 'text', ...payload })}\n`)
+    return eventsFile
+  }
+
+  const writeJsonlEvents = (dir: string, events: Record<string, unknown>[]): string => {
+    const eventsFile = path.join(dir, 'session-events.jsonl')
+    writeFileSync(eventsFile, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`)
+    return eventsFile
+  }
+
+  const withOpencodeOverride = async (
+    observeFile: string,
+    override: OpencodeRunOverride,
+    run: () => Promise<void>
+  ): Promise<void> => {
+    opencodeRunOverrides.set(observeFile, override)
+    try {
+      await run()
+    } finally {
+      opencodeRunOverrides.delete(observeFile)
+    }
+  }
+
+  const expectResumableObserve = (observeFile: string, resumeId: string): void => {
+    expect(readTestJson(observeFile)).toMatchObject({
+      backend_session: {
+        resume_id: resumeId,
+        resume_source: 'opencode_json',
+        persistence: 'resumable',
+      },
+    })
+  }
+
+  const expectUnavailableObserve = (observeFile: string): void => {
+    expect(readTestJson(observeFile)).toMatchObject({
+      backend_session: { persistence: 'unavailable', resume_id: null },
+    })
+  }
+
+  describe('opencode session reuse', () => {
+    it('records resume_id on resumable runs and does not delete the session', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-resumable-session-test')
+      const fixture = makeFakeRunFixture(dir)
+      const result = await runFake(fixture, { sessionArgs: ['resumable', '', ''] })
+      expect(result.exitCode).toBe(0)
+      expect(readTestJson(fixture.observeFile)).toMatchObject({
+        backend_session: {
+          backend: 'opencode',
+          model: 'opencode/opencode-go/glm-5.2@high',
+          resume_id: TEST_SESSION_ID,
+          resume_source: 'opencode_json',
+          persistence: 'resumable',
+          home_dir: null,
+        },
+      })
+      expectSessionKept(fixture)
+    })
+
+    it('passes -s on follow-up runs and does not delete the session', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-followup-session-test')
+      const fixture = makeFakeRunFixture(dir)
+      const result = await runFake(fixture, { sessionArgs: ['followup', 'ses_follow_1', ''] })
+      expect(result.exitCode).toBe(0)
+      expect(readFileSync(fixture.argsFile, 'utf8').split('\n')).toEqual(
+        expect.arrayContaining(['-s', 'ses_follow_1'])
+      )
+      expectSessionKept(fixture)
+    })
+
+    it('deletes the captured session on a normal run and omits backend_session', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-normal-session-delete-test')
+      const fixture = makeFakeRunFixture(dir)
+      const result = await runFake(fixture)
+      expect(result.exitCode).toBe(0)
+      expect(readTestJson(fixture.observeFile)).not.toHaveProperty('backend_session')
+      expectSessionDeleted(fixture, TEST_SESSION_ID)
+    })
+
+    it('deletes the session after export on a normal run', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-after-export-test')
+      const fixture = makeFakeRunFixture(dir)
+      await runFake(fixture, {
+        env: { OPENCODE_TEST_EVENTS_FILE: writeSessionEvents(dir, 'ses_order_1') },
+      })
+      const log = cmdLogOf(fixture)
+      const exportAt = log.indexOf('export ses_order_1')
+      const deleteAt = log.indexOf('session delete ses_order_1')
+      expect(exportAt).toBeGreaterThanOrEqual(0)
+      expect(deleteAt).toBeGreaterThan(exportAt)
+    })
+
+    it('does not re-record an unmatched follow-up handle', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-followup-mismatch-test')
+      const fixture = makeFakeRunFixture(dir)
+      const result = await runFake(fixture, { sessionArgs: ['followup', 'ses_follow_1', ''] })
+      expect(result.exitCode).toBe(0)
+      expectUnavailableObserve(fixture.observeFile)
+      expectSessionKept(fixture)
+    })
+
+    it('marks follow-up unavailable when capture has no session id', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-followup-missing-id-test')
+      const fixture = makeFakeRunFixture(dir)
+      const eventsFile = writeTextEvents(dir, { part: { text: completedReport } })
+      const result = await runFake(fixture, {
+        sessionArgs: ['followup', 'ses_follow_1', ''],
+        env: { OPENCODE_TEST_EVENTS_FILE: eventsFile },
+      })
+      expect(result.exitCode).toBe(0)
+      expectUnavailableObserve(fixture.observeFile)
+      expectSessionKept(fixture)
+    })
+
+    it('keeps persistence across resumable then matching follow-up', async () => {
+      const initial = makeFakeRunFixture(
+        createTestScratchDir('wrapper-opencode-resumable-followup-1')
+      )
+      const first = await runFake(initial, { sessionArgs: ['resumable', '', ''] })
+      expect(first.exitCode).toBe(0)
+      expectResumableObserve(initial.observeFile, TEST_SESSION_ID)
+      const follow = makeFakeRunFixture(
+        createTestScratchDir('wrapper-opencode-resumable-followup-2')
+      )
+      const second = await runFake(follow, { sessionArgs: ['followup', TEST_SESSION_ID, ''] })
+      expect(second.exitCode).toBe(0)
+      expectResumableObserve(follow.observeFile, TEST_SESSION_ID)
+      expectSessionKept(follow)
+    })
+  })
+
+  describe('opencode session lifecycle', () => {
+    it('deletes the session after a child non-zero exit', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-child-error-test')
+      const fixture = makeFakeRunFixture(dir)
+      await runFake(fixture, { env: { OPENCODE_TEST_EXIT_CODE: '7' } })
+      expectSessionDeleted(fixture, TEST_SESSION_ID)
+    })
+
+    it('deletes the session after a child signal', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-child-signal-test')
+      const fixture = makeFakeRunFixture(dir)
+      await runFake(fixture, { env: { OPENCODE_TEST_EXIT_MODE: 'signal' } })
+      expectSessionDeleted(fixture, TEST_SESSION_ID)
+    })
+
+    it('deletes the session after a response parse failure', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-parse-fail-test')
+      const fixture = makeFakeRunFixture(dir)
+      const eventsFile = writeTextEvents(dir, {
+        sessionID: 'ses_parse_fail',
+        part: { text: 'not-a-report' },
+      })
+      const result = await runFake(fixture, { env: { OPENCODE_TEST_EVENTS_FILE: eventsFile } })
+      expect(result.exitCode).toBe(1)
+      expectSessionDeleted(fixture, 'ses_parse_fail')
+    })
+
+    it('records session_delete_skipped when sessionID is missing', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-skipped-test')
+      const fixture = makeFakeRunFixture(dir)
+      const eventsFile = writeTextEvents(dir, { part: { text: completedReport } })
+      const result = await runFake(fixture, { env: { OPENCODE_TEST_EVENTS_FILE: eventsFile } })
+      expect(result.exitCode).toBe(0)
+      expectSessionKept(fixture)
+      expect(observeEventsOfKind(fixture.observeFile, 'session_delete_skipped')).toHaveLength(1)
+    })
+
+    it('records session_delete_failed when session delete exits non-zero', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-fail-test')
+      const fixture = makeFakeRunFixture(dir)
+      const result = await runFake(fixture, { env: { OPENCODE_TEST_SESSION_MODE: 'fail' } })
+      expect(result.exitCode).toBe(0)
+      expect(observeEventsOfKind(fixture.observeFile, 'session_delete_failed')).toEqual([
+        expect.objectContaining({
+          kind: 'session_delete_failed',
+          session_id: TEST_SESSION_ID,
+          timed_out: false,
+        }),
+      ])
+    })
+
+    it('records session_delete_failed when session delete times out', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-timeout-test')
+      const fixture = makeFakeRunFixture(dir)
+      const result = await runFake(fixture, { env: { OPENCODE_TEST_SESSION_MODE: 'timeout' } })
+      expect(result.exitCode).toBe(0)
+      expect(observeEventsOfKind(fixture.observeFile, 'session_delete_failed')).toEqual([
+        expect.objectContaining({
+          kind: 'session_delete_failed',
+          session_id: TEST_SESSION_ID,
+          timed_out: true,
+        }),
+      ])
+    })
+
+    it('starts session delete with the child env, cwd, and --pure', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-isolation-test')
+      const fixture = makeFakeRunFixture(dir)
+      const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        encoding: 'utf8',
+      }).trimEnd()
+      await runFake(fixture, {
+        env: {
+          OPENCODE_CONFIG_CONTENT: '{"leaked":true}',
+          DELEGATE_OPENCODE_PURE: '1',
+        },
+      })
+      const log = cmdLogOf(fixture)
+      expect(log).toContain(`session delete ${TEST_SESSION_ID} --pure`)
+      expect(log).toContain(`cwd=${repoRoot}`)
+      expect(log).toContain('config={}')
+      expect(log).not.toContain('leaked')
+    })
+
+    it('times out a hung session delete helper', () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-delete-helper-timeout-test')
+      const sleepy = writeExecutable(dir, 'opencode-sleep', '#!/bin/sh\nsleep 2\n')
+      const result = deleteOpencodeSession({
+        command: sleepy,
+        sessionID: 'ses_timeout',
+        env: { PATH: '/usr/bin:/bin' },
+        limits: { timeoutMs: 200 },
+      })
+      expect(result.ok).toBe(false)
+      expect(result.timedOut).toBe(true)
+    })
+  })
+
+  describe('opencode session identity reclaim', () => {
+    it('skips delete when captured session ids disagree', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-id-conflict-run')
+      const fixture = makeFakeRunFixture(dir)
+      const eventsFile = writeJsonlEvents(dir, [
+        { type: 'text', sessionID: 'ses_a', part: { text: completedReport } },
+        { type: 'text', sessionID: 'ses_b', part: { text: completedReport } },
+      ])
+      const result = await runFake(fixture, { env: { OPENCODE_TEST_EVENTS_FILE: eventsFile } })
+      expect(result.exitCode).toBe(0)
+      expectSessionKept(fixture)
+      expect(observeEventsOfKind(fixture.observeFile, 'session_delete_skipped')).toHaveLength(1)
+    })
+
+    it('deletes a later valid id when earlier candidates are invalid', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-session-id-invalid-then-valid-run')
+      const fixture = makeFakeRunFixture(dir)
+      const eventsFile = writeJsonlEvents(dir, [
+        { type: 'text', sessionID: '', part: { text: 'x' } },
+        { type: 'text', sessionID: 1, part: { text: 'y' } },
+        { type: 'plugin', sessionID: 'ses_plugin' },
+        { type: 'text', sessionID: 'ses_valid_1', part: { text: completedReport } },
+      ])
+      const result = await runFake(fixture, { env: { OPENCODE_TEST_EVENTS_FILE: eventsFile } })
+      expect(result.exitCode).toBe(0)
+      expectSessionDeleted(fixture, 'ses_valid_1')
+    })
+
+    it.each(['session-then-oversized-line', 'session-then-oversized-capture'] as const)(
+      'deletes a verified session after %s',
+      async (outputMode) => {
+        const dir = createTestScratchDir(`wrapper-opencode-${outputMode}-reclaim-test`)
+        const fixture = makeFakeRunFixture(dir)
+        const result = await runFake(fixture, {
+          env: {
+            OPENCODE_TEST_OUTPUT_MODE: outputMode,
+            OPENCODE_TEST_EVENTS_FILE: writeSessionEvents(dir, 'ses_keep_1'),
+          },
+        })
+        expect(result.exitCode).toBe(1)
+        expectSessionDeleted(fixture, 'ses_keep_1')
+      }
+    )
+  })
+
+  describe('opencode session reclaim after wait', () => {
+    it('reclaims the session when waiting for the child rejects', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-wait-reject-test')
+      const fixture = makeFakeRunFixture(dir)
+      await withOpencodeOverride(
+        fixture.observeFile,
+        opencodeOverride({ waitErrorAfterChild: new Error('opencode-wait-reject') }),
+        async () => {
+          await expect(runFake(fixture)).rejects.toThrow('opencode-wait-reject')
+          expectSessionDeleted(fixture, TEST_SESSION_ID)
+        }
+      )
+    })
+
+    it('records session_delete_skipped when session identity extraction throws', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-identity-throw-test')
+      const fixture = makeFakeRunFixture(dir)
+      await withOpencodeOverride(
+        fixture.observeFile,
+        opencodeOverride({ identityError: new Error('opencode-identity-read') }),
+        async () => {
+          const result = await runFake(fixture)
+          expect(result.exitCode).toBe(0)
+          expectSessionKept(fixture)
+          expect(observeEventsOfKind(fixture.observeFile, 'session_delete_skipped')).toHaveLength(1)
+        }
+      )
+    })
+
+    it('reclaims the session when SIGTERM arrives after the child exits', async () => {
+      const dir = createTestScratchDir('wrapper-opencode-late-sigterm-test')
+      const fixture = makeFakeRunFixture(dir)
+      const received: string[] = []
+      const onTerm = (): void => {
+        received.push('SIGTERM')
+      }
+      process.on('SIGTERM', onTerm)
+      try {
+        await withOpencodeOverride(
+          fixture.observeFile,
+          opencodeOverride({
+            swallowLifecycleSignal: true,
+            afterWait: () => {
+              process.emit('SIGTERM')
+            },
+          }),
+          async () => {
+            const result = await runFake(fixture)
+            expect(result.exitCode).toBe(0)
+            expectSessionDeleted(fixture, TEST_SESSION_ID)
+          }
+        )
+        expect(received.length).toBeGreaterThan(0)
+      } finally {
+        process.removeListener('SIGTERM', onTerm)
+      }
     })
   })
 }

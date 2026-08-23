@@ -10,7 +10,7 @@ import { randomToken } from './protocol.ts'
 // bash 版 observe-json.sh の session reuse / failed response 系関数と同一契約
 // (等価性は scripts/observe-store-parity.test.ts が bash 実装との突き合わせで検証する)。
 
-const RESUMABLE_BACKENDS = new Set(['claude', 'codex', 'devin', 'cursor'])
+const RESUMABLE_BACKENDS = new Set(['claude', 'codex', 'devin', 'cursor', 'opencode'])
 
 export const backendSupportsResume = (backend: string): boolean => RESUMABLE_BACKENDS.has(backend)
 
@@ -309,6 +309,17 @@ if (import.meta.vitest) {
       observeFile: fixture.observeFile,
     }
   }
+
+  describe('backendSupportsResume', () => {
+    it('includes opencode with the existing backends', () => {
+      expect(backendSupportsResume('claude')).toBe(true)
+      expect(backendSupportsResume('codex')).toBe(true)
+      expect(backendSupportsResume('devin')).toBe(true)
+      expect(backendSupportsResume('cursor')).toBe(true)
+      expect(backendSupportsResume('opencode')).toBe(true)
+      expect(backendSupportsResume('unknown')).toBe(false)
+    })
+  })
 
   describe('writeFailedResponse report body', () => {
     it('keeps the legacy wording byte-identical for unknown failures', () => {
