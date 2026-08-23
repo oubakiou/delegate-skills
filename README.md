@@ -164,6 +164,7 @@ Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 | `DELEGATE_CODEX_HOOKS`                   | `1` (`0`/`false`/`no` = off)     | Run project hooks on Codex `implement`/`chore` runs (bypasses hook trust)                                           |
 | `DELEGATE_OPENCODE_PURE`                 | unset (off)                      | `1` / `true` / `yes` extends `--pure` to every task type. `explore` / `review` / `htmldoc` always run with `--pure` |
 | `DELEGATE_OPENCODE_MCP_SOURCE`           | unset (do not inject)            | `claude` / `cursor` / `codex` selects the MCP source; unset means do not inject                                     |
+| `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` | `64000` for delegated runs       | OpenCode per-step output budget, including reasoning tokens; an explicit caller value is preserved                  |
 | `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                   | Stop a child after this many seconds without stream growth                                                          |
 | `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)  | Maximum stdout/stderr retained in observe JSON                                                                      |
 | `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                   | Delete old per-run scratch directories                                                                              |

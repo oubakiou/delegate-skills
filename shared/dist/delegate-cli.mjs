@@ -6755,6 +6755,7 @@ var OPENCODE_MODELS_MAX_BYTES = 262144;
 var OPENCODE_EXPORT_MAX_BYTES = 2097152;
 var OPENCODE_SESSION_DELETE_TIMEOUT_MS = 2e3;
 var OPENCODE_SESSION_DELETE_MAX_BYTES = 16384;
+var OPENCODE_OUTPUT_TOKEN_MAX_DEFAULT = "64000";
 var OPENCODE_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 var OPENCODE_SESSION_EVENT_TYPES = /* @__PURE__ */ new Set([
 	"step_start",
@@ -7181,8 +7182,10 @@ var recordOpencodeUsage = (context) => {
 		});
 	});
 };
+var opencodeOutputTokenMax = (env) => env.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX ?? OPENCODE_OUTPUT_TOKEN_MAX_DEFAULT;
 var opencodeChildEnv = (context) => ({
 	...context.env,
+	OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: opencodeOutputTokenMax(context.env),
 	OPENCODE_CONFIG_CONTENT: opencodeConfigContent(context.args.taskType, opencodeMcpOf(context).mcp),
 	TMPDIR: path.join(context.workDir, "tmp")
 });
