@@ -78,6 +78,7 @@ const OPENCODE_MODELS_MAX_BYTES = 256 * 1024
 const OPENCODE_EXPORT_MAX_BYTES = 2 * 1024 * 1024
 const OPENCODE_SESSION_DELETE_TIMEOUT_MS = 2000
 const OPENCODE_SESSION_DELETE_MAX_BYTES = 16_384
+const OPENCODE_OUTPUT_TOKEN_MAX_DEFAULT = '64000'
 const OPENCODE_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 const OPENCODE_SESSION_EVENT_TYPES = new Set([
   'step_start',
@@ -726,8 +727,12 @@ const recordOpencodeUsage = (context: WrapperContext): void => {
   })
 }
 
+const opencodeOutputTokenMax = (env: Env): string =>
+  env.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX ?? OPENCODE_OUTPUT_TOKEN_MAX_DEFAULT
+
 const opencodeChildEnv = (context: WrapperContext): Env => ({
   ...context.env,
+  OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: opencodeOutputTokenMax(context.env),
   OPENCODE_CONFIG_CONTENT: opencodeConfigContent(context.args.taskType, opencodeMcpOf(context).mcp),
   TMPDIR: path.join(context.workDir, 'tmp'),
 })
@@ -2057,6 +2062,7 @@ if [ "$1" = "models" ]; then
     printf '%s\\n' "models $*" >> "$OPENCODE_TEST_AUX_LOG"
     printf '%s\\n' "cwd=$(pwd)" >> "$OPENCODE_TEST_AUX_LOG"
     printf '%s\\n' "config=$OPENCODE_CONFIG_CONTENT" >> "$OPENCODE_TEST_AUX_LOG"
+    printf '%s\\n' "output-token-max=$OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX" >> "$OPENCODE_TEST_AUX_LOG"
   fi
   log_cmd "models $*"
   if [ "$OPENCODE_TEST_MODELS_MODE" = "fail" ]; then
@@ -2080,6 +2086,7 @@ if [ "$1" = "export" ]; then
     printf '%s\\n' "export $*" >> "$OPENCODE_TEST_AUX_LOG"
     printf '%s\\n' "cwd=$(pwd)" >> "$OPENCODE_TEST_AUX_LOG"
     printf '%s\\n' "config=$OPENCODE_CONFIG_CONTENT" >> "$OPENCODE_TEST_AUX_LOG"
+    printf '%s\\n' "output-token-max=$OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX" >> "$OPENCODE_TEST_AUX_LOG"
   fi
   log_cmd "export $*"
   if [ "$OPENCODE_TEST_EXPORT_MODE" = "fail" ]; then
@@ -2108,6 +2115,7 @@ if [ "$1" = "session" ]; then
   fi
   exit 0
 fi
+log_cmd "output-token-max=$OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 printf '%s\\n' "$@" > "$OPENCODE_TEST_ARGS"
 printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$OPENCODE_TEST_CONFIG"
 cat > "$OPENCODE_TEST_PROMPT"
@@ -2217,6 +2225,7 @@ fi
       expect(readFileSync(fixture.argsFile, 'utf8')).not.toContain('# Objective')
       expect(readFileSync(fixture.promptFile, 'utf8')).toContain('<request>')
       expect(readTestJson(fixture.configFile)).toEqual({})
+      expect(readFileSync(fixture.cmdLog, 'utf8')).toContain('output-token-max=64000')
       expect(JSON.stringify(readTestJson(fixture.responseFile))).toContain('last')
     })
 
@@ -2591,6 +2600,29 @@ fi
       )
       await runFake(fixture, { model: 'opencode/opencode-go/glm-5.2' })
       expect(existsSync(fixture.auxLog)).toBe(false)
+    })
+  })
+
+  describe('opencode output token limit', () => {
+    it('doubles the OpenCode default when the caller does not specify a limit', () => {
+      expect(opencodeOutputTokenMax({})).toBe('64000')
+    })
+
+    it('preserves a caller-supplied limit', () => {
+      expect(opencodeOutputTokenMax({ OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '131072' })).toBe(
+        '131072'
+      )
+    })
+
+    it('passes a caller-supplied limit to child and auxiliary processes', async () => {
+      const fixture = makeFakeRunFixture(
+        createTestScratchDir('wrapper-opencode-output-token-limit-test')
+      )
+      await runFake(fixture, {
+        env: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '131072' },
+      })
+      expect(readFileSync(fixture.cmdLog, 'utf8')).toContain('output-token-max=131072')
+      expect(readFileSync(fixture.auxLog, 'utf8')).toContain('output-token-max=131072')
     })
   })
 

@@ -164,6 +164,7 @@ OpenCode は cwd 外への出力を保証しない。direct な edit / write と
 | `DELEGATE_CODEX_HOOKS`                   | `1`（`0`/`false`/`no` で無効） | Codex の implement / chore run で project hooks を実行する（hook trust を bypass）                                    |
 | `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                 | `1` / `true` / `yes` で `--pure` を全 task type へ広げる。`explore` / `review` / `htmldoc` は常に `--pure` で起動する |
 | `DELEGATE_OPENCODE_MCP_SOURCE`           | 未設定（注入しない）           | `claude` / `cursor` / `codex` で MCP 入力元を明示する。未指定なら注入しない                                           |
+| `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` | delegate 実行では `64000`      | reasoning token を含む OpenCode の step ごとの出力予算。呼び出し元の明示値は維持する                                  |
 | `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                    | stream が増えない child を指定秒数後に停止する                                                                        |
 | `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限）  | observe JSON に保持する stdout / stderr の上限                                                                        |
 | `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                    | 古い run ごとの scratch directory を削除する                                                                          |
