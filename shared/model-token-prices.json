@@ -16,6 +16,16 @@
   "models": [
     {
       "model_provider": "anthropic",
+      "model": "claude-fable-5.1",
+      "display_name": "Claude Fable 5.1",
+      "input": 10,
+      "cached_input": 0.25,
+      "output": 50,
+      "pricing_source": "anthropic",
+      "retrieved_at": "2026-09-05"
+    },
+    {
+      "model_provider": "anthropic",
       "model": "claude-fable-5",
       "display_name": "Claude Fable 5",
       "input": 10,
@@ -48,8 +58,8 @@
       "input": 2,
       "cached_input": 0.2,
       "output": 10,
-      "pricing_status": "introductory_pricing_until_2026-08-31",
-      "pricing_source": "anthropic"
+      "pricing_source": "anthropic",
+      "retrieved_at": "2026-09-05"
     },
     {
       "model_provider": "anthropic",
@@ -596,8 +606,13 @@
   "aliases": [
     {
       "model_provider": "anthropic",
+      "alias": "claude-fable-5-1",
+      "alias_for": "claude-fable-5.1"
+    },
+    {
+      "model_provider": "anthropic",
       "alias": "fable",
-      "alias_for": "claude-fable-5"
+      "alias_for": "claude-fable-5.1"
     },
     {
       "model_provider": "anthropic",

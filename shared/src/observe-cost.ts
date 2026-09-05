@@ -260,18 +260,23 @@ if (import.meta.vitest) {
   }
   describe('augmentCostEstimate', () => {
     it.each([
-      ['gpt-6-astra@ultra', 'gpt-6-astra'],
-      ['gpt-5.6@high', 'gpt-5.6-sol'],
-    ])('resolves %s to its real price entry', (model, expectedModel) => {
+      { model: 'gpt-6-astra@ultra', priced: 'gpt-6-astra', source: 'openai', backend: 'codex' },
+      { model: 'gpt-5.6@high', priced: 'gpt-5.6-sol', source: 'openai', backend: 'codex' },
+      {
+        model: 'claude-fable-5-1@high',
+        priced: 'claude-fable-5.1',
+        source: 'anthropic',
+        backend: 'claude',
+      },
+      { model: 'fable@high', priced: 'claude-fable-5.1', source: 'anthropic', backend: 'claude' },
+    ])('resolves $model to its real price entry', ({ model, priced, source, backend }) => {
       const realTable = loadRealPriceTable()
       const entry = realTable.models.find(
         (candidate) =>
-          isRecord(candidate) &&
-          candidate.model === expectedModel &&
-          candidate.pricing_source === 'openai'
+          isRecord(candidate) && candidate.model === priced && candidate.pricing_source === source
       )
       expect(entry).toBeDefined()
-      expect(selectEntry(model, 'codex', realTable)).toBe(entry)
+      expect(selectEntry(model, backend, realTable)).toBe(entry)
     })
 
     it('prefers the backend provider entry and applies uncached rates', () => {
