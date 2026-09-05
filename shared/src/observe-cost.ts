@@ -259,6 +259,21 @@ if (import.meta.vitest) {
     aliases: [{ alias: 'gpt-alias', alias_for: 'gpt-x' }],
   }
   describe('augmentCostEstimate', () => {
+    it.each([
+      ['gpt-6-astra@ultra', 'gpt-6-astra'],
+      ['gpt-5.6@high', 'gpt-5.6-sol'],
+    ])('resolves %s to its real price entry', (model, expectedModel) => {
+      const realTable = loadRealPriceTable()
+      const entry = realTable.models.find(
+        (candidate) =>
+          isRecord(candidate) &&
+          candidate.model === expectedModel &&
+          candidate.pricing_source === 'openai'
+      )
+      expect(entry).toBeDefined()
+      expect(selectEntry(model, 'codex', realTable)).toBe(entry)
+    })
+
     it('prefers the backend provider entry and applies uncached rates', () => {
       const result = augmentCostEstimate(usage({}), 'codex', table)
       expect(result.cost_usd_estimated).toBeCloseTo((1000 * 2 + 100 * 10) / 1_000_000, 12)
