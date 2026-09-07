@@ -54,6 +54,7 @@ delegate-skills/
     delegate-imagegen/{SKILL.md, scripts/}
     delegate-x-research/{SKILL.md, scripts/}
     delegate-htmldoc/{SKILL.md, references/, scripts/}
+    delegate-prose/{SKILL.md, scripts/}
   .claude/skills/<skill>/scripts/  # Claude Code 向け gh skill install 配置（gitignore）
   .agents/skills/<skill>/scripts/  # Codex 向け gh skill install 配置（gitignore）
   shared/                          # バンドル + shim の正本（種別・実行系非依存）
@@ -445,6 +446,7 @@ for agent in claude-code codex; do
     delegate-imagegen \
     delegate-x-research \
     delegate-htmldoc \
+    delegate-prose \
   ; do
     gh skill install . "$skill" --from-local --agent "$agent" --scope project --force
   done

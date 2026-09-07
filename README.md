@@ -54,7 +54,7 @@ gh skill install oubakiou/delegate-skills delegate-explore --agent claude-code -
 gh skill install oubakiou/delegate-skills delegate-explore --agent codex --scope project
 
 # Install all delegate skills at once
-for skill in delegate-explore delegate-implement delegate-chore delegate-review delegate-imagegen delegate-x-research delegate-htmldoc; do
+for skill in delegate-explore delegate-implement delegate-chore delegate-review delegate-imagegen delegate-x-research delegate-htmldoc delegate-prose; do
   gh skill install oubakiou/delegate-skills "$skill" --agent claude-code --scope project
 done
 ```
@@ -116,23 +116,26 @@ OpenCode does not guarantee output outside the repository cwd: direct edit/write
 
 ## Skills
 
-| skill                 | Purpose                                      | Tool permissions                 | Default model | env                                                                              |
-| --------------------- | -------------------------------------------- | -------------------------------- | ------------- | -------------------------------------------------------------------------------- |
-| `delegate-explore`    | Read-only code / doc / web / MCP exploration | read-only (web & MCP allowed)    | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
-| `delegate-implement`  | Code implementation & edits (one commit)     | Edit/Write/Bash (no push)        | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
-| `delegate-chore`      | Fallback chores                              | Edit/Write/Bash (no push)        | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
-| `delegate-review`     | Code/doc review (diff findings)              | read-only                        | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
-| `delegate-imagegen`   | Image generation/editing via Codex           | Codex subprocess                 | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
-| `delegate-x-research` | x.com / X research                           | X research subprocess            | `grok-build`  | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
-| `delegate-htmldoc`    | HTML document generation (fixed template)    | output-dir writes only (no push) | `haiku`       | `DELEGATE_HTMLDOC_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| skill                 | Purpose                                      | Tool permissions                  | Default model | env                                                                              |
+| --------------------- | -------------------------------------------- | --------------------------------- | ------------- | -------------------------------------------------------------------------------- |
+| `delegate-explore`    | Read-only code / doc / web / MCP exploration | read-only (web & MCP allowed)     | `haiku`       | `DELEGATE_EXPLORE_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-implement`  | Code implementation & edits (one commit)     | Edit/Write/Bash (no push)         | `sonnet`      | `DELEGATE_IMPLEMENT_MODEL` / `DELEGATE_WORK_DIR`                                 |
+| `delegate-chore`      | Fallback chores                              | Edit/Write/Bash (no push)         | `haiku`       | `DELEGATE_CHORE_MODEL` / `DELEGATE_WORK_DIR`                                     |
+| `delegate-review`     | Code/doc review (diff findings)              | read-only                         | `opus`        | `DELEGATE_REVIEW_MODEL` / `DELEGATE_WORK_DIR`                                    |
+| `delegate-imagegen`   | Image generation/editing via Codex           | Codex subprocess                  | `gpt-5`       | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
+| `delegate-x-research` | x.com / X research                           | X research subprocess             | `grok-build`  | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
+| `delegate-htmldoc`    | HTML document generation (fixed template)    | output-dir writes only (no push)  | `haiku`       | `DELEGATE_HTMLDOC_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-prose`      | Markdown / plain-text writing & rewriting    | output-path writes only (no push) | `sonnet`      | `DELEGATE_PROSE_MODEL` / `DELEGATE_WORK_DIR`                                     |
 
-Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`; htmldoc only fills content into a bundled fixed template, so `haiku`.
+Rationale for default models: explore / chore are read-centric and low-risk, so `haiku`; implement needs editing judgment, so `sonnet`; review's finding quality directly shapes the result and is judgment-heavy, so `opus`; htmldoc only fills content into a bundled fixed template, so `haiku`; prose carries enough judgment weight that `haiku` would lower quality, yet it is an output-token-heavy type where a model on par with the main agent would not cut cost, so `sonnet`.
 
 `delegate-imagegen` intentionally has no user-facing model prompt, but operators can set `DELEGATE_IMAGEGEN_MODEL`. If the user does not specify an output directory, generated files go under `delegate-imagegen-output/`.
 
 `delegate-x-research` is a capability bridge for X research, so operators can set `DELEGATE_X_RESEARCH_MODEL` but the main agent should not ask users to pick a backend model.
 
 `delegate-htmldoc` generates self-contained HTML documents by filling content into a fixed template bundled with the skill (`references/template.html` + `references/styleguide.md`), so the design stays identical across runs and models. The worker never generates or edits CSS. Chart and image assets are prepared by the parent (e.g. via dataviz-svg or `delegate-imagegen`) and passed by path: SVGs are inlined into the document, raster images are copied next to the output HTML and referenced relatively. If the user does not specify an output path, generated files go under `delegate-htmldoc-output/`.
+
+`delegate-prose` covers general-purpose writing, rewriting, and polishing. It bundles no style assets: voice, tone, length, and target audience are specified in the request. Facts are taken only from the request and its explicitly named sources, never filled in by guesswork. To finish a piece as an HTML document, pass the generated Markdown to `delegate-htmldoc`. If the user does not specify an output path, generated files go under `delegate-prose-output/`.
 
 ## Environment variables
 
@@ -151,23 +154,23 @@ Model resolution order: `DELEGATE_<TYPE>_MODEL` → skill-specific default.
 
 ### Advanced settings
 
-| Variable                                 | Default                          | Purpose                                                                                                             |
-| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                    | Response inline/stepwise threshold                                                                                  |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes (`0` = unlimited)  | Maximum inline content in one-shot JSON output                                                                      |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                   | Maximum request embedded in the worker prompt                                                                       |
-| `DELEGATE_METRICS_FILE`                  | unset                            | Optional JSONL telemetry output                                                                                     |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                     | Observe heartbeat interval                                                                                          |
-| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` seconds                     | Observe lock timeout                                                                                                |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection) | Claude child Bash timeout                                                                                           |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (`0` = keep)                 | Prune successful-run caches; auth is always removed                                                                 |
-| `DELEGATE_CODEX_HOOKS`                   | `1` (`0`/`false`/`no` = off)     | Run project hooks on Codex `implement`/`chore` runs (bypasses hook trust)                                           |
-| `DELEGATE_OPENCODE_PURE`                 | unset (off)                      | `1` / `true` / `yes` extends `--pure` to every task type. `explore` / `review` / `htmldoc` always run with `--pure` |
-| `DELEGATE_OPENCODE_MCP_SOURCE`           | unset (do not inject)            | `claude` / `cursor` / `codex` selects the MCP source; unset means do not inject                                     |
-| `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` | `64000` for delegated runs       | OpenCode per-step output budget, including reasoning tokens; an explicit caller value is preserved                  |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                   | Stop a child after this many seconds without stream growth                                                          |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)  | Maximum stdout/stderr retained in observe JSON                                                                      |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                   | Delete old per-run scratch directories                                                                              |
+| Variable                                 | Default                          | Purpose                                                                                                                       |
+| ---------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                    | Response inline/stepwise threshold                                                                                            |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes (`0` = unlimited)  | Maximum inline content in one-shot JSON output                                                                                |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                   | Maximum request embedded in the worker prompt                                                                                 |
+| `DELEGATE_METRICS_FILE`                  | unset                            | Optional JSONL telemetry output                                                                                               |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` seconds                     | Observe heartbeat interval                                                                                                    |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` seconds                     | Observe lock timeout                                                                                                          |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms (`0` = no injection) | Claude child Bash timeout                                                                                                     |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1` (`0` = keep)                 | Prune successful-run caches; auth is always removed                                                                           |
+| `DELEGATE_CODEX_HOOKS`                   | `1` (`0`/`false`/`no` = off)     | Run project hooks on Codex `implement`/`chore` runs (bypasses hook trust)                                                     |
+| `DELEGATE_OPENCODE_PURE`                 | unset (off)                      | `1` / `true` / `yes` extends `--pure` to every task type. `explore` / `review` / `htmldoc` / `prose` always run with `--pure` |
+| `DELEGATE_OPENCODE_MCP_SOURCE`           | unset (do not inject)            | `claude` / `cursor` / `codex` selects the MCP source; unset means do not inject                                               |
+| `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` | `64000` for delegated runs       | OpenCode per-step output budget, including reasoning tokens; an explicit caller value is preserved                            |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0` (disabled)                   | Stop a child after this many seconds without stream growth                                                                    |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes (`0` = unlimited)  | Maximum stdout/stderr retained in observe JSON                                                                                |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0` (disabled)                   | Delete old per-run scratch directories                                                                                        |
 
 ### Work files and telemetry
 

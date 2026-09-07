@@ -30,7 +30,7 @@ main agent
 通常 run の親側 happy path は `run.sh` が 1 回の Bash 呼び出しに畳む。`run.sh` は成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を stdout に返し、内部処理の exit code を透過する。resumable / follow-up、observe 監視、background 実行など途中で親の判断を挟む高度なフローは、従来どおり `prepare.sh` / `dispatch.sh` / `read-response.sh` 等の個別 shim を直接使う。observe JSON / run 出力の読み取りは `read-json.sh`（`jq -r <dotpath>` 相当）を使う。
 
 ファイルプロトコルは実行系（claude -p / Codex / Devin CLI / Cursor agent CLI / opencode CLI）に依存しない。request は wrapper が worker の初期 prompt へ埋め込み、response は wrapper が worker の報告を回収して組み立てる。target backend は 5 種、requester（delegate を起動する側）は Claude / Codex / Devin / Cursor の 4 種のままである。
-委譲するときは、task_type に対応する専用 skill（explore / implement / review / chore / imagegen / xresearch / htmldoc）を使い、generic な subagent へ直接流さない。
+委譲するときは、task_type に対応する専用 skill（explore / implement / review / chore / imagegen / xresearch / htmldoc / prose）を使い、generic な subagent へ直接流さない。
 
 ### 委譲メカニズムの選定理由
 
@@ -52,6 +52,7 @@ main agent
 | `delegate-imagegen`                             | 画像生成/編集の capability bridge                  | Codex 子プロセス                                 | `gpt-5`      | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
 | [`delegate-x-research`](delegate-x-research.md) | x.com / X 調査の capability bridge                 | X 調査子プロセス                                 | `grok-build` | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
 | `delegate-htmldoc`                              | 固定テンプレートによる HTML ドキュメント生成       | 出力ディレクトリ書き込みのみ（push なし）        | `haiku`      | `DELEGATE_HTMLDOC_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-prose`                                | Markdown / プレーンテキストの文章生成・改稿        | 出力パス書き込みのみ（push なし）                | `sonnet`     | `DELEGATE_PROSE_MODEL` / `DELEGATE_WORK_DIR`                                     |
 
 delegate-review は README / spec / design docs / changelog などのドキュメント差分も対象に含める。既存の read-only / Findings 優先の枠組みは維持し、記述の矛盾、古い前提、欠けた根拠、実装との不整合を指摘対象に含める。
 
@@ -64,6 +65,7 @@ delegate-review は README / spec / design docs / changelog などのドキュ�
 - imagegen は `DELEGATE_IMAGEGEN_MODEL` → 既定 `gpt-5` で解決するが、Codex 限定の実行系として扱う。`gpt*` 以外に解決された場合は Claude パスへフォールバックせず中止する。主目的は token cost 削減ではなく capability bridge と context isolation で、ユーザー向けには画像生成モデル選択の概念を持たせない。出力先は明示がなければ `delegate-imagegen-output/` 配下
 - xresearch は `DELEGATE_X_RESEARCH_MODEL` → 既定 `grok-build` で解決し、X 調査 capability bridge として扱う。現在の実装 backend は Grok CLI。X の投稿・検索結果は時点依存なので、worker report に確認時刻と根拠 URL を残す
 - htmldoc は skill 同梱の固定テンプレート（CSS + component 語彙）へ content を流し込むだけで判断比重が低いため `haiku`。デザインの一貫性はモデルではなくテンプレート資産で担保する。図・画像素材は親側で用意して request にパスで渡し（チャートは dataviz-svg、ラスタ画像は delegate-imagegen 等）、worker は SVG のインライン埋め込みとラスタ画像の出力ディレクトリへのコピー・相対参照のみ行う
+- prose は判断比重があり `haiku` では品質が落ちる一方、文章本体（出力トークン）が嵩む種別のため main と同格のモデルではコスト削減にならず `sonnet`。事実・数値・固有名詞は request と明示された source からのみ取り推測で補完しない。HTML 文書に仕上げる場合は生成した Markdown を delegate-htmldoc へ渡す
 
 ## 4. モデル解決
 
@@ -96,6 +98,7 @@ effort suffix は opt-in で、`@` が無い場合の起動 argv は backend 既
 | chore     | `--dangerously-skip-permissions`                                                                         | `--sandbox danger-full-access`               | `--permission-mode dangerous`               | `--trust` + `--force`                     | 既定 permission（注入なし）                         |
 | review    | `--dangerously-skip-permissions` + `--allowedTools "Read,Bash"`                                          | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       | `edit: "deny"` + `--pure` + constraints             |
 | htmldoc   | `--dangerously-skip-permissions` + constraints                                                           | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       | `--pure` + constraints（permission は注入しない）   |
+| prose     | `--dangerously-skip-permissions` + constraints                                                           | `--sandbox danger-full-access` + constraints | `--permission-mode dangerous` + constraints | `--trust` + `--force` + constraints       | `--pure` + constraints（permission は注入しない）   |
 
 Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフィックス剥離後の値。Cursor パスの `<model>` は `composer-*` はそのまま、`cursor-*` はプレフィックス剥離後の base model からモデル別の変換テーブルで組み立てた値（effort 未指定時は剥離後の値そのもの）。OpenCode パスの `<provider/model>` は selector `opencode/` を 1 回剥離した値。effort は `--variant` へ素通しする。
 
@@ -127,7 +130,7 @@ Devin パスの `<model>` は `swe-*` はそのまま、`devin-*` はプレフ�
 - 正常終了時（response 生成済みかつ protocol status が failed でない場合）に隔離 codex-home のキャッシュ類（`.tmp` / `tmp` / `cache` / `models_cache.json` / `plugins` / `shell_snapshots`）を prune する（`DELEGATE_CODEX_HOME_PRUNE=0` で無効化）。`auth.json` は同じ directory の一意な owned staging file へ `COPYFILE_EXCL` 相当で書き、hard-link publish により stale destination を置換せず、partial-copy failure は staging file を削除して child 起動前に fail-closed する。lifecycle lease は staging 開始前に登録し、owned staging / published artifact だけを追跡して cleanup 完了後に signal handler を解除する。lifecycle は stage → spawn/wait → auth cleanup → response/session/dispatch finalize の順で各1回とし、stage / cleanup 中または spawn / child exit と競合する SIGINT / SIGTERM でも lease が cleanup する。cleanup failure または同期 operation exception は resumable success metadata を残さない exactly-once の sanitized failed terminal state と非 0 exit に変える。cleanup は cache prune と分離し、child error、response 欠落、child signal、wrapper termination を含む全終了経路で行う。follow-up home は所有 user、非 symlink、`delegate_*` run、隣接 previous observe の backend / model / resume id / persistence / home_dir 一致を起動前に検証し、root requester home と無関係な外部 home を拒否する。sessions JSONL と `config.toml` は follow-up と診断のため常に残す
 - 親の user スコープ MCP 設定を `codex mcp list --json` で抽出し、隔離 `CODEX_HOME/config.toml` に `mcp_servers` のみを書き出す。worker は生成済み config だけを読むため `--ignore-user-config` は付けない。follow-up は初回 run の隔離 `CODEX_HOME/config.toml` を再利用し、初回と同じ MCP サーバー集合を保つ。親設定に MCP サーバーが無ければ config を作らず `mcp_config.source: "none"` とする
 - `--skip-git-repo-check --ephemeral`
-- `--dangerously-bypass-hook-trust`（`DELEGATE_CODEX_HOOKS` が opt-out（`0` / `false` / `no`）されておらず、かつ task_type が `implement` / `chore` の場合だけ `--skip-git-repo-check` の直後に付与する。worker は persisted hook trust を要求せず、対象リポジトリで enabled な project hook を親セッションで trust していないものも含めて無条件に信頼して実行する。read-only 種別（`explore` / `review`）と限定書き込み種別（`htmldoc`）では PostToolUse hook が prompt 制約を迂回してリポジトリを書き換え得るため付与せず、`delegate-imagegen` も対象外（argv 不変）。flag 非対応の Codex CLI では API 到達前に unknown argument の exit 2 で失敗する fail-closed とし、fallback や再試行は行わない）
+- `--dangerously-bypass-hook-trust`（`DELEGATE_CODEX_HOOKS` が opt-out（`0` / `false` / `no`）されておらず、かつ task_type が `implement` / `chore` の場合だけ `--skip-git-repo-check` の直後に付与する。worker は persisted hook trust を要求せず、対象リポジトリで enabled な project hook を親セッションで trust していないものも含めて無条件に信頼して実行する。read-only 種別（`explore` / `review`）と限定書き込み種別（`htmldoc` / `prose`）では PostToolUse hook が prompt 制約を迂回してリポジトリを書き換え得るため付与せず、`delegate-imagegen` も対象外（argv 不変）。flag 非対応の Codex CLI では API 到達前に unknown argument の exit 2 で失敗する fail-closed とし、fallback や再試行は行わない）
 - sandbox の書き込み境界は hook command に適用されない。`CODEX_DELEGATE_SANDBOX` を `workspace-write` に絞っても hook はワークスペース外へ書き込める（実測。ファイル書き込み境界のみを確認しており、network / process など他の制約は未測定）。delegate-skills 側で run ごとに確実に hook を無効化できるのは `DELEGATE_CODEX_HOOKS=0` だけで、sandbox 設定では止められない
 - hook の実行時間は worker の wall time に加算される。formatter を差し戻す hook では実測で 11s → 37s まで伸びた。hook が収束しない、または hook 自体が壊れている環境では `DELEGATE_CODEX_HOOKS=0` で切り離す
 - `--ignore-rules` は**付けない**（AGENTS.md を読ませ規約遵守させる）
@@ -179,8 +182,8 @@ Cursor agent CLI の `--mode plan`（`--plan` の shorthand）は **read-only / 
 - prompt は **stdin** で渡す。positional に Markdown を置くと front-matter の `---` がオプションとして解釈され、ask 待ちでハングする
 - cwd は `$REPO_ROOT`
 - wrapper が config 全体を構築し `OPENCODE_CONFIG_CONTENT` へ載せる。呼び出し元の同名変数は継承せず破棄する
-- `--pure` は `explore` / `review` / `htmldoc` で付与し、`DELEGATE_OPENCODE_PURE` が有効なら全 task type で付与する
-- explore / review では `permission.edit: "deny"` を注入し、direct な `edit` / `write` ツールをツール一覧から外す。`bash` は既定のまま残る。implement / chore / htmldoc では permission を注入しない
+- `--pure` は `explore` / `review` / `htmldoc` / `prose` で付与し、`DELEGATE_OPENCODE_PURE` が有効なら全 task type で付与する
+- explore / review では `permission.edit: "deny"` を注入し、direct な `edit` / `write` ツールをツール一覧から外す。`bash` は既定のまま残る。implement / chore / htmldoc / prose では permission を注入しない
 - worker は最終応答として front-matter 付き Markdown を返す。wrapper は JSONL の最終 `text` イベントから回収する（`stdout_text` 方式）
 - `DELEGATE_REQUEST_INLINE_MAX` 超過は child 起動前に fail-closed（exit 1 + failed response）。cwd 外の request file を `read-request.sh` で読む fallback は成立しない
 - 通常 run は永続 session store（実 HOME 配下）を作るため、run 後に `opencode session delete` で回収する。resumable / follow-up のときだけ保持する
@@ -188,7 +191,7 @@ Cursor agent CLI の `--mode plan`（`--plan` の shorthand）は **read-only / 
 
 ### sandbox / permission を全開放に統一する理由
 
-- Codex: implement / chore / htmldoc は作業自体にリポジトリや出力先への書き込みが必要で、検証コマンドも通常の shell 権限で実行する。read-only 種別の編集抑止は sandbox ではなく prompt constraints と main の検証フェーズに依存する。構造化最終応答方式により protocol response 書き込みは wrapper 側に移ったため、今後 read-only sandbox を適用できる余地は従来より広い
+- Codex: implement / chore / htmldoc / prose は作業自体にリポジトリや出力先への書き込みが必要で、検証コマンドも通常の shell 権限で実行する。read-only 種別の編集抑止は sandbox ではなく prompt constraints と main の検証フェーズに依存する。構造化最終応答方式により protocol response 書き込みは wrapper 側に移ったため、今後 read-only sandbox を適用できる余地は従来より広い
 - Claude: `claude -p` は非対話なので permission prompt に応答できない。`--dangerously-skip-permissions` が必須
 - Devin: `devin -p` は非対話なので permission prompt に応答できない。`--permission-mode dangerous` が必須
 - Cursor: `agent -p` は headless なので workspace trust prompt に応答できない。`--trust` + `--force` が必須。read-only 種別の編集抑止は prompt 制約と main の検証フェーズに依存する（`--mode plan` は report.md 方式と相性が悪いため使わない）
@@ -483,7 +486,7 @@ follow-up は fail-closed であり、次の条件では新規実行へ暗黙 fa
 
 - delegate された sub も別種別の delegate skill を呼べる（`implement ⇒ explore` は可）
 - **同一種別がチェーンに二度登場することを禁止**（`implement ⇒ implement` も `implement ⇒ explore ⇒ implement` も不可、`implement ⇒ explore ⇒ review` は可）
-- 種別が有限（explore / implement / chore / review / imagegen / xresearch / htmldoc）なのでチェーン長が頭打ちになり無限ループが構造的に発生しない
+- 種別が有限（explore / implement / chore / review / imagegen / xresearch / htmldoc / prose）なのでチェーン長が頭打ちになり無限ループが構造的に発生しない
 - チェーンは request file の構造化キー `task_type_chain`（先祖種別 + 自種別）で持ち回る。Claude パスは env が Bash 呼び出し間で持続しないため `task_type_chain` を source of truth とし子起動時に明示的に渡す
 - 起動エントリで `check-delegate-chain.sh <task_type> <parent_task_type_chain>` を実行、該当すれば exit 4
 
@@ -563,6 +566,7 @@ delegate-skills/
     delegate-imagegen/{SKILL.md, scripts/}
     delegate-x-research/{SKILL.md, scripts/}
     delegate-htmldoc/{SKILL.md, references/, scripts/}
+    delegate-prose/{SKILL.md, scripts/}
   shared/                        # バンドル + shim の正本（種別/実行系非依存）
     model-token-prices.json
     src/                         # TypeScript 実装の正本（in-source test 隣接）

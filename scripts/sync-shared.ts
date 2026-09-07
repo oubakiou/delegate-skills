@@ -70,6 +70,7 @@ const DELEGATE_SKILLS = [
   'delegate-imagegen',
   'delegate-x-research',
   'delegate-htmldoc',
+  'delegate-prose',
 ]
 
 interface Pair {

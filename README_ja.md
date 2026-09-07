@@ -54,7 +54,7 @@ gh skill install oubakiou/delegate-skills delegate-explore --agent claude-code -
 gh skill install oubakiou/delegate-skills delegate-explore --agent codex --scope project
 
 # 全 delegate skill をまとめてインストール
-for skill in delegate-explore delegate-implement delegate-chore delegate-review delegate-imagegen delegate-x-research delegate-htmldoc; do
+for skill in delegate-explore delegate-implement delegate-chore delegate-review delegate-imagegen delegate-x-research delegate-htmldoc delegate-prose; do
   gh skill install oubakiou/delegate-skills "$skill" --agent claude-code --scope project
 done
 ```
@@ -125,14 +125,17 @@ OpenCode は cwd 外への出力を保証しない。direct な edit / write と
 | `delegate-imagegen`   | Codex による画像生成/編集                          | Codex 子プロセス                          | `gpt-5`      | `DELEGATE_IMAGEGEN_MODEL` / `DELEGATE_WORK_DIR` / `DELEGATE_IMAGEGEN_OUTPUT_DIR` |
 | `delegate-x-research` | x.com / X 調査                                     | X 調査子プロセス                          | `grok-build` | `DELEGATE_X_RESEARCH_MODEL` / `DELEGATE_WORK_DIR`                                |
 | `delegate-htmldoc`    | HTML ドキュメント生成（固定テンプレート）          | 出力ディレクトリ書き込みのみ（push なし） | `haiku`      | `DELEGATE_HTMLDOC_MODEL` / `DELEGATE_WORK_DIR`                                   |
+| `delegate-prose`      | Markdown / プレーンテキストの文章生成・改稿        | 出力パス書き込みのみ（push なし）         | `sonnet`     | `DELEGATE_PROSE_MODEL` / `DELEGATE_WORK_DIR`                                     |
 
-既定モデルの根拠: explore / chore は read 中心・低リスクで `haiku`、implement は編集の判断を要するため `sonnet`、review は指摘品質が成果物に直結し判断比重が高いため `opus`、htmldoc は同梱固定テンプレートへの content 流し込みだけで判断比重が低いため `haiku`。
+既定モデルの根拠: explore / chore は read 中心・低リスクで `haiku`、implement は編集の判断を要するため `sonnet`、review は指摘品質が成果物に直結し判断比重が高いため `opus`、htmldoc は同梱固定テンプレートへの content 流し込みだけで判断比重が低いため `haiku`、prose は判断比重があり `haiku` では品質が落ちる一方、出力トークンが嵩む種別で main と同格のモデルではコスト削減にならないため `sonnet`。
 
 `delegate-imagegen` はユーザーにモデル選択を求めないが、運用側は `DELEGATE_IMAGEGEN_MODEL` で切り替えられる。出力先の明示がなければ生成物は `delegate-imagegen-output/` 配下に置く。
 
 `delegate-x-research` は X 調査の capability bridge として扱い、運用側は `DELEGATE_X_RESEARCH_MODEL` で切り替えられるが、ユーザーに backend モデル選択を求めない。
 
 `delegate-htmldoc` は skill 同梱の固定テンプレート（`references/template.html` + `references/styleguide.md`）へ content を流し込んで自己完結型の HTML ドキュメントを生成する。デザインは実行・モデルによらず同一で、worker は CSS を生成・編集しない。グラフ・画像素材は親側で用意して（チャートは dataviz-svg、ラスタ画像は `delegate-imagegen` 等）パスで渡し、SVG は文書へインライン埋め込み、ラスタ画像は出力 HTML の隣へコピーして相対参照する。出力先の明示がなければ生成物は `delegate-htmldoc-output/` 配下に置く。
+
+`delegate-prose` は汎用の文章生成・改稿・推敲を対象とする。スタイル資産は同梱せず、文体・トーン・分量・読者層は request で指定する。事実は request と明示された source からのみ取り、推測で補完しない。HTML 文書に仕上げる場合は、生成した Markdown を `delegate-htmldoc` に渡す。出力先の明示がなければ生成物は `delegate-prose-output/` 配下に置く。
 
 ## 環境変数
 
@@ -151,23 +154,23 @@ OpenCode は cwd 外への出力を保証しない。direct な edit / write と
 
 ### 高度な設定
 
-| 環境変数                                 | 既定                           | 用途                                                                                                                  |
-| ---------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                  | response の inline / 段階読み閾値                                                                                     |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限）  | one-shot JSON に含める content の上限                                                                                 |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                 | worker prompt に埋め込む request の上限                                                                               |
-| `DELEGATE_METRICS_FILE`                  | 未設定                         | 任意の JSONL telemetry 出力先                                                                                         |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                        | observe heartbeat の間隔                                                                                              |
-| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                        | observe lock の timeout                                                                                               |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）  | Claude child の Bash timeout                                                                                          |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）              | 成功 run の cache を削除する。auth は常に削除する                                                                     |
-| `DELEGATE_CODEX_HOOKS`                   | `1`（`0`/`false`/`no` で無効） | Codex の implement / chore run で project hooks を実行する（hook trust を bypass）                                    |
-| `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                 | `1` / `true` / `yes` で `--pure` を全 task type へ広げる。`explore` / `review` / `htmldoc` は常に `--pure` で起動する |
-| `DELEGATE_OPENCODE_MCP_SOURCE`           | 未設定（注入しない）           | `claude` / `cursor` / `codex` で MCP 入力元を明示する。未指定なら注入しない                                           |
-| `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` | delegate 実行では `64000`      | reasoning token を含む OpenCode の step ごとの出力予算。呼び出し元の明示値は維持する                                  |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                    | stream が増えない child を指定秒数後に停止する                                                                        |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限）  | observe JSON に保持する stdout / stderr の上限                                                                        |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                    | 古い run ごとの scratch directory を削除する                                                                          |
+| 環境変数                                 | 既定                           | 用途                                                                                                                            |
+| ---------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240` bytes                  | response の inline / 段階読み閾値                                                                                               |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384` bytes（`0` は無制限）  | one-shot JSON に含める content の上限                                                                                           |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144` bytes                 | worker prompt に埋め込む request の上限                                                                                         |
+| `DELEGATE_METRICS_FILE`                  | 未設定                         | 任意の JSONL telemetry 出力先                                                                                                   |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                        | observe heartbeat の間隔                                                                                                        |
+| `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                        | observe lock の timeout                                                                                                         |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）  | Claude child の Bash timeout                                                                                                    |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）              | 成功 run の cache を削除する。auth は常に削除する                                                                               |
+| `DELEGATE_CODEX_HOOKS`                   | `1`（`0`/`false`/`no` で無効） | Codex の implement / chore run で project hooks を実行する（hook trust を bypass）                                              |
+| `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                 | `1` / `true` / `yes` で `--pure` を全 task type へ広げる。`explore` / `review` / `htmldoc` / `prose` は常に `--pure` で起動する |
+| `DELEGATE_OPENCODE_MCP_SOURCE`           | 未設定（注入しない）           | `claude` / `cursor` / `codex` で MCP 入力元を明示する。未指定なら注入しない                                                     |
+| `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` | delegate 実行では `64000`      | reasoning token を含む OpenCode の step ごとの出力予算。呼び出し元の明示値は維持する                                            |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                    | stream が増えない child を指定秒数後に停止する                                                                                  |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536` bytes（`0` は無制限）  | observe JSON に保持する stdout / stderr の上限                                                                                  |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                    | 古い run ごとの scratch directory を削除する                                                                                    |
 
 ### 作業ファイルとテレメトリ
 

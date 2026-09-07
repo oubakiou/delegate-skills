@@ -88,7 +88,7 @@ const OPENCODE_SESSION_EVENT_TYPES = new Set([
   'error',
 ])
 const OPENCODE_IDENTITY_READ_BYTES = 64 * 1024
-const PURE_TASK_TYPES = new Set(['explore', 'review', 'htmldoc'])
+const PURE_TASK_TYPES = new Set(['explore', 'review', 'htmldoc', 'prose'])
 
 export interface OpencodeCatalogModel {
   id: string
@@ -1841,6 +1841,7 @@ if (import.meta.vitest) {
         permission: { edit: 'deny' },
       })
       expect(JSON.parse(opencodeConfigContent('implement'))).toEqual({})
+      expect(JSON.parse(opencodeConfigContent('prose'))).toEqual({})
     })
   })
 
@@ -1866,6 +1867,9 @@ if (import.meta.vitest) {
       const dir = createTestScratchDir('wrapper-opencode-pure-test')
       expect(
         opencodeCliArgs(makeTestContext(dir, { taskType: 'htmldoc' }), 'provider/model')
+      ).toContain('--pure')
+      expect(
+        opencodeCliArgs(makeTestContext(dir, { taskType: 'prose' }), 'provider/model')
       ).toContain('--pure')
       expect(
         opencodeCliArgs(

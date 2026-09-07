@@ -763,6 +763,7 @@ if (import.meta.vitest) {
       expect(HOOK_ENABLED_TASK_TYPES.has('explore')).toBe(false)
       expect(HOOK_ENABLED_TASK_TYPES.has('review')).toBe(false)
       expect(HOOK_ENABLED_TASK_TYPES.has('htmldoc')).toBe(false)
+      expect(HOOK_ENABLED_TASK_TYPES.has('prose')).toBe(false)
       expect(HOOK_ENABLED_TASK_TYPES.has('x-research')).toBe(false)
       expect(HOOK_ENABLED_TASK_TYPES.has('future-unknown-type')).toBe(false)
     })

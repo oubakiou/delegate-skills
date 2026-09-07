@@ -524,7 +524,7 @@ const OPENCODE_FAKE_MODEL = 'opencode/opencode-go/glm-5.2'
 const OPENCODE_CLI_MODEL = 'opencode-go/glm-5.2'
 const OPENCODE_EFFORT_WARNING =
   'Warning: requested effort is not listed in the model catalog variants.'
-const OPENCODE_TASK_TYPES = ['explore', 'implement', 'chore', 'review', 'htmldoc'] as const
+const OPENCODE_TASK_TYPES = ['explore', 'implement', 'chore', 'review', 'htmldoc', 'prose'] as const
 
 const opencodeFakeScript = (): string => `#!/usr/bin/env node
 import fs from 'node:fs'
@@ -836,7 +836,7 @@ const opencodePermissionConfig = (taskType: string): Record<string, unknown> => 
 }
 
 const opencodeUsesPure = (taskType: string): boolean =>
-  taskType === 'explore' || taskType === 'review' || taskType === 'htmldoc'
+  taskType === 'explore' || taskType === 'review' || taskType === 'htmldoc' || taskType === 'prose'
 
 const auxCallsOf = (fixture: Fixture): string[][] => {
   const sentinel = `${fixture.logFile}.aux`
@@ -1668,17 +1668,20 @@ describe('read-only tool config and prompt constraints', () => {
     expect(log.args).not.toContain('--disallowedTools')
   })
 
-  it('adds minimal edit/write allowed tools for default claude task types', () => {
-    const fixture = makeFixture('claude')
-    const result = runClaudeTaskType(fixture, 'htmldoc')
-    const log = readLog(fixture.logFile)
-    const allowIndex = log.args.indexOf('--allowedTools')
+  it.each(['htmldoc', 'prose'])(
+    'adds minimal edit/write allowed tools for claude %s',
+    (taskType) => {
+      const fixture = makeFixture('claude')
+      const result = runClaudeTaskType(fixture, taskType)
+      const log = readLog(fixture.logFile)
+      const allowIndex = log.args.indexOf('--allowedTools')
 
-    expect(result.status).toBe(0)
-    expect(allowIndex).toBeGreaterThan(-1)
-    expect(log.args[allowIndex + 1]).toBe(`${claudeMinimalAllowedTools()},Edit,Write`)
-    expect(log.args).not.toContain('--disallowedTools')
-  })
+      expect(result.status).toBe(0)
+      expect(allowIndex).toBeGreaterThan(-1)
+      expect(log.args[allowIndex + 1]).toBe(`${claudeMinimalAllowedTools()},Edit,Write`)
+      expect(log.args).not.toContain('--disallowedTools')
+    }
+  )
 
   it('instructs a structured final answer and passes the report schema to claude', () => {
     const fixture = makeFixture('claude')
@@ -1716,6 +1719,48 @@ describe('read-only tool config and prompt constraints', () => {
     expect(prompt).toContain('WebSearch / WebFetch')
     expect(prompt).toContain('read-only 制約')
     expect(prompt).toContain('MCP 制約')
+  })
+
+  it('always injects write-scope and fact constraints into the claude prose prompt', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'prose')
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('書き込み制約')
+    expect(prompt).toContain('事実制約')
+  })
+
+  it('shares the prose constraints with the cursor prompt', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursorTaskType(fixture, 'prose')
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('書き込み制約')
+    expect(prompt).toContain('事実制約')
+  })
+
+  it('always injects write-scope, material, and template constraints into the claude htmldoc prompt', () => {
+    const fixture = makeFixture('claude')
+    const result = runClaudeTaskType(fixture, 'htmldoc')
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('書き込み制約')
+    expect(prompt).toContain('素材制約')
+    expect(prompt).toContain('テンプレート制約')
+  })
+
+  it('shares the htmldoc constraints with the cursor prompt', () => {
+    const fixture = makeFixture('cursor')
+    const result = runCursorTaskType(fixture, 'htmldoc')
+    const prompt = promptFromLog(readLog(fixture.logFile))
+
+    expect(result.status).toBe(0)
+    expect(prompt).toContain('書き込み制約')
+    expect(prompt).toContain('素材制約')
+    expect(prompt).toContain('テンプレート制約')
   })
 })
 
@@ -1770,7 +1815,7 @@ describe('delegate-codex.sh project hooks', () => {
     expect(log.args).toContain('--dangerously-bypass-hook-trust')
   })
 
-  it.each(['explore', 'review', 'htmldoc'])(
+  it.each(['explore', 'review', 'htmldoc', 'prose'])(
     'omits the hook trust flag for the %s task type',
     (taskType) => {
       const fixture = makeFixture('codex')

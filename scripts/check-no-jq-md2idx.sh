@@ -24,6 +24,7 @@ delegate_skills=(
   delegate-imagegen
   delegate-x-research
   delegate-htmldoc
+  delegate-prose
 )
 
 # `jq` コマンド（単語境界）と md2idx への参照を .sh / .md から検出。

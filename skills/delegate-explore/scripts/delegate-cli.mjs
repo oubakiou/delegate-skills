@@ -4480,7 +4480,7 @@ var reportConstraint = (responseFile, target) => {
 	if (target === "stdout") return "最終応答として front-matter 付き Markdown を返す。";
 	return `${responseFile} への報告生成は可。`;
 };
-var htmldocReportTarget = (responseFile, target) => {
+var scopedReportTarget = (responseFile, target) => {
 	if (target === "stdout") return "と最終応答として front-matter 付き Markdown を返すこと";
 	return `と ${responseFile} への報告生成`;
 };
@@ -4491,14 +4491,28 @@ MCP 制約: MCP ツールは読み取り系（search / fetch / get / list 等）
 var reviewConstraints = (report) => `
 read-only 制約: リポジトリのファイル編集・git 書き込み・push は禁止。調査（Read / Grep / git diff 等）のみ。${report}`;
 var htmldocConstraints = (responseFile, target) => `
-書き込み制約: 書き込みは request で指定された出力ディレクトリ配下（出力 HTML と素材ファイルのコピー）${htmldocReportTarget(responseFile, target)}のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
+書き込み制約: 書き込みは request で指定された出力ディレクトリ配下（出力 HTML と素材ファイルのコピー）${scopedReportTarget(responseFile, target)}のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
 素材制約: 図・画像は request で渡された素材ファイルのみ使用し、生成・加工・外部取得はしない。SVG はインライン埋め込み、ラスタ画像は出力ディレクトリへコピーして相対パス参照する。
 テンプレート制約: 同梱テンプレートの CSS・component 構造は変更せず、content の流し込みだけを行う。JavaScript（script 要素・イベントハンドラ属性・javascript: URL）は含めない。テンプレートで表現できない要求は作らずに report の Blockers で報告する。`;
+var proseConstraints = (responseFile, target) => `
+書き込み制約: 書き込みは request で指定された出力ファイル / ディレクトリ配下${scopedReportTarget(responseFile, target)}のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
+事実制約: 事実・数値・日付・固有名詞・引用は request と明示された source からのみ取り、推測で補完しない。不足は埋めずに report の Blockers で報告する。`;
+var specializedConstraints = (taskType, report, writeTarget) => {
+	switch (taskType) {
+		case "explore": return exploreConstraints(report);
+		case "review": return reviewConstraints(report);
+		case "htmldoc": return htmldocConstraints(writeTarget.responseFile, writeTarget.target);
+		case "prose": return proseConstraints(writeTarget.responseFile, writeTarget.target);
+		default: return null;
+	}
+};
 var promptConstraints = (taskType, responseFile, target = "file") => {
 	const report = reportConstraint(responseFile, target);
-	if (taskType === "explore") return exploreConstraints(report);
-	if (taskType === "review") return reviewConstraints(report);
-	if (taskType === "htmldoc") return htmldocConstraints(responseFile, target);
+	const specialized = specializedConstraints(taskType, report, {
+		responseFile,
+		target
+	});
+	if (specialized !== null) return specialized;
 	if (target === "stdout") return `
 ${report}`;
 	return "";
@@ -6769,7 +6783,8 @@ var OPENCODE_IDENTITY_READ_BYTES = 65536;
 var PURE_TASK_TYPES = /* @__PURE__ */ new Set([
 	"explore",
 	"review",
-	"htmldoc"
+	"htmldoc",
+	"prose"
 ]);
 var catalogParseState = () => ({
 	pending: "",

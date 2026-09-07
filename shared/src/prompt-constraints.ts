@@ -12,7 +12,7 @@ const reportConstraint = (responseFile: string, target: ReportTarget): string =>
   return `${responseFile} への報告生成は可。`
 }
 
-const htmldocReportTarget = (responseFile: string, target: ReportTarget): string => {
+const scopedReportTarget = (responseFile: string, target: ReportTarget): string => {
   if (target === 'stdout') {
     return 'と最終応答として front-matter 付き Markdown を返すこと'
   }
@@ -28,9 +28,37 @@ const reviewConstraints = (report: string): string => `
 read-only 制約: リポジトリのファイル編集・git 書き込み・push は禁止。調査（Read / Grep / git diff 等）のみ。${report}`
 
 const htmldocConstraints = (responseFile: string, target: ReportTarget): string => `
-書き込み制約: 書き込みは request で指定された出力ディレクトリ配下（出力 HTML と素材ファイルのコピー）${htmldocReportTarget(responseFile, target)}のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
+書き込み制約: 書き込みは request で指定された出力ディレクトリ配下（出力 HTML と素材ファイルのコピー）${scopedReportTarget(responseFile, target)}のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
 素材制約: 図・画像は request で渡された素材ファイルのみ使用し、生成・加工・外部取得はしない。SVG はインライン埋め込み、ラスタ画像は出力ディレクトリへコピーして相対パス参照する。
 テンプレート制約: 同梱テンプレートの CSS・component 構造は変更せず、content の流し込みだけを行う。JavaScript（script 要素・イベントハンドラ属性・javascript: URL）は含めない。テンプレートで表現できない要求は作らずに report の Blockers で報告する。`
+
+const proseConstraints = (responseFile: string, target: ReportTarget): string => `
+書き込み制約: 書き込みは request で指定された出力ファイル / ディレクトリ配下${scopedReportTarget(responseFile, target)}のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
+事実制約: 事実・数値・日付・固有名詞・引用は request と明示された source からのみ取り、推測で補完しない。不足は埋めずに report の Blockers で報告する。`
+
+const specializedConstraints = (
+  taskType: string,
+  report: string,
+  writeTarget: { responseFile: string; target: ReportTarget }
+): string | null => {
+  switch (taskType) {
+    case 'explore': {
+      return exploreConstraints(report)
+    }
+    case 'review': {
+      return reviewConstraints(report)
+    }
+    case 'htmldoc': {
+      return htmldocConstraints(writeTarget.responseFile, writeTarget.target)
+    }
+    case 'prose': {
+      return proseConstraints(writeTarget.responseFile, writeTarget.target)
+    }
+    default: {
+      return null
+    }
+  }
+}
 
 export const promptConstraints = (
   taskType: string,
@@ -38,14 +66,9 @@ export const promptConstraints = (
   target: ReportTarget = 'file'
 ): string => {
   const report = reportConstraint(responseFile, target)
-  if (taskType === 'explore') {
-    return exploreConstraints(report)
-  }
-  if (taskType === 'review') {
-    return reviewConstraints(report)
-  }
-  if (taskType === 'htmldoc') {
-    return htmldocConstraints(responseFile, target)
+  const specialized = specializedConstraints(taskType, report, { responseFile, target })
+  if (specialized !== null) {
+    return specialized
   }
   if (target === 'stdout') {
     return `
@@ -101,6 +124,20 @@ read-only 制約: リポジトリのファイル編集・git 書き込み・push
 書き込み制約: 書き込みは request で指定された出力ディレクトリ配下（出力 HTML と素材ファイルのコピー）と最終応答として front-matter 付き Markdown を返すことのみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
 素材制約: 図・画像は request で渡された素材ファイルのみ使用し、生成・加工・外部取得はしない。SVG はインライン埋め込み、ラスタ画像は出力ディレクトリへコピーして相対パス参照する。
 テンプレート制約: 同梱テンプレートの CSS・component 構造は変更せず、content の流し込みだけを行う。JavaScript（script 要素・イベントハンドラ属性・javascript: URL）は含めない。テンプレートで表現できない要求は作らずに report の Blockers で報告する。`,
+    },
+    {
+      taskType: 'prose',
+      target: 'file',
+      expected: `
+書き込み制約: 書き込みは request で指定された出力ファイル / ディレクトリ配下と ${reportFile} への報告生成のみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
+事実制約: 事実・数値・日付・固有名詞・引用は request と明示された source からのみ取り、推測で補完しない。不足は埋めずに report の Blockers で報告する。`,
+    },
+    {
+      taskType: 'prose',
+      target: 'stdout',
+      expected: `
+書き込み制約: 書き込みは request で指定された出力ファイル / ディレクトリ配下と最終応答として front-matter 付き Markdown を返すことのみ可。それ以外のリポジトリファイル編集・git 書き込み・push は禁止。
+事実制約: 事実・数値・日付・固有名詞・引用は request と明示された source からのみ取り、推測で補完しない。不足は埋めずに report の Blockers で報告する。`,
     },
     ...(['implement', 'chore', 'imagegen', 'xresearch'] as const).flatMap((taskType) => [
       { taskType, target: 'file' as const, expected: '' },
