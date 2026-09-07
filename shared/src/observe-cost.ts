@@ -269,6 +269,18 @@ if (import.meta.vitest) {
         backend: 'claude',
       },
       { model: 'fable@high', priced: 'claude-fable-5.1', source: 'anthropic', backend: 'claude' },
+      {
+        model: 'devin-gemini-3.8-flash',
+        priced: 'gemini-3.8-flash',
+        source: 'cognition_cli',
+        backend: 'devin',
+      },
+      {
+        model: 'devin-gemini-3.8-flash@low',
+        priced: 'gemini-3.8-flash',
+        source: 'cognition_cli',
+        backend: 'devin',
+      },
     ])('resolves $model to its real price entry', ({ model, priced, source, backend }) => {
       const realTable = loadRealPriceTable()
       const entry = realTable.models.find(
@@ -346,6 +358,25 @@ if (import.meta.vitest) {
         devinTable
       )
       expect(suffixed.cost_usd_estimated).toBeCloseTo((1000 * 0.6 + 100 * 2.4) / 1_000_000, 12)
+    })
+
+    it('matches devin-gemini-3.8-flash against the cognition_cli price entry', () => {
+      const realTable = loadRealPriceTable()
+      const expected = (1000 * 1.5 + 100 * 7.5) / 1_000_000
+      const result = augmentCostEstimate(
+        usage({ model: 'devin-gemini-3.8-flash' }),
+        'devin',
+        realTable
+      )
+      expect(result.cost_usd_estimated).toBeCloseTo(expected, 12)
+      expect(result.pricing_source).toBe('model-token-prices.json:cognition_cli')
+      const suffixed = augmentCostEstimate(
+        usage({ model: 'devin-gemini-3.8-flash@low' }),
+        'devin',
+        realTable
+      )
+      expect(suffixed.cost_usd_estimated).toBeCloseTo(expected, 12)
+      expect(suffixed.pricing_source).toBe('model-token-prices.json:cognition_cli')
     })
 
     it('leaves estimated or already-costed usage untouched', () => {

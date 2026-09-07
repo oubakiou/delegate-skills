@@ -252,6 +252,17 @@
       "pricing_source": "cognition_cli"
     },
     {
+      "model_provider": "google",
+      "model": "gemini-3.8-flash",
+      "display_name": "Gemini 3.8 Flash(devin)",
+      "input": 1.5,
+      "cached_input": 0.15,
+      "output": 7.5,
+      "context": "standard",
+      "pricing_source": "cognition_cli",
+      "retrieved_at": "2026-09-07"
+    },
+    {
       "model_provider": "cursor",
       "model": "composer-2.5",
       "display_name": "Composer 2.5",
