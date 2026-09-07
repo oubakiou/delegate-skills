@@ -200,18 +200,18 @@ Append `@<effort>` to a model name:
 DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 ```
 
-| Backend / model                            | Supported values                                 | Notes                                                                     |
-| ------------------------------------------ | ------------------------------------------------ | ------------------------------------------------------------------------- |
-| Claude                                     | `low`, `medium`, `high`, `xhigh`, `max`          | Passed as `--effort`                                                      |
-| Codex                                      | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Passed as reasoning config                                                |
-| `cursor-glm-5.2`                           | `high`, `max`                                    | Converted to the bracket override `glm-5.2[reasoning=<effort>]`           |
-| `cursor-grok-4.5`                          | `low`, `medium`, `high`                          | Converted to the catalog slug `cursor-grok-4.5-<effort>`                  |
-| `cursor-grok-4.6` / `cursor-grok-4.6-fast` | `low`, `medium`, `high`, `xhigh`                 | Converted to `cursor-grok-4.6-<effort>` / `cursor-grok-4.6-<effort>-fast` |
-| `devin-kimi-k3`                            | `low`, `high`, `max`                             | Converted to the Devin model variant slug (`kimi-k3-high`, etc.)          |
-| OpenCode                                   | Passed through to `--variant`                    | Delegate does not validate the value                                      |
-| Other Devin models, imagegen, X research   | Not supported                                    | No effort suffix                                                          |
+| Backend / model                            | Supported values                                 | Notes                                                                       |
+| ------------------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------- |
+| Claude                                     | `low`, `medium`, `high`, `xhigh`, `max`          | Passed as `--effort`                                                        |
+| Codex                                      | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | Passed as reasoning config                                                  |
+| `cursor-glm-5.2`                           | `high`, `max`                                    | Converted to the bracket override `glm-5.2[reasoning=<effort>]`             |
+| `cursor-grok-4.5`                          | `low`, `medium`, `high`                          | Converted to the catalog slug `cursor-grok-4.5-<effort>`                    |
+| `cursor-grok-4.6` / `cursor-grok-4.6-fast` | `low`, `medium`, `high`, `xhigh`                 | Converted to `cursor-grok-4.6-<effort>` / `cursor-grok-4.6-<effort>-fast`   |
+| Devin                                      | Passed through as a `<model>-<effort>` slug      | Delegate does not validate the value; the child CLI rejects an unknown slug |
+| OpenCode                                   | Passed through to `--variant`                    | Delegate does not validate the value                                        |
+| imagegen, X research                       | Not supported                                    | No effort suffix                                                            |
 
-Invalid values and unsupported combinations stop before dispatch, except OpenCode effort. OpenCode passes `@<effort>` through to `--variant` without validating the value; when the catalog can be read and lists the requested model, an unsupported effort is reported after the run via the observe event `effort_unsupported` and a warning at the start of the response Summary; if the catalog cannot be read, no warning is emitted. Do not combine a Cursor model slug that already encodes the effort with an `@...` suffix.
+Invalid values and unsupported combinations stop before dispatch, except OpenCode and Devin effort. OpenCode passes `@<effort>` through to `--variant` without validating the value; when the catalog can be read and lists the requested model, an unsupported effort is reported after the run via the observe event `effort_unsupported` and a warning at the start of the response Summary; if the catalog cannot be read, no warning is emitted. Devin embeds effort in the model slug (`<model>-<effort>`); an unknown slug fails in the child CLI with exit 1 (`Unknown model:`) and has no post-run warning path like OpenCode. Do not combine a Cursor model slug that already encodes the effort with an `@...` suffix.
 
 For Cursor models that use the `cursor-` selector, the selector is the delegate backend selector and must appear exactly once. A doubled prefix (`cursor-cursor-*`) or a direct grok effort catalog slug (`cursor-grok-4.5-low` / `-medium` / `-high`, `cursor-grok-4.6-low` / `-medium` / `-high` / `-xhigh`, or the corresponding `-fast` forms) stops before dispatch with exit 6; use the `cursor-grok-4.5[@<effort>]` or `cursor-grok-4.6[-fast][@<effort>]` notation instead. A follow-up that inherits one of these legacy notations from an existing session cannot resume (exit 5); start a new resumable run with the corrected notation.
 

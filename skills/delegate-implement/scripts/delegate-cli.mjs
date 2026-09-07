@@ -2519,11 +2519,6 @@ var CURSOR_GROK_46_EFFORTS = /* @__PURE__ */ new Set([
 	"high",
 	"xhigh"
 ]);
-var DEVIN_KIMI_K3_EFFORTS = /* @__PURE__ */ new Set([
-	"low",
-	"high",
-	"max"
-]);
 var CURSOR_NAMED_MODEL_RULES = /* @__PURE__ */ new Map([
 	["glm-5.2", {
 		allowed: CURSOR_GLM_EFFORTS,
@@ -2583,25 +2578,15 @@ var validateCursorEffort = (model, base, effort) => {
 	if (named !== null) return named;
 	return invalid(`ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high), cursor-grok-4.6@(low|medium|high|xhigh), cursor-grok-4.6-fast@(low|medium|high|xhigh)`);
 };
-var validateDevinEffort = (model, base, effort) => {
-	let devinModel = base;
-	if (devinModel.startsWith("devin-")) devinModel = devinModel.slice(6);
-	if (devinModel === "kimi-k3") {
-		if (DEVIN_KIMI_K3_EFFORTS.has(effort)) return { ok: true };
-		return invalid(`ERROR: invalid effort '${effort}' for devin model '${model}'; allowed: low|high|max`);
-	}
-	return invalid(`ERROR: effort suffix is not supported for devin model '${model}'; supported: devin-kimi-k3@(low|high|max)`);
-};
 var validateConfiguredBackendEffort = (context, rule) => {
 	if (rule.allowed.has(context.effort)) return { ok: true };
 	return invalid(`ERROR: invalid effort '${context.effort}' for ${context.backend} backend model '${context.model}'; allowed: ${rule.allowedLabel}`);
 };
 var validateBackendEffort = (context) => {
-	if (context.backend === "opencode") return { ok: true };
+	if (context.backend === "opencode" || context.backend === "devin") return { ok: true };
 	const rule = BACKEND_EFFORT_RULES[context.backend];
 	if (typeof rule !== "undefined") return validateConfiguredBackendEffort(context, rule);
 	if (context.backend === "cursor") return validateCursorEffort(context.model, context.base, context.effort);
-	if (context.backend === "devin") return validateDevinEffort(context.model, context.base, context.effort);
 	return invalid(`ERROR: effort suffix is not supported for the ${context.backend} backend (model '${context.model}'); remove '@${context.effort}'`);
 };
 var validateModelEffort = (backend, model) => {
@@ -4534,6 +4519,10 @@ var signatures = {
 		modelPattern: SLUG_PATTERN,
 		candidatesLayout: "block",
 		availableMarker: "Available:"
+	}, {
+		unknownModelLine: /^(?:Error: )?Unknown model: '(?<model>[^']*)'$/,
+		modelPattern: SLUG_PATTERN,
+		candidatesLayout: "marker_inline"
 	}],
 	cursor: [{
 		unknownModelLine: /^Cannot use this model: (?<model>\S+)\. Available models:(?: (?<candidates>.+))?$/,
@@ -4600,14 +4589,26 @@ var classifyInline = (model, candidatesText) => {
 	if (candidates.length === 0) return unknown;
 	return resultFromCandidates(model, candidates);
 };
+var MARKER_INLINE_CANDIDATES = /^Available: (?<candidates>.+)$/;
+var classifyMarkerInline = (block, model) => {
+	for (const line of block) {
+		const match = MARKER_INLINE_CANDIDATES.exec(line);
+		if (match !== null && typeof match.groups !== "undefined") return classifyInline(model, match.groups.candidates);
+	}
+	return unknown;
+};
+var classifyLayout = (signature, parsed, block) => {
+	if (signature.candidatesLayout === "inline") return classifyInline(parsed.model, parsed.candidatesText);
+	if (signature.candidatesLayout === "marker_inline") return classifyMarkerInline(block, parsed.model);
+	return classifyBlock(signature, block, parsed.model);
+};
 var classifyWithSignature = (signature, stderrTail) => {
 	const lines = stderrTail.split("\n").map((line) => line.trimEnd());
 	const modelIndex = lines.findIndex((line) => signature.unknownModelLine.test(line));
 	if (modelIndex === -1) return unknown;
 	const parsed = parseModelLine(signature, lines[modelIndex]);
 	if (parsed === null) return unknown;
-	if (signature.candidatesLayout === "inline") return classifyInline(parsed.model, parsed.candidatesText);
-	return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), parsed.model);
+	return classifyLayout(signature, parsed, blockAfter(signature, lines, modelIndex + 1));
 };
 var classifyChildFailure = (input) => {
 	const backendSignatures = signatures[input.backend] ?? [];

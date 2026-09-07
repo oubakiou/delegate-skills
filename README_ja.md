@@ -207,11 +207,11 @@ DELEGATE_IMPLEMENT_MODEL=gpt-5.5@high
 | `cursor-glm-5.2`                           | `high`, `max`                                     | bracket override `glm-5.2[reasoning=<effort>]` へ変換               |
 | `cursor-grok-4.5`                          | `low`, `medium`, `high`                           | catalog slug `cursor-grok-4.5-<effort>` へ変換                      |
 | `cursor-grok-4.6` / `cursor-grok-4.6-fast` | `low`, `medium`, `high`, `xhigh`                  | `cursor-grok-4.6-<effort>` / `cursor-grok-4.6-<effort>-fast` へ変換 |
-| `devin-kimi-k3`                            | `low`, `high`, `max`                              | Devin の model variant slug（`kimi-k3-high` 等）へ変換              |
+| Devin                                      | `<model>-<effort>` slug として素通し              | delegate は値を検証しない。未知の slug は子 CLI が拒否する          |
 | OpenCode                                   | `--variant` へ素通し（delegate は値を検証しない） | 実行後の catalog 照合で通知する                                     |
-| 上記以外の Devin、imagegen、X research     | 非対応                                            | effort suffix なし                                                  |
+| imagegen、X research                       | 非対応                                            | effort suffix なし                                                  |
 
-不正な値や非対応の組み合わせは dispatch 前に停止する。ただし OpenCode の effort はこの限りではない。`@<effort>` は `--variant` へ素通しし、delegate 側で値を検証しない。catalog を取得できて対象モデルの行がある場合に限り、無効な effort は実行後に observe の `effort_unsupported` と response の Summary 先頭の警告で知らされる。catalog を取得できない場合は警告しない。effort を model slug 自体に含む Cursor モデルと `@...` suffix は併用できない。
+不正な値や非対応の組み合わせは dispatch 前に停止する。ただし OpenCode と Devin の effort はこの限りではない。OpenCode は `@<effort>` を `--variant` へ素通しし、delegate 側で値を検証しない。catalog を取得できて対象モデルの行がある場合に限り、無効な effort は実行後に observe の `effort_unsupported` と response の Summary 先頭の警告で知らされる。catalog を取得できない場合は警告しない。Devin は effort を model slug（`<model>-<effort>`）へ埋め込む。未知の slug は子 CLI が exit 1（`Unknown model:`）で失敗し、OpenCode のような実行後の警告経路はない。effort を model slug 自体に含む Cursor モデルと `@...` suffix は併用できない。
 
 `cursor-` selector を使う Cursor モデルでは、先頭 `cursor-` は delegate の backend selector であり、ちょうど 1 回だけ付ける。二重 prefix（`cursor-cursor-*`）や grok の effort catalog slug の直指定（`cursor-grok-4.5-low` / `-medium` / `-high`、`cursor-grok-4.6-low` / `-medium` / `-high` / `-xhigh`、および対応する `-fast` 付き）は dispatch 前に exit 6 で停止する。代わりに `cursor-grok-4.5[@<effort>]` または `cursor-grok-4.6[-fast][@<effort>]` の表記を使うこと。既存 session がこれらの旧表記を保持している場合、その follow-up は再開できず（exit 5）、修正した表記で新規 resumable run を開始する。
 

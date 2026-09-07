@@ -30,7 +30,6 @@ const CODEX_EFFORTS = new Set([...CLAUDE_EFFORTS, 'ultra'])
 const CURSOR_GLM_EFFORTS = new Set(['high', 'max'])
 const CURSOR_GROK_EFFORTS = new Set(['low', 'medium', 'high'])
 const CURSOR_GROK_46_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'])
-const DEVIN_KIMI_K3_EFFORTS = new Set(['low', 'high', 'max'])
 
 interface BackendEffortRule {
   allowed: Set<string>
@@ -144,26 +143,6 @@ const validateCursorEffort = (model: string, base: string, effort: string): Effo
   )
 }
 
-// Devin CLI に effort フラグは無く、model variant slug（kimi-k3-high 等）でのみ
-// 表現されるため、variant を持つと確認済みのモデルだけ suffix を許容する
-const validateDevinEffort = (model: string, base: string, effort: string): EffortValidation => {
-  let devinModel = base
-  if (devinModel.startsWith('devin-')) {
-    devinModel = devinModel.slice('devin-'.length)
-  }
-  if (devinModel === 'kimi-k3') {
-    if (DEVIN_KIMI_K3_EFFORTS.has(effort)) {
-      return { ok: true }
-    }
-    return invalid(
-      `ERROR: invalid effort '${effort}' for devin model '${model}'; allowed: low|high|max`
-    )
-  }
-  return invalid(
-    `ERROR: effort suffix is not supported for devin model '${model}'; supported: devin-kimi-k3@(low|high|max)`
-  )
-}
-
 interface EffortContext {
   backend: string
   model: string
@@ -184,7 +163,7 @@ const validateConfiguredBackendEffort = (
 }
 
 const validateBackendEffort = (context: EffortContext): EffortValidation => {
-  if (context.backend === 'opencode') {
+  if (context.backend === 'opencode' || context.backend === 'devin') {
     return { ok: true }
   }
   const rule = BACKEND_EFFORT_RULES[context.backend]
@@ -193,9 +172,6 @@ const validateBackendEffort = (context: EffortContext): EffortValidation => {
   }
   if (context.backend === 'cursor') {
     return validateCursorEffort(context.model, context.base, context.effort)
-  }
-  if (context.backend === 'devin') {
-    return validateDevinEffort(context.model, context.base, context.effort)
   }
   return invalid(
     `ERROR: effort suffix is not supported for the ${context.backend} backend (model '${context.model}'); remove '@${context.effort}'`
@@ -701,6 +677,20 @@ if (import.meta.vitest) {
       ).toEqual({ ok: true })
     })
 
+    it('accepts arbitrary effort values for devin', () => {
+      for (const model of [
+        'devin-kimi-k3@low',
+        'devin-kimi-k3@high',
+        'devin-kimi-k3@max',
+        'devin-gemini-3.8-flash@low',
+        'swe-1.7@medium',
+        'devin-glm-5.2@max',
+        'devin-kimi-k3@bogus-effort-xyz',
+      ]) {
+        expect(validateModelEffort('devin', model)).toEqual({ ok: true })
+      }
+    })
+
     it('fails closed on invalid, doubled, or unsupported suffixes', () => {
       for (const [backend, model] of [
         ['claude', 'sonnet@ultra'],
@@ -710,9 +700,6 @@ if (import.meta.vitest) {
         ['cursor', 'cursor-grok-4.6-fast@max'],
         ['cursor', 'cursor-grok-4.6-high@low'],
         ['cursor', 'composer-2.5@high'],
-        ['devin', 'swe-1.7@high'],
-        ['devin', 'devin-kimi-k3@medium'],
-        ['devin', 'devin-glm-5.2@high'],
         ['grok', 'grok-build@low'],
       ] as const) {
         expect(validateModelEffort(backend, model).ok).toBe(false)

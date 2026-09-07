@@ -2882,32 +2882,27 @@ describe('wrapper effort suffix', () => {
     })
   })
 
-  it('converts the suffix to a Devin model variant slug', () => {
-    const fixture = makeFixture('devin')
-    const result = runWrapper(
-      'delegate-devin.sh',
-      wrapperModelArgs(fixture, 'devin-kimi-k3@high'),
-      fixture.env
-    )
-    const log = readLog(fixture.logFile)
-    const observe = readObserve(fixture.observeFile)
-    const modelIndex = log.args.indexOf('--model')
+  it('converts a Devin effort suffix to a model variant slug', () => {
+    for (const [model, cliModel, effort] of [
+      ['devin-kimi-k3@high', 'kimi-k3-high', 'high'],
+      ['devin-glm-5.2@low', 'glm-5.2-low', 'low'],
+    ] as const) {
+      const fixture = makeFixture('devin')
+      const result = runWrapper('delegate-devin.sh', wrapperModelArgs(fixture, model), fixture.env)
+      const log = readLog(fixture.logFile)
+      const observe = readObserve(fixture.observeFile)
+      const modelIndex = log.args.indexOf('--model')
 
-    expect(result.status).toBe(0)
-    expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', 'kimi-k3-high'])
-    expect(observe.run_effort).toEqual({
-      effective: { source: 'not_exposed', value: null },
-      requested: 'high',
-    })
+      expect(result.status).toBe(0)
+      expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', cliModel])
+      expect(observe.run_effort).toEqual({
+        effective: { source: 'not_exposed', value: null },
+        requested: effort,
+      })
+    }
   })
 
   it('fails closed before launching the CLI for unsupported suffixes', () => {
-    const devinFixture = makeFixture('devin')
-    const devinResult = runWrapper(
-      'delegate-devin.sh',
-      wrapperModelArgs(devinFixture, 'devin-glm-5.2@low'),
-      devinFixture.env
-    )
     const cursorFixture = makeFixture('cursor')
     const cursorResult = runWrapper(
       'delegate-cursor.sh',
@@ -2915,11 +2910,8 @@ describe('wrapper effort suffix', () => {
       cursorFixture.env
     )
 
-    expect(devinResult.status).toBe(6)
     expect(cursorResult.status).toBe(6)
-    expect(existsSync(devinFixture.logFile)).toBe(false)
     expect(existsSync(cursorFixture.logFile)).toBe(false)
-    expect(readResponseStatus(devinFixture.responseFile)).toBe('failed')
     expect(readResponseStatus(cursorFixture.responseFile)).toBe('failed')
   })
 

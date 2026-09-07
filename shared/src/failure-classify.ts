@@ -50,13 +50,21 @@ interface BlockCandidatesSignature extends FailureSignatureBase {
   availableMarker: string
 }
 
+// Devin 現行 CLI: `Unknown model:` 行の後の marker 行に候補が `, ` 区切りで並ぶ
+interface MarkerInlineCandidatesSignature extends FailureSignatureBase {
+  candidatesLayout: 'marker_inline'
+}
+
 // Cursor レイアウト: 1 行完結で、候補は model 行の marker 以降に `, ` 区切りで並ぶ。
 // unknownModelLine が候補部分を candidates group で capture する
 interface InlineCandidatesSignature extends FailureSignatureBase {
   candidatesLayout: 'inline'
 }
 
-type FailureSignature = BlockCandidatesSignature | InlineCandidatesSignature
+type FailureSignature =
+  | BlockCandidatesSignature
+  | MarkerInlineCandidatesSignature
+  | InlineCandidatesSignature
 
 // `Unknown model:` + `Available:`（Devin）と `Cannot use this model:` +
 // `Available models:`（Cursor）の文言は各 CLI で実観測済み。未確認 backend に
@@ -69,6 +77,11 @@ const signatures: Record<string, readonly FailureSignature[]> = {
       modelPattern: SLUG_PATTERN,
       candidatesLayout: 'block',
       availableMarker: 'Available:',
+    },
+    {
+      unknownModelLine: /^(?:Error: )?Unknown model: '(?<model>[^']*)'$/,
+      modelPattern: SLUG_PATTERN,
+      candidatesLayout: 'marker_inline',
     },
   ],
   cursor: [
@@ -133,7 +146,7 @@ const parseModelLine = (signature: FailureSignature, line: string): ParsedModelL
 // 次の Unknown model 行までを 1 エラーブロックとして扱う。ブロックを越えて marker を
 // 探すと、別の失敗の候補列挙を今回の model に結び付けてしまう
 const blockAfter = (
-  signature: BlockCandidatesSignature,
+  signature: FailureSignatureBase,
   lines: readonly string[],
   start: number
 ): readonly string[] => {
@@ -189,6 +202,32 @@ const classifyInline = (model: string, candidatesText: string | undefined): Chil
   return resultFromCandidates(model, candidates)
 }
 
+const MARKER_INLINE_CANDIDATES = /^Available: (?<candidates>.+)$/
+
+const classifyMarkerInline = (block: readonly string[], model: string): ChildFailure => {
+  for (const line of block) {
+    const match = MARKER_INLINE_CANDIDATES.exec(line)
+    if (match !== null && typeof match.groups !== 'undefined') {
+      return classifyInline(model, match.groups.candidates)
+    }
+  }
+  return unknown
+}
+
+const classifyLayout = (
+  signature: FailureSignature,
+  parsed: ParsedModelLine,
+  block: readonly string[]
+): ChildFailure => {
+  if (signature.candidatesLayout === 'inline') {
+    return classifyInline(parsed.model, parsed.candidatesText)
+  }
+  if (signature.candidatesLayout === 'marker_inline') {
+    return classifyMarkerInline(block, parsed.model)
+  }
+  return classifyBlock(signature, block, parsed.model)
+}
+
 const classifyWithSignature = (signature: FailureSignature, stderrTail: string): ChildFailure => {
   const lines = stderrTail.split('\n').map((line) => line.trimEnd())
   const modelIndex = lines.findIndex((line) => signature.unknownModelLine.test(line))
@@ -199,10 +238,7 @@ const classifyWithSignature = (signature: FailureSignature, stderrTail: string):
   if (parsed === null) {
     return unknown
   }
-  if (signature.candidatesLayout === 'inline') {
-    return classifyInline(parsed.model, parsed.candidatesText)
-  }
-  return classifyBlock(signature, blockAfter(signature, lines, modelIndex + 1), parsed.model)
+  return classifyLayout(signature, parsed, blockAfter(signature, lines, modelIndex + 1))
 }
 
 export const classifyChildFailure = (input: {
@@ -300,6 +336,58 @@ if (import.meta.vitest) {
         retryable: false,
         model: 'kimi-k3-max',
         candidates: ['gpt-5'],
+        candidatesTruncated: false,
+      })
+    })
+
+    it('classifies candidates listed inline on the Available: marker line as model_not_found', () => {
+      expect(
+        classifyChildFailure(
+          devinInput("Error: Unknown model: 'kimi-k3-max'\nAvailable: swe-1.7, devin-glm-5.2\n")
+        )
+      ).toEqual({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'kimi-k3-max',
+        candidates: ['swe-1.7', 'devin-glm-5.2'],
+        candidatesTruncated: false,
+      })
+    })
+
+    it('classifies the observed two-line inline Available: stderr as model_not_found with truncation', () => {
+      const listed = [
+        'adaptive',
+        'claude-fable-5',
+        'claude-fable-5.1',
+        'gemini-3.8-flash',
+        'glm-5.2',
+        'kimi-k3',
+        'kimi-k3-high',
+        'swe-1.7',
+        'swe-1.7-lightning',
+      ]
+      const stderrTail = `Error: Unknown model: 'gemini-3.8-flash-bogus'\nAvailable: ${listed.join(', ')}`
+      expect(classifyChildFailure(devinInput(stderrTail))).toEqual({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'gemini-3.8-flash-bogus',
+        candidates: listed.slice(0, 8),
+        candidatesTruncated: true,
+      })
+    })
+
+    it('stops inline marker candidate collection at the first non-candidate entry', () => {
+      expect(
+        classifyChildFailure(
+          devinInput(
+            "Error: Unknown model: 'kimi-k3-max'\nAvailable: swe-1.7, * see docs, glm-5.2\n"
+          )
+        )
+      ).toEqual({
+        kind: 'model_not_found',
+        retryable: false,
+        model: 'kimi-k3-max',
+        candidates: ['swe-1.7'],
         candidatesTruncated: false,
       })
     })
@@ -447,10 +535,10 @@ if (import.meta.vitest) {
       ).toEqual({ kind: 'unknown' })
     })
 
-    it('returns unknown when the candidates are listed on the marker line itself', () => {
+    it('returns unknown when the inline Available: line has no valid slug candidates', () => {
       expect(
         classifyChildFailure(
-          devinInput("Error: Unknown model: 'kimi-k3-max'\nAvailable: swe-1.7, devin-glm-5.2\n")
+          devinInput("Error: Unknown model: 'kimi-k3-max'\nAvailable: * see docs\n")
         )
       ).toEqual({ kind: 'unknown' })
     })
@@ -460,6 +548,13 @@ if (import.meta.vitest) {
         classifyChildFailure(
           devinInput(
             "Error: Unknown model: 'aaa'\nsomething\nError: Unknown model: 'bbb'\nAvailable:\nswe-1.7\n"
+          )
+        )
+      ).toEqual({ kind: 'unknown' })
+      expect(
+        classifyChildFailure(
+          devinInput(
+            "Error: Unknown model: 'aaa'\nsomething\nError: Unknown model: 'bbb'\nAvailable: swe-1.7, glm-5.2\n"
           )
         )
       ).toEqual({ kind: 'unknown' })
@@ -476,6 +571,11 @@ if (import.meta.vitest) {
     it('returns unknown when Available: only appears before Unknown model:', () => {
       expect(
         classifyChildFailure(devinInput("Available:\ngpt-5\nUnknown model: 'kimi-k3-max'\n"))
+      ).toEqual({ kind: 'unknown' })
+      expect(
+        classifyChildFailure(
+          devinInput("Available: gpt-5, claude-opus\nUnknown model: 'kimi-k3-max'\n")
+        )
       ).toEqual({ kind: 'unknown' })
     })
   })
