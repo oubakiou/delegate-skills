@@ -149,36 +149,79 @@ const pricingSourceLabel = (entry: Record<string, unknown>): string => {
   return 'model-token-prices.json:unknown'
 }
 
-interface TokenRates {
+interface EstimateContext {
+  entry: Record<string, unknown>
+  backend: string
   inputTokens: number
   outputTokens: number
   inputRate: number
   outputRate: number
 }
 
+// backend ごとに cached input の報告意味論が違う。OpenAI 系（codex）と Devin の export は
+// キャッシュ読みを prompt トークンの内数として返すが、claude / cursor の stream-json は
+// input_tokens とは別枠で返す。単価適用の前にこの差を吸収しないと、別枠 backend では
+// cached 分が prompt 総量から丸ごと抜け落ちる
+const CACHED_INPUT_REPORTING: Readonly<Partial<Record<string, 'subset' | 'separate'>>> = {
+  codex: 'subset',
+  devin: 'subset',
+  claude: 'separate',
+  cursor: 'separate',
+}
+
+// 未宣言の backend（provider ごとに意味論が変わる OpenCode 等）は実測値から推定する。
+// cached が input を超えていれば内数ではあり得ないので別枠だと確定できる
+const inferredReporting = (inputTokens: number, cached: number): 'subset' | 'separate' => {
+  if (cached > inputTokens) {
+    return 'separate'
+  }
+  return 'subset'
+}
+
+// 壊れた計測値（負値・小数・safe integer 超）を総 prompt に足すと、上限であるはずの
+// 非キャッシュ概算が負値にもなり得るため、欠測と同じ扱いに落とす
+const usableCachedTokens = (value: unknown): number | null => {
+  if (!isNumber(value) || !Number.isSafeInteger(value) || value < 0) {
+    return null
+  }
+  return value
+}
+
+const promptTokensOf = (context: EstimateContext, cached: number | null): number => {
+  if (cached === null) {
+    return context.inputTokens
+  }
+  const reporting =
+    CACHED_INPUT_REPORTING[context.backend] ?? inferredReporting(context.inputTokens, cached)
+  if (reporting === 'separate') {
+    return context.inputTokens + cached
+  }
+  return context.inputTokens
+}
+
 const estimateFields = (
   usage: Record<string, unknown>,
-  entry: Record<string, unknown>,
-  rates: TokenRates
+  context: EstimateContext
 ): Record<string, unknown> => {
-  const cached: unknown = usage.cached_input_tokens ?? null
-  const cachedRate: unknown = entry.cached_input
-  if (isNumber(cached) && isNumber(cachedRate) && cached <= rates.inputTokens) {
+  const cached = usableCachedTokens(usage.cached_input_tokens)
+  const cachedRate: unknown = context.entry.cached_input
+  const promptTokens = promptTokensOf(context, cached)
+  if (cached !== null && isNumber(cachedRate) && cached <= promptTokens) {
     return {
       cost_usd_estimated:
-        ((rates.inputTokens - cached) * rates.inputRate +
+        ((promptTokens - cached) * context.inputRate +
           cached * cachedRate +
-          rates.outputTokens * rates.outputRate) /
+          context.outputTokens * context.outputRate) /
         1_000_000,
       cost_estimate_basis: 'cached_input_rate_applied',
-      pricing_source: pricingSourceLabel(entry),
+      pricing_source: pricingSourceLabel(context.entry),
     }
   }
   return {
     cost_usd_estimated:
-      (rates.inputTokens * rates.inputRate + rates.outputTokens * rates.outputRate) / 1_000_000,
+      (promptTokens * context.inputRate + context.outputTokens * context.outputRate) / 1_000_000,
     cost_estimate_basis: 'uncached_input_rate_upper_bound',
-    pricing_source: pricingSourceLabel(entry),
+    pricing_source: pricingSourceLabel(context.entry),
   }
 }
 
@@ -206,8 +249,22 @@ export const augmentCostEstimate = (
   }
   return {
     ...usage,
-    ...estimateFields(usage, entry, { inputTokens, outputTokens, inputRate, outputRate }),
+    ...estimateFields(usage, { entry, backend, inputTokens, outputTokens, inputRate, outputRate }),
   }
+}
+
+// in-source test 専用 fixture (bundle からは treeshake で除去される)
+const makeSeparateReportingTable = (cachedRate: number | null): PriceTable => {
+  const entry: Record<string, unknown> = {
+    model: 'flash-1',
+    pricing_source: 'cursor',
+    input: 1.5,
+    output: 7.5,
+  }
+  if (cachedRate !== null) {
+    entry.cached_input = cachedRate
+  }
+  return { models: [entry], aliases: [] }
 }
 
 // in-source test 専用 fixture (bundle からは treeshake で除去される)
@@ -298,7 +355,7 @@ if (import.meta.vitest) {
       expect(result.pricing_source).toBe('model-token-prices.json:openai')
     })
 
-    it('applies the cached rate only when cached tokens fit within input tokens', () => {
+    it('applies the cached rate only when cached tokens fit within the prompt total', () => {
       const cached = augmentCostEstimate(usage({ cached_input_tokens: 600 }), 'codex', table)
       expect(cached.cost_estimate_basis).toBe('cached_input_rate_applied')
       expect(cached.cost_usd_estimated).toBeCloseTo(
@@ -307,8 +364,89 @@ if (import.meta.vitest) {
       )
       const over = augmentCostEstimate(usage({ cached_input_tokens: 5000 }), 'codex', table)
       expect(over.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
+      expect(over.cost_usd_estimated).toBeCloseTo((1000 * 2 + 100 * 10) / 1_000_000, 12)
+    })
+  })
+
+  describe('augmentCostEstimate cached input reporting', () => {
+    it('adds separately reported cached tokens to the prompt total', () => {
+      const result = augmentCostEstimate(
+        usage({ model: 'cursor-flash-1', cached_input_tokens: 4000 }),
+        'cursor',
+        makeSeparateReportingTable(0.15)
+      )
+      expect(result.cost_estimate_basis).toBe('cached_input_rate_applied')
+      expect(result.cost_usd_estimated).toBeCloseTo(
+        (1000 * 1.5 + 4000 * 0.15 + 100 * 7.5) / 1_000_000,
+        12
+      )
     })
 
+    it('keeps the uncached fallback an upper bound over the separate prompt total', () => {
+      const result = augmentCostEstimate(
+        usage({ model: 'cursor-flash-1', cached_input_tokens: 4000 }),
+        'cursor',
+        makeSeparateReportingTable(null)
+      )
+      expect(result.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
+      expect(result.cost_usd_estimated).toBeCloseTo((5000 * 1.5 + 100 * 7.5) / 1_000_000, 12)
+    })
+
+    it('infers the reporting shape for undeclared backends from the measured values', () => {
+      const opencodeTable: PriceTable = {
+        models: [
+          { model: 'oc-1', pricing_source: 'opencode', input: 1, cached_input: 0.1, output: 4 },
+        ],
+        aliases: [],
+      }
+      const separate = augmentCostEstimate(
+        usage({ model: 'oc-1', cached_input_tokens: 4000 }),
+        'opencode',
+        opencodeTable
+      )
+      const subset = augmentCostEstimate(
+        usage({ model: 'oc-1', cached_input_tokens: 600 }),
+        'opencode',
+        opencodeTable
+      )
+      expect(separate.cost_usd_estimated).toBeCloseTo(
+        (1000 * 1 + 4000 * 0.1 + 100 * 4) / 1_000_000,
+        12
+      )
+      expect(subset.cost_usd_estimated).toBeCloseTo((400 * 1 + 600 * 0.1 + 100 * 4) / 1_000_000, 12)
+    })
+
+    it.each([
+      { label: 'negative', cached: -4000 },
+      { label: 'fractional', cached: 12.5 },
+      { label: 'beyond the safe integer range', cached: Number.MAX_SAFE_INTEGER + 1 },
+      { label: 'non-numeric', cached: '4000' },
+    ])('ignores a $label cached count instead of skewing the prompt total', ({ cached }) => {
+      const result = augmentCostEstimate(
+        usage({ model: 'cursor-flash-1', cached_input_tokens: cached }),
+        'cursor',
+        makeSeparateReportingTable(0.15)
+      )
+      expect(result.cost_estimate_basis).toBe('uncached_input_rate_upper_bound')
+      expect(result.cost_usd_estimated).toBeCloseTo((1000 * 1.5 + 100 * 7.5) / 1_000_000, 12)
+    })
+
+    it('treats devin cached tokens as part of the reported prompt tokens', () => {
+      const realTable = loadRealPriceTable()
+      const result = augmentCostEstimate(
+        usage({ model: 'devin-gemini-3.8-flash', cached_input_tokens: 800 }),
+        'devin',
+        realTable
+      )
+      expect(result.cost_estimate_basis).toBe('cached_input_rate_applied')
+      expect(result.cost_usd_estimated).toBeCloseTo(
+        (200 * 1.5 + 800 * 0.15 + 100 * 7.5) / 1_000_000,
+        12
+      )
+    })
+  })
+
+  describe('augmentCostEstimate model resolution', () => {
     it('resolves aliases and omits the fields for unpriced or unknown models', () => {
       const aliased = augmentCostEstimate(usage({ model: 'gpt-alias' }), 'codex', table)
       expect(aliased.cost_usd_estimated).toBeCloseTo((1000 * 2 + 100 * 10) / 1_000_000, 12)
