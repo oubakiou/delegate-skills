@@ -804,7 +804,8 @@ var CACHED_INPUT_REPORTING = {
 	codex: "subset",
 	devin: "subset",
 	claude: "separate",
-	cursor: "separate"
+	cursor: "separate",
+	opencode: "separate"
 };
 var inferredReporting = (inputTokens, cached) => {
 	if (cached > inputTokens) return "separate";

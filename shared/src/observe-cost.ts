@@ -159,7 +159,7 @@ interface EstimateContext {
 }
 
 // backend ごとに cached input の報告意味論が違う。OpenAI 系（codex）と Devin の export は
-// キャッシュ読みを prompt トークンの内数として返すが、claude / cursor の stream-json は
+// キャッシュ読みを prompt トークンの内数として返すが、claude / cursor / opencode は
 // input_tokens とは別枠で返す。単価適用の前にこの差を吸収しないと、別枠 backend では
 // cached 分が prompt 総量から丸ごと抜け落ちる
 const CACHED_INPUT_REPORTING: Readonly<Partial<Record<string, 'subset' | 'separate'>>> = {
@@ -167,9 +167,10 @@ const CACHED_INPUT_REPORTING: Readonly<Partial<Record<string, 'subset' | 'separa
   devin: 'subset',
   claude: 'separate',
   cursor: 'separate',
+  opencode: 'separate',
 }
 
-// 未宣言の backend（provider ごとに意味論が変わる OpenCode 等）は実測値から推定する。
+// 宣言のない backend は実測値から推定する。
 // cached が input を超えていれば内数ではあり得ないので別枠だと確定できる
 const inferredReporting = (inputTokens: number, cached: number): 'subset' | 'separate' => {
   if (cached > inputTokens) {
@@ -393,27 +394,37 @@ if (import.meta.vitest) {
     })
 
     it('infers the reporting shape for undeclared backends from the measured values', () => {
-      const opencodeTable: PriceTable = {
-        models: [
-          { model: 'oc-1', pricing_source: 'opencode', input: 1, cached_input: 0.1, output: 4 },
-        ],
-        aliases: [],
-      }
       const separate = augmentCostEstimate(
-        usage({ model: 'oc-1', cached_input_tokens: 4000 }),
-        'opencode',
-        opencodeTable
+        usage({ model: 'flash-1', cached_input_tokens: 4000 }),
+        'unknown-backend',
+        makeSeparateReportingTable(0.15)
       )
       const subset = augmentCostEstimate(
-        usage({ model: 'oc-1', cached_input_tokens: 600 }),
-        'opencode',
-        opencodeTable
+        usage({ model: 'flash-1', cached_input_tokens: 600 }),
+        'unknown-backend',
+        makeSeparateReportingTable(0.15)
       )
       expect(separate.cost_usd_estimated).toBeCloseTo(
-        (1000 * 1 + 4000 * 0.1 + 100 * 4) / 1_000_000,
+        (1000 * 1.5 + 4000 * 0.15 + 100 * 7.5) / 1_000_000,
         12
       )
-      expect(subset.cost_usd_estimated).toBeCloseTo((400 * 1 + 600 * 0.1 + 100 * 4) / 1_000_000, 12)
+      expect(subset.cost_usd_estimated).toBeCloseTo(
+        (400 * 1.5 + 600 * 0.15 + 100 * 7.5) / 1_000_000,
+        12
+      )
+    })
+
+    it('counts opencode cached tokens on top of the reported input tokens', () => {
+      const result = augmentCostEstimate(
+        usage({ model: 'flash-1', cached_input_tokens: 600 }),
+        'opencode',
+        makeSeparateReportingTable(0.15)
+      )
+      expect(result.cost_estimate_basis).toBe('cached_input_rate_applied')
+      expect(result.cost_usd_estimated).toBeCloseTo(
+        (1000 * 1.5 + 600 * 0.15 + 100 * 7.5) / 1_000_000,
+        12
+      )
     })
 
     it.each([
