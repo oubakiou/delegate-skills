@@ -921,6 +921,7 @@ export const usageFromCodexSessions = (
 
 interface DevinUsage {
   input_tokens: number | null
+  cached_input_tokens: number | null
   output_tokens: number | null
   total_tokens: null
   cost_usd: number | null
@@ -929,6 +930,9 @@ interface DevinUsage {
 const devinFinalMetricsUsage = (metrics: unknown): DevinUsage => ({
   input_tokens: numberOrNull(
     jqCoalesce(getPath(metrics, ['total_prompt_tokens']), getPath(metrics, ['prompt_tokens']))
+  ),
+  cached_input_tokens: numberOrNull(
+    jqCoalesce(getPath(metrics, ['total_cached_tokens']), getPath(metrics, ['cached_tokens']))
   ),
   output_tokens: numberOrNull(
     jqCoalesce(
@@ -983,6 +987,9 @@ const devinSummedStepUsage = (parsed: unknown): DevinUsage | null => {
   }
   return {
     input_tokens: accumulator.inputTokens,
+    // step metrics に cached の内訳を出す実例が未確認で、欠落を 0 と読むと
+    // キャッシュ未報告の run が cached 単価適用済みの basis を名乗ってしまう
+    cached_input_tokens: null,
     output_tokens: accumulator.outputTokens,
     total_tokens: null,
     cost_usd: accumulator.costUsd,
@@ -1022,6 +1029,7 @@ export const usageFromDevinExport = (
   }
   return {
     input_tokens: usage.input_tokens,
+    cached_input_tokens: usage.cached_input_tokens,
     output_tokens: usage.output_tokens,
     total_tokens: sumOrNull(usage.input_tokens, usage.output_tokens),
     cost_usd: usage.cost_usd,
@@ -1030,6 +1038,15 @@ export const usageFromDevinExport = (
     model: context.model,
     backend: context.backend,
   }
+}
+
+// in-source test 専用 fixture (bundle からは treeshake で除去される)
+const writeDevinExport = async (payload: unknown): Promise<string> => {
+  const { writeFileSync } = await import('node:fs')
+  const { createTestScratchDir } = await import('./test-scratch.ts')
+  const file = path.join(createTestScratchDir('devin-export'), 'export.json')
+  writeFileSync(file, JSON.stringify(payload))
+  return file
 }
 
 const opencodeStepFinishLine = (part: Record<string, unknown>): string =>
@@ -1088,6 +1105,41 @@ if (import.meta.vitest) {
           source: 's',
         })
       ).toBeNull()
+    })
+  })
+
+  describe('usageFromDevinExport', () => {
+    const devinContext = { model: 'devin-gemini-3.8-flash', backend: 'devin' }
+
+    it('reads the cached prompt tokens reported by final_metrics', async () => {
+      const file = await writeDevinExport({
+        final_metrics: {
+          total_prompt_tokens: 924_317,
+          total_completion_tokens: 12_719,
+          total_cached_tokens: 792_096,
+        },
+      })
+      expect(usageFromDevinExport(file, devinContext)).toMatchObject({
+        input_tokens: 924_317,
+        cached_input_tokens: 792_096,
+        output_tokens: 12_719,
+        total_tokens: 937_036,
+        source: 'devin_atif_export',
+      })
+    })
+
+    it('reports no cached breakdown when falling back to summed step metrics', async () => {
+      const file = await writeDevinExport({
+        steps: [
+          { metrics: { prompt_tokens: 10, completion_tokens: 2, cached_tokens: 4 } },
+          { metrics: { prompt_tokens: 20, completion_tokens: 3 } },
+        ],
+      })
+      expect(usageFromDevinExport(file, devinContext)).toMatchObject({
+        input_tokens: 30,
+        cached_input_tokens: null,
+        output_tokens: 5,
+      })
     })
   })
 

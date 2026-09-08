@@ -232,7 +232,7 @@ backend が公開する場合、指定値と実効値を observe JSON へ記録�
 
 [`shared/model-token-prices.json`](shared/model-token-prices.json) に、delegate 対象モデルファミリの token 単価スナップショットを置く。`scripts/sync-shared.ts` が各 skill ディレクトリへコピーを同梱する。トップレベルの `retrieved_at` は基準となる確認日で、モデル行に `retrieved_at` があればそちらを優先する。一部のモデルだけを更新した場合、基準日は変更しない。これはコスト分析やレポート用の参照データであり、delegate-skills は cost gate としては使わない。
 
-backend がトークン実測を返すが費用を報告しない場合（Codex 等）、observe usage にはこの単価表から換算した `cost_usd_estimated` を実測 `cost_usd` とは別フィールドで併記する（下流の集計が実測と換算を区別できるようにするため）。`cost_estimate_basis` に cached 単価適用の有無が入り、単価表に該当モデルが無い場合はフィールドごと省略する。
+backend がトークン実測を返すが費用を報告しない場合（Codex 等）、observe usage にはこの単価表から換算した `cost_usd_estimated` を実測 `cost_usd` とは別フィールドで併記する（下流の集計が実測と換算を区別できるようにするため）。`cost_estimate_basis` に cached 単価適用の有無が入り、単価表に該当モデルが無い場合はフィールドごと省略する。cached input の報告意味論は backend 別（Codex / Devin は `input_tokens` の内数、Claude / Cursor / OpenCode は別枠）なので、換算時は総 prompt へ正規化してから単価を当てる。`input_tokens` / `cached_input_tokens` 自体は子 CLI の報告そのままを記録する。OpenCode は provider cost の欠測と無料モデルの 0 を区別するため概算自体を付けない。`cost_estimate_basis` は算定根拠そのものなので、basis が揃っていない run の `cost_usd_estimated` を横断集計・比較してはならない。
 
 ![モデル token 単価](docs/assets/model-token-prices.svg)
 

@@ -800,18 +800,39 @@ var pricingSourceLabel = (entry) => {
 	if (typeof source === "string") return `model-token-prices.json:${source}`;
 	return "model-token-prices.json:unknown";
 };
-var estimateFields = (usage, entry, rates) => {
-	const cached = usage.cached_input_tokens ?? null;
-	const cachedRate = entry.cached_input;
-	if (isNumber(cached) && isNumber(cachedRate) && cached <= rates.inputTokens) return {
-		cost_usd_estimated: ((rates.inputTokens - cached) * rates.inputRate + cached * cachedRate + rates.outputTokens * rates.outputRate) / 1e6,
+var CACHED_INPUT_REPORTING = {
+	codex: "subset",
+	devin: "subset",
+	claude: "separate",
+	cursor: "separate",
+	opencode: "separate"
+};
+var inferredReporting = (inputTokens, cached) => {
+	if (cached > inputTokens) return "separate";
+	return "subset";
+};
+var usableCachedTokens = (value) => {
+	if (!isNumber(value) || !Number.isSafeInteger(value) || value < 0) return null;
+	return value;
+};
+var promptTokensOf = (context, cached) => {
+	if (cached === null) return context.inputTokens;
+	if ((CACHED_INPUT_REPORTING[context.backend] ?? inferredReporting(context.inputTokens, cached)) === "separate") return context.inputTokens + cached;
+	return context.inputTokens;
+};
+var estimateFields = (usage, context) => {
+	const cached = usableCachedTokens(usage.cached_input_tokens);
+	const cachedRate = context.entry.cached_input;
+	const promptTokens = promptTokensOf(context, cached);
+	if (cached !== null && isNumber(cachedRate) && cached <= promptTokens) return {
+		cost_usd_estimated: ((promptTokens - cached) * context.inputRate + cached * cachedRate + context.outputTokens * context.outputRate) / 1e6,
 		cost_estimate_basis: "cached_input_rate_applied",
-		pricing_source: pricingSourceLabel(entry)
+		pricing_source: pricingSourceLabel(context.entry)
 	};
 	return {
-		cost_usd_estimated: (rates.inputTokens * rates.inputRate + rates.outputTokens * rates.outputRate) / 1e6,
+		cost_usd_estimated: (promptTokens * context.inputRate + context.outputTokens * context.outputRate) / 1e6,
 		cost_estimate_basis: "uncached_input_rate_upper_bound",
-		pricing_source: pricingSourceLabel(entry)
+		pricing_source: pricingSourceLabel(context.entry)
 	};
 };
 var augmentCostEstimate = (usage, backend, table) => {
@@ -823,7 +844,9 @@ var augmentCostEstimate = (usage, backend, table) => {
 	if (!isNumber(inputTokens) || !isNumber(outputTokens) || !isNumber(inputRate) || !isNumber(outputRate)) return usage;
 	return {
 		...usage,
-		...estimateFields(usage, entry, {
+		...estimateFields(usage, {
+			entry,
+			backend,
 			inputTokens,
 			outputTokens,
 			inputRate,
@@ -1330,6 +1353,7 @@ var usageFromCodexSessions = (codexHome, context) => {
 };
 var devinFinalMetricsUsage = (metrics) => ({
 	input_tokens: numberOrNull(jqCoalesce$1(getPath(metrics, ["total_prompt_tokens"]), getPath(metrics, ["prompt_tokens"]))),
+	cached_input_tokens: numberOrNull(jqCoalesce$1(getPath(metrics, ["total_cached_tokens"]), getPath(metrics, ["cached_tokens"]))),
 	output_tokens: numberOrNull(jqCoalesce$1(getPath(metrics, ["total_completion_tokens"]), getPath(metrics, ["completion_tokens"]))),
 	total_tokens: null,
 	cost_usd: numberOrNull(jqCoalesce$1(getPath(metrics, ["total_cost_usd"]), getPath(metrics, ["cost_usd"])))
@@ -1358,6 +1382,7 @@ var devinSummedStepUsage = (parsed) => {
 	if (!accumulator.found) return null;
 	return {
 		input_tokens: accumulator.inputTokens,
+		cached_input_tokens: null,
 		output_tokens: accumulator.outputTokens,
 		total_tokens: null,
 		cost_usd: accumulator.costUsd
@@ -1382,6 +1407,7 @@ var usageFromDevinExport = (exportFile, context) => {
 	if (usage === null || !devinHasMeasuredValue(usage)) return null;
 	return {
 		input_tokens: usage.input_tokens,
+		cached_input_tokens: usage.cached_input_tokens,
 		output_tokens: usage.output_tokens,
 		total_tokens: sumOrNull(usage.input_tokens, usage.output_tokens),
 		cost_usd: usage.cost_usd,
