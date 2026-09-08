@@ -2,13 +2,14 @@
 name: delegate-prose
 license: MIT
 description: >
-  token cost の削減を第一目標として、汎用の文章（技術記事・ブログ・リリースノート・README・議事録・企画書・告知文・説明文など）の
+  token cost の削減を第一目標として、汎用の文章（技術記事・リリースノート・README・議事録・説明文など）の
   生成・改稿・推敲・リライトを subagent に委譲するスキル。
-  ユーザーが「文章を書いて」「記事にして」「ドラフトを作って」「推敲して」「リライトして」「読みやすく書き直して」
-  「リリースノートを書いて」といった形で、文章そのものを成果物として求める場合に使う。
-  文章生成が得意なモデルを `DELEGATE_PROSE_MODEL` で個別に選べる。
-  HTML 成果物は delegate-htmldoc、コード実装は delegate-implement、read-only の調査は delegate-explore を使う。
-  1〜2 文の修正・コミットメッセージ・typo 修正には使わない。
+  ユーザーが「文章を書いて」「記事にして」「推敲して」「リライトして」といった形で、
+  文章自体を成果物として求める場合に使う。
+  Notion / docs / README / issue など後から読まれる文書へ、日本語 200 文字以上（英語 100 words）
+  または箇条書き 3 項目以上の説明文を書く場合は、分析・実装が主目的でもこの skill を通す。
+  HTML 成果物は delegate-htmldoc、コード実装は delegate-implement、調査は delegate-explore を使う。
+  コード・構造化データ・表構造の変更・リンクや番号の差し替え・1〜2 文修正には使わない。
   prose の作業を委譲する場合は、この skill を使う。generic な subagent で代替しない。
 allowed-tools: Bash(bash .claude/skills/delegate-prose/scripts/run.sh:*), Bash(bash .claude/skills/delegate-prose/scripts/prepare.sh:*), Bash(bash .claude/skills/delegate-prose/scripts/dispatch.sh:*), Bash(bash .claude/skills/delegate-prose/scripts/read-request.sh:*), Bash(bash .claude/skills/delegate-prose/scripts/read-response.sh:*), Bash(bash .claude/skills/delegate-prose/scripts/read-json.sh:*), Bash(test -f:*), Bash(ls:*), Read
 ---
@@ -30,7 +31,25 @@ allowed-tools: Bash(bash .claude/skills/delegate-prose/scripts/run.sh:*), Bash(b
 
 ## 委譲する前に（コストゲート）
 
-数百字以上の初稿、全面改稿、複数セクションの文書、README 英日同期のような一括更新は委譲する。1〜2 文の修正、コミットメッセージ、typo、main が既に本文を持っている数行修正は main が直接処理する。
+**分量で判定する。タスクの主目的では判定しない。** Notion / docs / README / issue 本文やコメントなど、後から読まれる文書へ次のいずれかを書く場合は委譲する。分析・調査・実装が主目的のタスクに付随する説明文でも同じ扱いにする。
+
+- 日本語 200 文字以上（英語なら 100 words 程度）の説明文
+- 箇条書き 3 項目以上の説明文
+
+分量は**同一タスクで同一文書へ加える説明文の合計**で数える。ツール呼び出しの回数では数えない。150 文字ずつ 4 回に分けて書いても、README の英日 2 ファイルへ同じ内容を書いても、合計が閾値に達すれば委譲する。初稿・全面改稿・複数セクションの文書は、この合計で判定すれば通常は閾値に達する。
+
+除外は目的ではなく**形式**で決める。次は main が直接書く。
+
+- コード、コードブロック、JSON / YAML などの構造化データ
+- 表の行・列の追加削除や並べ替え、セル内の数値・識別子・リンクの置換
+- リンク・番号・パス・識別子の差し替え
+- 既存文の 1〜2 文修正、typo 修正、コミットメッセージ
+
+表のセルであっても、中身が自然言語の説明文なら通常どおり分量で判定する。格納場所ではなく書くものの形式で決める。
+
+見積もりを外した分を拾うため**事後にも判定する**。main が直接書き終えた説明文が閾値に達していたら、そのまま確定せず delegate-prose の推敲に通す。対象範囲・形式除外・合計の数え方は事前判定と同じものを使う。
+
+request は骨子で足りる。worker は MCP を使えるため、Notion の URL やコメント ID を渡せば本文を main が読み込んで貼り直す必要はない。
 
 ## 実行フロー（one-shot）
 

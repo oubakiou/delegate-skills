@@ -135,7 +135,7 @@ OpenCode は cwd 外への出力を保証しない。direct な edit / write と
 
 `delegate-htmldoc` は skill 同梱の固定テンプレート（`references/template.html` + `references/styleguide.md`）へ content を流し込んで自己完結型の HTML ドキュメントを生成する。デザインは実行・モデルによらず同一で、worker は CSS を生成・編集しない。グラフ・画像素材は親側で用意して（チャートは dataviz-svg、ラスタ画像は `delegate-imagegen` 等）パスで渡し、SVG は文書へインライン埋め込み、ラスタ画像は出力 HTML の隣へコピーして相対参照する。出力先の明示がなければ生成物は `delegate-htmldoc-output/` 配下に置く。
 
-`delegate-prose` は汎用の文章生成・改稿・推敲を対象とする。スタイル資産は同梱せず、文体・トーン・分量・読者層は request で指定する。事実は request と明示された source からのみ取り、推測で補完しない。HTML 文書に仕上げる場合は、生成した Markdown を `delegate-htmldoc` に渡す。出力先の明示がなければ生成物は `delegate-prose-output/` 配下に置く。
+`delegate-prose` は汎用の文章生成・改稿・推敲を対象とする。発火はタスクの主目的ではなく分量で判定する。後から読まれる文書（Notion / docs / README / issue 本文）へ日本語 200 文字以上（英語なら 100 words 程度）または箇条書き 3 項目以上の説明文を書く場合は、分析や実装が主目的でもこの skill を通す。コード・構造化データ・表の構造変更・リンクや番号の差し替え・1〜2 文の修正は main が直接書く。スタイル資産は同梱せず、文体・トーン・分量・読者層は request で指定する。事実は request と明示された source からのみ取り、推測で補完しない。HTML 文書に仕上げる場合は、生成した Markdown を `delegate-htmldoc` に渡す。出力先の明示がなければ生成物は `delegate-prose-output/` 配下に置く。
 
 ## 環境変数
 
