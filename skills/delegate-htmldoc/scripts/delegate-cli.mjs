@@ -3410,11 +3410,13 @@ var usageError$1 = () => ({
 	stderr: "Usage: read-json <dotpath> [json_file]  (json on stdin if file omitted)\n",
 	stdout: ""
 });
+var isKnownHarnessLine = (line) => line.trim() === "" || line.startsWith("observe_file: ") || line.startsWith("[exited with ") && line.endsWith("]");
 var extractPrettyPrintedObject = (raw) => {
 	const lines = raw.split(/\r?\n/);
 	const start = lines.findIndex((line) => line.trimEnd() === "{");
 	const end = lines.findLastIndex((line) => line.trimEnd() === "}");
 	if (start === -1 || end === -1 || end < start) return null;
+	if (![...lines.slice(0, start), ...lines.slice(end + 1)].every(isKnownHarnessLine)) return null;
 	return lines.slice(start, end + 1).join("\n");
 };
 var parsedOrError = (raw) => {
