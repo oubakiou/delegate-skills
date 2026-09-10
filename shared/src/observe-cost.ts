@@ -528,6 +528,31 @@ if (import.meta.vitest) {
       expect(suffixed.pricing_source).toBe('model-token-prices.json:cognition_cli')
     })
 
+    it('keeps the swe alias pointed at the current default devin entry', () => {
+      const realTable = loadRealPriceTable()
+      expect(resolveAlias('swe', realTable.aliases)).toBe('swe-2')
+      const result = augmentCostEstimate(usage({ model: 'swe' }), 'devin', realTable)
+      expect(result.cost_usd_estimated).toBe(0)
+      expect(result.pricing_source).toBe('model-token-prices.json:cognition_cli')
+      const suffixed = augmentCostEstimate(usage({ model: 'swe@max' }), 'devin', realTable)
+      expect(suffixed.cost_usd_estimated).toBe(0)
+      expect(suffixed.pricing_source).toBe('model-token-prices.json:cognition_cli')
+    })
+
+    it('points every alias in the real price table at a defined model entry', () => {
+      const realTable = loadRealPriceTable()
+      const aliasNames: string[] = []
+      for (const alias of realTable.aliases) {
+        if (isRecord(alias) && typeof alias.alias === 'string') {
+          aliasNames.push(alias.alias)
+        }
+      }
+      expect(aliasNames).toContain('swe')
+      for (const name of aliasNames) {
+        expect(matchesFor(name, realTable)).toHaveLength(1)
+      }
+    })
+
     it('leaves estimated or already-costed usage untouched', () => {
       expect(
         augmentCostEstimate(usage({ measurement: 'estimated' }), 'codex', table)

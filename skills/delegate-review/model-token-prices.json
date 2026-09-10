@@ -174,14 +174,27 @@
     },
     {
       "model_provider": "cognition",
+      "model": "swe-2",
+      "display_name": "SWE-2",
+      "input": 0,
+      "cached_input": 0,
+      "output": 0,
+      "context": "standard",
+      "pricing_status": "free_in_cli_catalog",
+      "pricing_source": "cognition_cli",
+      "retrieved_at": "2026-09-10"
+    },
+    {
+      "model_provider": "cognition",
       "model": "swe-1.7",
       "display_name": "SWE-1.7",
       "input": 0,
       "cached_input": 0,
       "output": 0,
       "context": "standard",
-      "pricing_status": "free_preview_until_2026-08-08",
-      "pricing_source": "cognition"
+      "pricing_status": "free_in_cli_catalog_priced_in_docs",
+      "pricing_source": "cognition_cli",
+      "retrieved_at": "2026-09-10"
     },
     {
       "model_provider": "cognition",
@@ -197,21 +210,23 @@
       "model_provider": "cognition",
       "model": "swe-1.6",
       "display_name": "SWE-1.6",
-      "input": 0,
-      "cached_input": 0,
-      "output": 0,
+      "input": 0.5,
+      "cached_input": 0.2,
+      "output": 2.5,
       "context": "standard",
-      "pricing_source": "cognition"
+      "pricing_source": "cognition",
+      "retrieved_at": "2026-09-10"
     },
     {
       "model_provider": "cognition",
       "model": "swe-1.6-fast",
       "display_name": "SWE-1.6 Fast",
-      "input": 0.3,
-      "cached_input": 0.03,
-      "output": 1.5,
+      "input": 0.5,
+      "cached_input": 0.2,
+      "output": 2.5,
       "context": "standard",
-      "pricing_source": "cognition"
+      "pricing_source": "cognition",
+      "retrieved_at": "2026-09-10"
     },
     {
       "model_provider": "zai",
@@ -703,7 +718,7 @@
     {
       "model_provider": "cognition",
       "alias": "swe",
-      "alias_for": "swe-1.7"
+      "alias_for": "swe-2"
     },
     {
       "model_provider": "google",
