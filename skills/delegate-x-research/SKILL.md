@@ -40,7 +40,7 @@ x.com / X の調査を、X 調査 capability を持つ子プロセスへ委譲�
    - run-x-research は内部で prepare → delegate-x-research-grok → read-response を順に実行し、stdout は成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を返す。
    - selector 省略時の既定は `auto`。
    - exit code は内部スクリプトを透過する。exit 3=前提不足 / exit 4=委譲サイクルなら中止する。exit 6 の場合は、許容値列挙を含む stderr の 1 行をそのままユーザーへの説明に使う。
-   - run-x-research は dispatch 前に `observe_file: <path>` を stderr へ先出しする。強制終了時はその path を復旧経路にする。
+   - `run-x-research.sh` は dispatch 前に `observe_file: <path>` を stderr へ先出しする。`run-x-research.sh` が Bash timeout で background へ退避した場合・強制終了された場合は**再実行しない**（再実行は worker の二重起動になり、implement / chore では同一 worktree の同時書き換えになる）。復旧は `bash .claude/skills/delegate-x-research/scripts/read-json.sh .state.phase "$observe_file"` が `ended` になるまで待ち、`bash .claude/skills/delegate-x-research/scripts/read-json.sh .run.response_file "$observe_file"` で応答パスを取得して `bash .claude/skills/delegate-x-research/scripts/read-response.sh` で読む。background 退避した出力ファイルは stdout と stderr が合流するが、`read-json.sh` は JSON object を囲む行を読み飛ばすのでそのまま読める。
    - 非対話モードの親（`claude -p` 等）では run-x-research を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。
 3. **レスポンス消費と検証**: `status="$(printf '%s' "$out" | bash .claude/skills/delegate-x-research/scripts/read-json.sh .status)"` / `content="$(printf '%s' "$out" | bash .claude/skills/delegate-x-research/scripts/read-json.sh .content)"` を読む。`content_truncated` が `true` なら `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-x-research/scripts/read-json.sh .response_file)"` を取り出し、`bash .claude/skills/delegate-x-research/scripts/read-response.sh "$response_file" <N>` で Findings / Sources / Limitations / Blockers など必要 section だけ段階読みする。読了後、worker の本文を再要約しない。main のユーザー向け応答は、必要な結論と参照すべき section を短く示す。重要な主張について、Sources に投稿URL・アカウント・投稿日時・確認時刻が含まれるか確認する。根拠が弱い箇所や Grok 側のアクセス制限は Limitations / Blockers として扱い、断定しない。
 
@@ -58,7 +58,7 @@ dispatch 中の observe 監視、background 実行など、途中で親の判断
 
 ## 待ち時間の隠蔽（対話親向け）
 
-対話親では `delegate-x-research-grok.sh`（または `run-x-research.sh`）を background で実行し、`observe_file` の `state.phase` / `heartbeat` を確認して `ended` 後に `read-response.sh` する運用で体感待ち時間を隠蔽できる。総所要時間（wall time）は変わらない体感改善であり、非対話モードの親では従来どおりフォアグラウンド実行必須。
+対話親では体感待ち時間を隠蔽できる。経路は起動スクリプトで異なる。`delegate-x-research-grok.sh` 経由は `prepare.sh` で `response_file` を事前取得済みなので、`delegate-x-research-grok.sh` を background で実行し、`observe_file` の `state.phase` / `heartbeat` を確認して `ended` 後に `read-response.sh` する。`run-x-research.sh` 経由は `response_file` を事前に取得できないので、`run-x-research.sh` を background で実行した場合は `read-json.sh .run.response_file "$observe_file"` で応答パスを取るか、合流した出力 JSON をそのまま `read-json.sh` で読む。総所要時間（wall time）は変わらない体感改善であり、非対話モードの親では従来どおりフォアグラウンド実行必須。
 
 ## Worker report
 

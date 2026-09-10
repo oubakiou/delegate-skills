@@ -8,6 +8,8 @@ import { isRecord } from './jq-compat.ts'
 // 対応せず usage error（exit 2）で fail-closed にする（誤値の静かな返却を防ぐため）。
 // Usage: read-json <dotpath> [json_file]   (json_file 省略時は stdin)
 // stdout: 値 1 個 + 改行（null / 欠落は "null"、object / array は compact JSON）
+// 親 Bash timeout の background 退避で stdout/stderr が合流した入力から、厳密 parse 失敗時だけ
+// 行頭 `{` / `}` 単独行で object を切り出す（文字単位の最初〜最後だと別断片を跨ぎ得るため）。
 
 // object key の連結のみ許容: `.` / `.a` / `.a.b.c`（英数 _ - のみ）。bracket / quote は不許可
 const DOT_PATH = /^\.(?:[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)?$/
@@ -75,11 +77,30 @@ const usageError = (): CliResult => ({
   stdout: '',
 })
 
+// 行頭アンカー: ネストしたインデント付き `}` を閉じ括弧と誤認しないよう leading space は残す
+const extractPrettyPrintedObject = (raw: string): string | null => {
+  const lines = raw.split(/\r?\n/)
+  const start = lines.findIndex((line) => line.trimEnd() === '{')
+  const end = lines.findLastIndex((line) => line.trimEnd() === '}')
+  if (start === -1 || end === -1 || end < start) {
+    return null
+  }
+  return lines.slice(start, end + 1).join('\n')
+}
+
 const parsedOrError = (raw: string): { ok: true; value: unknown } | { ok: false } => {
   try {
     return { ok: true, value: JSON.parse(raw) }
   } catch {
-    return { ok: false }
+    const extracted = extractPrettyPrintedObject(raw)
+    if (extracted === null) {
+      return { ok: false }
+    }
+    try {
+      return { ok: true, value: JSON.parse(extracted) }
+    } catch {
+      return { ok: false }
+    }
   }
 }
 
@@ -179,6 +200,63 @@ if (import.meta.vitest) {
       const viaNull = runReadJson(['.state.phase'], withNull)
       expect(viaNull.exitCode).toBe(0)
       expect(viaNull.stdout).toBe('null\n')
+    })
+  })
+
+  describe('runReadJson wrapping tolerance', () => {
+    it('extracts a pretty-printed object wrapped by harness noise', () => {
+      const mixed = Buffer.from(
+        'observe_file: /x/y_observe.json\n{\n  "status": "completed"\n}\n\n[exited with code 0]\n'
+      )
+      const result = runReadJson(['.status'], mixed)
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe('completed\n')
+    })
+
+    it('still reads pure JSON without surrounding noise', () => {
+      const result = runReadJson(['.status'], json)
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe('completed\n')
+    })
+
+    it('fails closed when no brace-only lines exist', () => {
+      expect(runReadJson(['.status'], Buffer.from('not json')).exitCode).toBe(4)
+    })
+
+    it('fails closed when the extracted region is still invalid JSON', () => {
+      const broken = Buffer.from('noise\n{\n  "a": ,\n}\nnoise')
+      expect(runReadJson(['.a'], broken).exitCode).toBe(4)
+    })
+
+    it('does not join JSON fragments that sit on non-brace-only lines', () => {
+      const mixed = Buffer.from(
+        'prefix { "nope": true }\n{\n  "status": "completed"\n}\nsuffix { "x": 1 }\n'
+      )
+      const result = runReadJson(['.status'], mixed)
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe('completed\n')
+    })
+
+    it('reads nested fields from a pretty-printed observe JSON file', () => {
+      const file = createTestScratchFile(
+        'read-json-test',
+        `${Math.random().toString(36).slice(2)}.json`
+      )
+      writeFileSync(
+        file,
+        `${JSON.stringify(
+          {
+            state: { phase: 'ended' },
+            run: { response_file: '/tmp/x_res.json' },
+          },
+          null,
+          2
+        )}\n`
+      )
+      expect(runReadJson(['.state.phase', file], Buffer.alloc(0)).stdout).toBe('ended\n')
+      expect(runReadJson(['.run.response_file', file], Buffer.alloc(0)).stdout).toBe(
+        '/tmp/x_res.json\n'
+      )
     })
   })
 }

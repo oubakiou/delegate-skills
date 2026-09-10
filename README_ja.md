@@ -162,7 +162,7 @@ OpenCode は cwd 外への出力を保証しない。direct な edit / write と
 | `DELEGATE_METRICS_FILE`                  | 未設定                         | 任意の JSONL telemetry 出力先                                                                                                   |
 | `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10` 秒                        | observe heartbeat の間隔                                                                                                        |
 | `DELEGATE_OBSERVE_LOCK_TIMEOUT_SECONDS`  | `30` 秒                        | observe lock の timeout                                                                                                         |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）  | Claude child の Bash timeout                                                                                                    |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000` ms（`0` は注入なし）  | **worker 自身の** Bash tool へ注入する timeout。**親が delegate 呼び出しに与える timeout ではない**                             |
 | `DELEGATE_CODEX_HOME_PRUNE`              | `1`（`0` で残す）              | 成功 run の cache を削除する。auth は常に削除する                                                                               |
 | `DELEGATE_CODEX_HOOKS`                   | `1`（`0`/`false`/`no` で無効） | Codex の implement / chore run で project hooks を実行する（hook trust を bypass）                                              |
 | `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                 | `1` / `true` / `yes` で `--pure` を全 task type へ広げる。`explore` / `review` / `htmldoc` / `prose` は常に `--pure` で起動する |

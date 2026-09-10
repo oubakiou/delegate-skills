@@ -600,25 +600,25 @@ delegate-skills/
 
 ## 12. 環境変数
 
-| 環境変数                                 | 既定                                     | 説明                                                                                                                                                      |
-| ---------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                                                                                                                      |
-| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                                                                                                                     |
-| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値                                                                                           |
-| `DELEGATE_RUN_CONTENT_MAX`               | `16384`（バイト、`0` は無制限）          | one-shot `run.sh` JSON の `content` 上限                                                                                                                  |
-| `DELEGATE_REQUEST_INLINE_MAX`            | `262144`（バイト）                       | request を worker prompt に埋め込むサイズ閾値                                                                                                             |
-| `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先                                                                                          |
-| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                                                                                                                        |
-| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000`（ミリ秒、`0` は注入なし）       | claude backend の子へ注入する Bash tool の timeout 上限                                                                                                   |
-| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に cache を削除。auth copy は設定によらず常に削除                                                                                               |
-| `DELEGATE_CODEX_HOOKS`                   | `1`（有効、`0` / `false` / `no` で無効） | Codex パスの `implement` / `chore` で `--dangerously-bypass-hook-trust` を付与し project hooks を有効化する                                               |
-| `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                           | `1` / `true` / `yes`（大小文字無視、前後空白無視）で OpenCode の全 task type に `--pure` を付ける。未設定・空文字・その他の値は無効。不正値で停止はしない |
-| `DELEGATE_OPENCODE_MCP_SOURCE`           | 未設定（注入しない）                     | OpenCode の MCP 入力元。`claude` / `cursor` / `codex` の完全一致。不正値（前後空白を含む値も含む）は child 起動前に exit 3                                |
-| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する                                                                                             |
-| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限                                                                                                      |
-| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する                                                                                              |
-| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                                                                                                          |
-| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル                                                                                                      |
+| 環境変数                                 | 既定                                     | 説明                                                                                                                                                        |
+| ---------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DELEGATE_<TYPE>_MODEL`                  | skill 毎                                 | 種別別のモデル上書き                                                                                                                                        |
+| `DELEGATE_WORK_DIR`                      | mktemp 既定（`TMPDIR`、無ければ `/tmp`） | リクエスト/レスポンスファイルの置き場                                                                                                                       |
+| `DELEGATE_RESPONSE_INLINE_MAX`           | `10240`（バイト）                        | `read-response.sh auto` が丸読み/段階読みを切り替えるサイズ閾値                                                                                             |
+| `DELEGATE_RUN_CONTENT_MAX`               | `16384`（バイト、`0` は無制限）          | one-shot `run.sh` JSON の `content` 上限                                                                                                                    |
+| `DELEGATE_REQUEST_INLINE_MAX`            | `262144`（バイト）                       | request を worker prompt に埋め込むサイズ閾値                                                                                                               |
+| `DELEGATE_METRICS_FILE`                  | 未設定（記録しない）                     | 設定時のみ proxy metric を JSONL で追記する任意 telemetry 出力先                                                                                            |
+| `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`    | `10`（秒）                               | observe JSON の heartbeat 更新間隔                                                                                                                          |
+| `DELEGATE_CHILD_BASH_TIMEOUT_MS`         | `300000`（ミリ秒、`0` は注入なし）       | claude backend の子へ注入する Bash tool の timeout 上限。**worker 自身の Bash tool** の timeout であり、**親が delegate 呼び出しに与える timeout ではない** |
+| `DELEGATE_CODEX_HOME_PRUNE`              | `1`（有効、`0` で残す）                  | 正常終了時に cache を削除。auth copy は設定によらず常に削除                                                                                                 |
+| `DELEGATE_CODEX_HOOKS`                   | `1`（有効、`0` / `false` / `no` で無効） | Codex パスの `implement` / `chore` で `--dangerously-bypass-hook-trust` を付与し project hooks を有効化する                                                 |
+| `DELEGATE_OPENCODE_PURE`                 | 未設定（無効）                           | `1` / `true` / `yes`（大小文字無視、前後空白無視）で OpenCode の全 task type に `--pure` を付ける。未設定・空文字・その他の値は無効。不正値で停止はしない   |
+| `DELEGATE_OPENCODE_MCP_SOURCE`           | 未設定（注入しない）                     | OpenCode の MCP 入力元。`claude` / `cursor` / `codex` の完全一致。不正値（前後空白を含む値も含む）は child 起動前に exit 3                                  |
+| `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` | `0`（無効）                              | stdout/stderr bytes が増えない子 CLI を指定秒数後に kill する                                                                                               |
+| `DELEGATE_OBSERVE_STREAM_MAX_BYTES`      | `65536`（バイト、`0` は無制限）          | observe JSON に保存する stdout/stderr content の上限                                                                                                        |
+| `DELEGATE_RUN_RETENTION_DAYS`            | `0`（無効）                              | request 準備時に古い run ごとの scratch directory を削除する                                                                                                |
+| `DELEGATE_IMAGEGEN_OUTPUT_DIR`           | `delegate-imagegen-output`               | `delegate-imagegen` の既定出力先                                                                                                                            |
+| `DELEGATE_X_RESEARCH_MODEL`              | `grok-build`                             | `delegate-x-research` の X 調査 backend に渡すモデル                                                                                                        |
 
 ## 13. 脅威モデル・割り切り
 

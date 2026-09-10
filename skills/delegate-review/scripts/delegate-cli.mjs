@@ -3410,6 +3410,13 @@ var usageError$1 = () => ({
 	stderr: "Usage: read-json <dotpath> [json_file]  (json on stdin if file omitted)\n",
 	stdout: ""
 });
+var extractPrettyPrintedObject = (raw) => {
+	const lines = raw.split(/\r?\n/);
+	const start = lines.findIndex((line) => line.trimEnd() === "{");
+	const end = lines.findLastIndex((line) => line.trimEnd() === "}");
+	if (start === -1 || end === -1 || end < start) return null;
+	return lines.slice(start, end + 1).join("\n");
+};
 var parsedOrError = (raw) => {
 	try {
 		return {
@@ -3417,7 +3424,16 @@ var parsedOrError = (raw) => {
 			value: JSON.parse(raw)
 		};
 	} catch {
-		return { ok: false };
+		const extracted = extractPrettyPrintedObject(raw);
+		if (extracted === null) return { ok: false };
+		try {
+			return {
+				ok: true,
+				value: JSON.parse(extracted)
+			};
+		} catch {
+			return { ok: false };
+		}
 	}
 };
 var extractValue = (raw, dotPath, keys) => {
