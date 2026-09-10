@@ -8,6 +8,9 @@ import { isRecord } from './jq-compat.ts'
 // 対応せず usage error（exit 2）で fail-closed にする（誤値の静かな返却を防ぐため）。
 // Usage: read-json <dotpath> [json_file]   (json_file 省略時は stdin)
 // stdout: 値 1 個 + 改行（null / 欠落は "null"、object / array は compact JSON）
+// 親 Bash timeout の background 退避で stdout/stderr が合流した入力から、厳密 parse 失敗時だけ
+// 行頭 `{` / `}` 単独行で object を切り出す（文字単位の最初〜最後だと別断片を跨ぎ得るため）。
+// 外側は既知の harness 行だけ許可する。任意の prefix/suffix を捨てると破損 JSON を成功扱いする。
 
 // object key の連結のみ許容: `.` / `.a` / `.a.b.c`（英数 _ - のみ）。bracket / quote は不許可
 const DOT_PATH = /^\.(?:[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)?$/
@@ -75,11 +78,39 @@ const usageError = (): CliResult => ({
   stdout: '',
 })
 
+const isKnownHarnessLine = (line: string): boolean =>
+  line.trim() === '' ||
+  line.startsWith('observe_file: ') ||
+  (line.startsWith('[exited with ') && line.endsWith(']'))
+
+// 行頭アンカー: ネストしたインデント付き `}` を閉じ括弧と誤認しないよう leading space は残す
+const extractPrettyPrintedObject = (raw: string): string | null => {
+  const lines = raw.split(/\r?\n/)
+  const start = lines.findIndex((line) => line.trimEnd() === '{')
+  const end = lines.findLastIndex((line) => line.trimEnd() === '}')
+  if (start === -1 || end === -1 || end < start) {
+    return null
+  }
+  const surrounding = [...lines.slice(0, start), ...lines.slice(end + 1)]
+  if (!surrounding.every(isKnownHarnessLine)) {
+    return null
+  }
+  return lines.slice(start, end + 1).join('\n')
+}
+
 const parsedOrError = (raw: string): { ok: true; value: unknown } | { ok: false } => {
   try {
     return { ok: true, value: JSON.parse(raw) }
   } catch {
-    return { ok: false }
+    const extracted = extractPrettyPrintedObject(raw)
+    if (extracted === null) {
+      return { ok: false }
+    }
+    try {
+      return { ok: true, value: JSON.parse(extracted) }
+    } catch {
+      return { ok: false }
+    }
   }
 }
 
@@ -179,6 +210,133 @@ if (import.meta.vitest) {
       const viaNull = runReadJson(['.state.phase'], withNull)
       expect(viaNull.exitCode).toBe(0)
       expect(viaNull.stdout).toBe('null\n')
+    })
+  })
+
+  describe('runReadJson wrapping tolerance', () => {
+    it('extracts a pretty-printed object wrapped by harness noise', () => {
+      const mixed = Buffer.from(
+        'observe_file: /x/y_observe.json\n{\n  "status": "completed"\n}\n\n[exited with code 0]\n'
+      )
+      const result = runReadJson(['.status'], mixed)
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe('completed\n')
+    })
+
+    it('extracts a pretty-printed object followed by a non-zero harness exit marker', () => {
+      const mixed = Buffer.from(
+        'observe_file: /x/y_observe.json\n{\n  "status": "completed"\n}\n[exited with code 143]\n'
+      )
+      expect(runReadJson(['.status'], mixed)).toMatchObject({
+        exitCode: 0,
+        stdout: 'completed\n',
+      })
+    })
+
+    it('reads status fields from a background-merged run output', () => {
+      const merged = Buffer.from(
+        [
+          'observe_file: /workspaces/delegate-skills/.temp/delegate/work/delegate_explore_observe.json',
+          '{',
+          '  "exit_code": 0,',
+          '  "status": "completed",',
+          '  "content": "status: completed",',
+          '  "content_truncated": false,',
+          '  "response_file": "/workspaces/delegate-skills/.temp/delegate/work/delegate_explore_res.json",',
+          '  "observe_file": "/workspaces/delegate-skills/.temp/delegate/work/delegate_explore_observe.json",',
+          '  "run_dir": "/workspaces/delegate-skills/.temp/delegate/work/delegate_explore"',
+          '}',
+          '',
+          '[exited with code 0]',
+          '',
+        ].join('\n')
+      )
+      expect(runReadJson(['.status'], merged)).toMatchObject({
+        exitCode: 0,
+        stdout: 'completed\n',
+      })
+      expect(runReadJson(['.content_truncated'], merged)).toMatchObject({
+        exitCode: 0,
+        stdout: 'false\n',
+      })
+      expect(runReadJson(['.response_file'], merged)).toMatchObject({
+        exitCode: 0,
+        stdout: '/workspaces/delegate-skills/.temp/delegate/work/delegate_explore_res.json\n',
+      })
+    })
+
+    it('still reads pure JSON without surrounding noise', () => {
+      const result = runReadJson(['.status'], json)
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe('completed\n')
+    })
+
+    it('fails closed when no brace-only lines exist', () => {
+      expect(runReadJson(['.status'], Buffer.from('not json')).exitCode).toBe(4)
+    })
+
+    it('fails closed when the extracted region is still invalid JSON', () => {
+      const broken = Buffer.from('observe_file: /x\n{\n  "a": ,\n}\n[exited with code 0]\n')
+      expect(runReadJson(['.a'], broken).exitCode).toBe(4)
+    })
+
+    it('fails closed when surrounding lines are not known harness lines', () => {
+      const truncatedArray = Buffer.from('[\n{\n"status":"completed"\n}\n')
+      const secondObjectCut = Buffer.from('{\n"status":"completed"\n}\n{"status":')
+      const trailingGarbage = Buffer.from('{\n"state":{"phase":"ended"}\n}\n,broken')
+      expect(runReadJson(['.status'], truncatedArray).exitCode).toBe(4)
+      expect(runReadJson(['.status'], secondObjectCut).exitCode).toBe(4)
+      expect(runReadJson(['.state.phase'], trailingGarbage).exitCode).toBe(4)
+    })
+
+    it('keeps a valid JSON array as a traverse error instead of extracting the inner object', () => {
+      const array = Buffer.from('[\n{\n"status":"completed"\n}\n]\n')
+      const result = runReadJson(['.status'], array)
+      expect(result.exitCode).toBe(5)
+      expect(result.stdout).toBe('')
+    })
+
+    it('reads nested fields from a pretty-printed observe JSON file', () => {
+      const file = createTestScratchFile(
+        'read-json-test',
+        `${Math.random().toString(36).slice(2)}.json`
+      )
+      writeFileSync(
+        file,
+        `${JSON.stringify(
+          {
+            state: { phase: 'ended' },
+            run: { response_file: '/tmp/x_res.json' },
+          },
+          null,
+          2
+        )}\n`
+      )
+      expect(runReadJson(['.state.phase', file], Buffer.alloc(0)).stdout).toBe('ended\n')
+      expect(runReadJson(['.run.response_file', file], Buffer.alloc(0)).stdout).toBe(
+        '/tmp/x_res.json\n'
+      )
+    })
+
+    it('applies harness wrapping to the file argument path as well', () => {
+      const file = createTestScratchFile(
+        'read-json-test',
+        `${Math.random().toString(36).slice(2)}.output`
+      )
+      writeFileSync(
+        file,
+        'observe_file: /x/y_observe.json\n{\n  "status": "completed",\n  "content_truncated": false,\n  "response_file": "/tmp/x_res.json"\n}\n\n[exited with code 0]\n'
+      )
+      expect(runReadJson(['.status', file], Buffer.alloc(0))).toMatchObject({
+        exitCode: 0,
+        stdout: 'completed\n',
+      })
+      const garbage = createTestScratchFile(
+        'read-json-test',
+        `${Math.random().toString(36).slice(2)}.output`
+      )
+      writeFileSync(garbage, '{\n"state":{"phase":"ended"}\n}\n,broken')
+      expect(runReadJson(['.state.phase', garbage], Buffer.alloc(0)).exitCode).toBe(4)
     })
   })
 }

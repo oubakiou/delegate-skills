@@ -38,7 +38,7 @@ implement は、調査・編集・検証を worker にまとめて任せる価�
    - run は内部で prepare → dispatch → read-response を順に実行し、stdout は成功・失敗とも単一 JSON（`exit_code` / `status` / `content` / `content_truncated` / `response_file` / `observe_file` / `run_dir`）を返す。
    - selector 省略時の既定は `auto`。第 6 位置引数は read-response の selector であり、prepare.sh の第 6 位置引数 session_mode とは意味が異なる。
    - exit code は内部スクリプトを透過する。exit 3=前提不足 / exit 4=委譲サイクルなら中止する。
-   - run は dispatch 前に `observe_file: <path>` を stderr へ先出しする。強制終了時はその path を復旧経路にする。
+   - `run.sh` は dispatch 前に `observe_file: <path>` を stderr へ先出しする。`run.sh` が Bash timeout で background へ退避しただけの場合は**再実行しない**（再実行は worker の二重起動になり、implement / chore では同一 worktree の同時書き換えになる）。復旧は `bash .claude/skills/delegate-implement/scripts/read-json.sh .state.phase "$observe_file"` を見て分岐する。`ended` または `stalled` なら終端なので、どちらでも `bash .claude/skills/delegate-implement/scripts/read-json.sh .run.response_file "$observe_file"` で応答パスを取得して `bash .claude/skills/delegate-implement/scripts/read-response.sh` で読む（stalled でも failed response が書かれる）。`running` の間は `.heartbeat.ts` が進んでいれば待つ。`running` のまま `.heartbeat.ts` が `DELEGATE_OBSERVE_HEARTBEAT_INTERVAL`（既定 10 秒）を大きく超えて進まない場合は dispatcher ごと停止しているので応答は来ない。**この場合に限り**新しい run を出してよい。background 退避した出力ファイルは stdout と stderr が合流するが、`read-json.sh` は既知の harness 行（空行 / `observe_file: ` 行 / `[exited with ...]` 行）に囲まれた JSON object を切り出して読める。
    - 非対話モードの親（`claude -p` 等）では run を必ずフォアグラウンドで実行し、委譲所要時間より長い Bash timeout（Claude Code なら `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` または Bash tool の timeout 引数）を設定する。
 3. **レスポンス消費と検証**: `status="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .status)"` / `content="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .content)"` を読む。`content_truncated` が `true` なら `response_file="$(printf '%s' "$out" | bash .claude/skills/delegate-implement/scripts/read-json.sh .response_file)"` を取り出し、`bash .claude/skills/delegate-implement/scripts/read-response.sh "$response_file" <N>` で Verification / Changed files など必要 section だけ段階読みする。読了後、worker の本文を **要約し直さない（echo しない）**。`status` が `failed` なら Error section をユーザーへ伝える。`completed` でも Summary 先頭に警告行があればその旨を伝える（警告は response 本体に載るので selector に関わらず Summary とともに返る）。`status` が `completed` でない時、pass 申告の裏取りが要る時、差分が広い時、worker が Verification にリスクや未検証項目を書いた時は main 側で `git diff` / test result を裏取りする。
 
@@ -73,7 +73,7 @@ resumable / follow-up は one-shot 対象外のため、個別スクリプトを
 
 ## 待ち時間の隠蔽（対話親向け）
 
-対話親では `dispatch.sh`（または `run.sh`）を background で実行し、`observe_file` の `state.phase` / `heartbeat` を確認して `ended` 後に `read-response.sh` する運用で体感待ち時間を隠蔽できる。総所要時間（wall time）は変わらない体感改善であり、非対話モードの親では従来どおりフォアグラウンド実行必須。
+対話親では体感待ち時間を隠蔽できる。経路は起動スクリプトで異なる。`dispatch.sh` 経由は `prepare.sh` で `response_file` を事前取得済みなので、`dispatch.sh` を background で実行し、`observe_file` の `state.phase` / `heartbeat` を確認して `ended` または `stalled` になった後に `read-response.sh` する。`run.sh` 経由は `response_file` を事前に取得できないので、`run.sh` を background で実行した場合は `read-json.sh .run.response_file "$observe_file"` で応答パスを取るか、合流した出力 JSON をそのまま `read-json.sh` で読む。総所要時間（wall time）は変わらない体感改善であり、非対話モードの親では従来どおりフォアグラウンド実行必須。
 
 ## 制約
 
