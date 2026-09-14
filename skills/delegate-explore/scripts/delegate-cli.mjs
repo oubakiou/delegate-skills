@@ -250,23 +250,51 @@ var positiveIntOrZero$1 = (value) => {
 	if (typeof value !== "string" || !/^[0-9]+$/.test(value)) return 0;
 	return Number(value);
 };
-var observePhase = (observeFile) => {
+var phaseOf = (parsed) => {
+	if ("state" in parsed) {
+		const { state } = parsed;
+		if (typeof state === "object" && state !== null && "phase" in state) {
+			const { phase } = state;
+			if (typeof phase === "string") return phase;
+		}
+	}
+	return "";
+};
+var heartbeatTsOf = (parsed) => {
+	if ("heartbeat" in parsed) {
+		const { heartbeat } = parsed;
+		if (typeof heartbeat === "object" && heartbeat !== null && "ts" in heartbeat) {
+			const { ts } = heartbeat;
+			if (typeof ts === "string") return ts;
+		}
+	}
+	return "";
+};
+var observeSnapshot = (observeFile) => {
 	try {
 		const parsed = JSON.parse(readFileSync(observeFile, "utf8"));
-		if (typeof parsed === "object" && parsed !== null && "state" in parsed) {
-			const { state } = parsed;
-			if (typeof state === "object" && state !== null && "phase" in state) {
-				const { phase } = state;
-				if (typeof phase === "string") return phase;
-			}
-		}
+		if (typeof parsed === "object" && parsed !== null) return {
+			phase: phaseOf(parsed),
+			heartbeatTs: heartbeatTsOf(parsed)
+		};
 	} catch {}
-	return "";
+	return {
+		phase: "",
+		heartbeatTs: ""
+	};
+};
+var isHeartbeatFresh = (heartbeatTs, cutoffMs) => {
+	if (heartbeatTs === "") return false;
+	const parsed = Date.parse(heartbeatTs);
+	if (Number.isNaN(parsed)) return false;
+	return Date.now() - parsed < cutoffMs;
 };
 var removeRunDirIfExpired = (candidate, cutoffMs) => {
 	try {
 		const stat = statSync(candidate);
-		if (stat.isDirectory() && Date.now() - stat.mtimeMs >= cutoffMs && observePhase(`${candidate}_observe.json`) !== "running") rmSync(candidate, {
+		if (!(stat.isDirectory() && Date.now() - stat.mtimeMs >= cutoffMs)) return;
+		const snapshot = observeSnapshot(`${candidate}_observe.json`);
+		if (!(snapshot.phase === "running" && isHeartbeatFresh(snapshot.heartbeatTs, cutoffMs))) rmSync(candidate, {
 			force: true,
 			recursive: true
 		});
@@ -1969,25 +1997,36 @@ var epochSeconds = (timestamp) => {
 	if (Number.isNaN(parsed)) return 0;
 	return Math.floor(parsed / 1e3);
 };
+var durationSinceStarted = (state, endedAt) => {
+	const startedAt = stringOrEmpty(jqCoalesce$1(state.started_at));
+	if (startedAt === "") return 0;
+	return (epochSeconds(endedAt) - epochSeconds(startedAt)) * 1e3;
+};
+var applyTerminalState = (doc, update) => {
+	const { endedAt, phase, detail } = update;
+	const state = sectionOf(doc, "state");
+	if (state.phase !== "stalled") state.phase = phase;
+	Object.assign(state, {
+		ended_at: endedAt,
+		exit_code: detail.exitCode,
+		duration_ms: durationSinceStarted(state, endedAt),
+		response_present: detail.responsePresent
+	});
+	Object.assign(sectionOf(doc, "heartbeat"), {
+		ts: endedAt,
+		backend: detail.backend
+	});
+	return state;
+};
 var dispatchEnd = (observeFile, runDir, detail) => {
 	const endedAt = utcTimestamp();
 	updateObserve(observeFile, runDir, (doc) => {
-		const state = sectionOf(doc, "state");
-		const startedAt = stringOrEmpty(jqCoalesce$1(state.started_at));
-		let durationMs = 0;
-		if (startedAt !== "") durationMs = (epochSeconds(endedAt) - epochSeconds(startedAt)) * 1e3;
-		if (state.phase !== "stalled") state.phase = "ended";
-		Object.assign(state, {
-			dispatcher_pid: detail.dispatcherPid,
-			ended_at: endedAt,
-			exit_code: detail.exitCode,
-			duration_ms: durationMs,
-			response_present: detail.responsePresent
+		const state = applyTerminalState(doc, {
+			endedAt,
+			phase: "ended",
+			detail
 		});
-		Object.assign(sectionOf(doc, "heartbeat"), {
-			ts: endedAt,
-			backend: detail.backend
-		});
+		state.dispatcher_pid = detail.dispatcherPid;
 		eventsOf(doc).push({
 			kind: "dispatch_end",
 			ts: endedAt,
@@ -1995,6 +2034,27 @@ var dispatchEnd = (observeFile, runDir, detail) => {
 			dispatcher_pid: detail.dispatcherPid,
 			exit_code: detail.exitCode
 		});
+	});
+};
+var dispatcherLost = (observeFile, runDir, detail) => {
+	const endedAt = utcTimestamp();
+	updateObserveConditional(observeFile, runDir, (doc) => {
+		const state = sectionOf(doc, "state");
+		if (state.dispatcher_pid !== detail.dispatcherPid) return false;
+		if (state.phase !== "running" && state.phase !== "stalled") return false;
+		applyTerminalState(doc, {
+			endedAt,
+			phase: "interrupted",
+			detail
+		});
+		eventsOf(doc).push({
+			kind: "dispatcher_lost",
+			ts: endedAt,
+			backend: detail.backend,
+			dispatcher_pid: detail.dispatcherPid,
+			exit_code: detail.exitCode
+		});
+		return true;
 	});
 };
 var responseMissing = (observeFile, runDir) => {
@@ -4784,6 +4844,19 @@ var recordRunContext = (context) => {
 		});
 	});
 };
+var recordDispatcherLoss = (context, exitCode) => {
+	quietly(() => {
+		const dispatcherPid = getPath(JSON.parse(readFileSync(context.args.observeFile, "utf8")), ["state", "dispatcher_pid"]);
+		if (typeof dispatcherPid !== "number") return;
+		if (dispatcherPid === process.pid || dispatcherPid === process.ppid) return;
+		dispatcherLost(context.args.observeFile, context.workDir, {
+			backend: context.backend,
+			dispatcherPid,
+			exitCode,
+			responsePresent: hasFileContent(context.args.responseFile)
+		});
+	});
+};
 var finishWithoutChild = (context, exitCode, message) => {
 	writeFileSync(context.stderrCapture, `${message}\n`);
 	quietly(() => {
@@ -4808,6 +4881,7 @@ var finishWithoutChild = (context, exitCode, message) => {
 		env: context.env
 	});
 	recordRunContext(context);
+	recordDispatcherLoss(context, exitCode);
 	return {
 		exitCode,
 		stdout: `${context.args.responseFile}\n`,
@@ -5104,6 +5178,7 @@ var recordFollowupOutcome = (context, input) => {
 };
 var wrapperResult = (context, outcome) => {
 	recordRunContext(context);
+	recordDispatcherLoss(context, outcome.responseStatus);
 	return {
 		exitCode: outcome.responseStatus,
 		stdout: `${context.args.responseFile}\n`,

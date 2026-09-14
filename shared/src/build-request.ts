@@ -47,29 +47,73 @@ const positiveIntOrZero = (value: string | null | undefined): number => {
   return Number(value)
 }
 
-const observePhase = (observeFile: string): string => {
+interface ObserveSnapshot {
+  phase: string
+  heartbeatTs: string
+}
+
+const phaseOf = (parsed: object): string => {
+  if ('state' in parsed) {
+    const { state } = parsed
+    if (typeof state === 'object' && state !== null && 'phase' in state) {
+      const { phase } = state
+      if (typeof phase === 'string') {
+        return phase
+      }
+    }
+  }
+  return ''
+}
+
+const heartbeatTsOf = (parsed: object): string => {
+  if ('heartbeat' in parsed) {
+    const { heartbeat } = parsed
+    if (typeof heartbeat === 'object' && heartbeat !== null && 'ts' in heartbeat) {
+      const { ts } = heartbeat
+      if (typeof ts === 'string') {
+        return ts
+      }
+    }
+  }
+  return ''
+}
+
+const observeSnapshot = (observeFile: string): ObserveSnapshot => {
   try {
     const parsed: unknown = JSON.parse(readFileSync(observeFile, 'utf8'))
-    if (typeof parsed === 'object' && parsed !== null && 'state' in parsed) {
-      const { state } = parsed
-      if (typeof state === 'object' && state !== null && 'phase' in state) {
-        const { phase } = state
-        if (typeof phase === 'string') {
-          return phase
-        }
-      }
+    if (typeof parsed === 'object' && parsed !== null) {
+      return { phase: phaseOf(parsed), heartbeatTs: heartbeatTsOf(parsed) }
     }
   } catch {
     // observe が読めない run dir は保持者不明として通常の削除対象に含める
   }
-  return ''
+  return { phase: '', heartbeatTs: '' }
+}
+
+// heartbeat.ts が cutoff (retention 窓) より新しければ「新鮮」とみなす。パース不能・
+// 欠落は新鮮でない扱い（＝削除対象）にする
+const isHeartbeatFresh = (heartbeatTs: string, cutoffMs: number): boolean => {
+  if (heartbeatTs === '') {
+    return false
+  }
+  const parsed = Date.parse(heartbeatTs)
+  if (Number.isNaN(parsed)) {
+    return false
+  }
+  return Date.now() - parsed < cutoffMs
 }
 
 const removeRunDirIfExpired = (candidate: string, cutoffMs: number): void => {
   try {
     const stat = statSync(candidate)
     const expired = stat.isDirectory() && Date.now() - stat.mtimeMs >= cutoffMs
-    if (expired && observePhase(`${candidate}_observe.json`) !== 'running') {
+    if (!expired) {
+      return
+    }
+    const snapshot = observeSnapshot(`${candidate}_observe.json`)
+    const isActive =
+      snapshot.phase === 'running' && isHeartbeatFresh(snapshot.heartbeatTs, cutoffMs)
+    if (!isActive) {
       rmSync(candidate, { force: true, recursive: true })
     }
   } catch {
@@ -298,12 +342,26 @@ export const runBuildRequest = (argv: readonly string[], env: Env, stdin: Buffer
   })
 }
 
-// in-source test 専用 helper (bundle からは treeshake で除去される)
-const makeAgedRunDir = (workDir: string, token: string, phase: string | null): string => {
+// heartbeatTs === null は heartbeat フィールド自体を書かない run dir を表す
+const heartbeatFieldOf = (heartbeatTs: string | null | undefined): string => {
+  if (heartbeatTs === null) {
+    return ''
+  }
+  return `,"heartbeat":{"ts":"${heartbeatTs ?? metricsTimestamp()}"}`
+}
+
+// in-source test 専用 helper (bundle からは treeshake で除去される)。heartbeatTs 省略時は
+// 現在時刻を書き、既存呼び出し側（heartbeat を意識しない running = 保持される、の意味）を変えない
+const makeAgedRunDir = (
+  workDir: string,
+  token: string,
+  opts: { phase: string | null; heartbeatTs?: string | null }
+): string => {
   const dir = path.join(workDir, `delegate_chore_20200101_000000_${token}`)
   mkdirSync(dir)
-  if (phase !== null) {
-    writeFileSync(`${dir}_observe.json`, `{"state":{"phase":"${phase}"}}`)
+  if (opts.phase !== null) {
+    const heartbeat = heartbeatFieldOf(opts.heartbeatTs)
+    writeFileSync(`${dir}_observe.json`, `{"state":{"phase":"${opts.phase}"}${heartbeat}}`)
   }
   const past = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
   utimesSync(dir, past, past)
@@ -410,11 +468,13 @@ if (import.meta.vitest) {
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain(path.resolve(fallbackDir))
     })
+  })
 
+  describe('retention cleanup', () => {
     it('removes expired run dirs but keeps running ones', () => {
       const workDir = makeWorkDir()
-      const oldDir = makeAgedRunDir(workDir, 'aaaaa', null)
-      const runningDir = makeAgedRunDir(workDir, 'bbbbb', 'running')
+      const oldDir = makeAgedRunDir(workDir, 'aaaaa', { phase: null })
+      const runningDir = makeAgedRunDir(workDir, 'bbbbb', { phase: 'running' })
       const result = runBuildRequest(
         ['chore', 'haiku', '[]', 'sid'],
         { DELEGATE_WORK_DIR: workDir, DELEGATE_RUN_RETENTION_DAYS: '1' },
@@ -423,6 +483,85 @@ if (import.meta.vitest) {
       expect(result.exitCode).toBe(0)
       expect(existsSync(oldDir)).toBe(false)
       expect(existsSync(runningDir)).toBe(true)
+    })
+
+    it('removes a running run dir once its heartbeat goes stale beyond the retention window', () => {
+      const workDir = makeWorkDir()
+      const staleHeartbeat = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 19)
+      const staleRunningDir = makeAgedRunDir(workDir, 'ccccc', {
+        phase: 'running',
+        heartbeatTs: `${staleHeartbeat}Z`,
+      })
+      const result = runBuildRequest(
+        ['chore', 'haiku', '[]', 'sid'],
+        { DELEGATE_WORK_DIR: workDir, DELEGATE_RUN_RETENTION_DAYS: '1' },
+        Buffer.from('# Objective\n\nx\n')
+      )
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(staleRunningDir)).toBe(false)
+    })
+
+    it('keeps a running run dir whose heartbeat is still fresh within the retention window', () => {
+      const workDir = makeWorkDir()
+      const freshRunningDir = makeAgedRunDir(workDir, 'ddddd', {
+        phase: 'running',
+        heartbeatTs: metricsTimestamp(),
+      })
+      const result = runBuildRequest(
+        ['chore', 'haiku', '[]', 'sid'],
+        { DELEGATE_WORK_DIR: workDir, DELEGATE_RUN_RETENTION_DAYS: '1' },
+        Buffer.from('# Objective\n\nx\n')
+      )
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(freshRunningDir)).toBe(true)
+    })
+
+    it('removes a running run dir whose observe has no heartbeat field at all', () => {
+      const workDir = makeWorkDir()
+      const noHeartbeatDir = makeAgedRunDir(workDir, 'eeeee', {
+        phase: 'running',
+        heartbeatTs: null,
+      })
+      const result = runBuildRequest(
+        ['chore', 'haiku', '[]', 'sid'],
+        { DELEGATE_WORK_DIR: workDir, DELEGATE_RUN_RETENTION_DAYS: '1' },
+        Buffer.from('# Objective\n\nx\n')
+      )
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(noHeartbeatDir)).toBe(false)
+    })
+
+    it('removes a running run dir whose heartbeat.ts is not a parseable date', () => {
+      const workDir = makeWorkDir()
+      const unparsableDir = makeAgedRunDir(workDir, 'fffff', {
+        phase: 'running',
+        heartbeatTs: 'not-a-date',
+      })
+      const result = runBuildRequest(
+        ['chore', 'haiku', '[]', 'sid'],
+        { DELEGATE_WORK_DIR: workDir, DELEGATE_RUN_RETENTION_DAYS: '1' },
+        Buffer.from('# Objective\n\nx\n')
+      )
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(unparsableDir)).toBe(false)
+    })
+
+    it('keeps a running run dir whose heartbeat.ts is in the future', () => {
+      const workDir = makeWorkDir()
+      const futureHeartbeat = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19)
+      const futureDir = makeAgedRunDir(workDir, 'ggggg', {
+        phase: 'running',
+        heartbeatTs: `${futureHeartbeat}Z`,
+      })
+      const result = runBuildRequest(
+        ['chore', 'haiku', '[]', 'sid'],
+        { DELEGATE_WORK_DIR: workDir, DELEGATE_RUN_RETENTION_DAYS: '1' },
+        Buffer.from('# Objective\n\nx\n')
+      )
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(futureDir)).toBe(true)
     })
   })
 }

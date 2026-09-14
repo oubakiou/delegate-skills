@@ -3906,3 +3906,204 @@ describe('delegate-opencode.sh request inline gate', () => {
     expect(response.sections.join('\n')).toContain('他 backend')
   })
 })
+
+// dispatch.ts は spawnSync でブロックするため、dispatcher の親プロセス自身は自身の
+// signal handler を持てない（shared/src/dispatch.ts の spawnWrapper 参照）。この土台は
+// 「dispatcher が死ぬと wrapper の process.ppid が変わる」という実プロセス構成に依存する
+// ため、単体テストでは守れず実プロセスを spawn して検証する
+// ready file は「wrapper が子 CLI を起動し終えた」印で、dispatch_start 直後（spawnSync が
+// まだ fork していない区間）に kill する競合を防ぐ。release file はテストが kill を終える
+// まで子を生かす印で、固定 sleep だと負荷の高い CI でテスト側が遅れた隙に run が完走して
+// しまう。解放されない場合の hang を避けるため上限で打ち切る
+const handshakeClaudeFakeScript = (): string => `#!/usr/bin/env node
+import fs from 'node:fs'
+const args = process.argv.slice(2)
+let prompt = ''
+try { prompt = fs.readFileSync(0, 'utf8') } catch {}
+fs.writeFileSync(process.env.FAKE_CLAUDE_READY_FILE, 'ready')
+const deadline = Date.now() + 30000
+const idle = new Int32Array(new SharedArrayBuffer(4))
+while (!fs.existsSync(process.env.FAKE_CLAUDE_RELEASE_FILE) && Date.now() < deadline) {
+  Atomics.wait(idle, 0, 0, 20)
+}
+fs.writeFileSync(process.env.FAKE_CLI_LOG, JSON.stringify({args, prompt, cwd: process.cwd()}))
+console.log(JSON.stringify({type: 'result', structured_output: {status: 'completed', report_markdown: '# Summary\\nok'}, usage: {input_tokens: 1, output_tokens: 1}}))
+`
+
+const waitForCondition = async (
+  check: () => boolean,
+  timeoutMessage: string,
+  attempts = 200
+): Promise<void> => {
+  if (check()) {
+    return
+  }
+  if (attempts <= 0) {
+    throw new Error(timeoutMessage)
+  }
+  await new Promise((resolve) => {
+    setTimeout(resolve, 20)
+  })
+  return waitForCondition(check, timeoutMessage, attempts - 1)
+}
+
+// poll 用の fail-soft reader。observe JSON は tmp file + rename の原子的置換なので
+// 半端な内容は読めないが、まだ書かれていない・読めない周回を例外にせず次へ回す
+const tryReadObserveJson = (observeFile: string): unknown => {
+  if (!existsSync(observeFile)) {
+    return null
+  }
+  try {
+    return JSON.parse(readFileSync(observeFile, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+const observeStateIs = (
+  observeFile: string,
+  check: (state: Record<string, unknown>) => boolean
+): boolean => {
+  const doc = tryReadObserveJson(observeFile)
+  return isRecord(doc) && isRecord(doc.state) && check(doc.state)
+}
+
+interface HandshakeDispatcher {
+  dispatcherPid: number
+  readyFile: string
+  releaseFile: string
+}
+
+const installHandshakeClaudeCli = (fixture: Fixture): void => {
+  const fakeCliPath = path.join(fixture.workDir, 'bin', 'claude')
+  writeFileSync(fakeCliPath, handshakeClaudeFakeScript())
+  chmodSync(fakeCliPath, 0o755)
+}
+
+const spawnHandshakeClaudeDispatcher = (fixture: Fixture): HandshakeDispatcher => {
+  installHandshakeClaudeCli(fixture)
+  const readyFile = path.join(fixture.workDir, 'claude-ready')
+  const releaseFile = path.join(fixture.workDir, 'claude-release')
+  const dispatcher = spawn(
+    'bash',
+    [path.join(repoRoot, 'shared', 'dispatch.sh'), ...claudeArgs(fixture)],
+    {
+      cwd: repoRoot,
+      env: {
+        ...fixture.env,
+        FAKE_CLAUDE_READY_FILE: readyFile,
+        FAKE_CLAUDE_RELEASE_FILE: releaseFile,
+      },
+      stdio: 'ignore',
+    }
+  )
+  const dispatcherPid = dispatcher.pid
+  if (typeof dispatcherPid !== 'number') {
+    throw new Error('dispatcher process has no pid')
+  }
+  return { dispatcherPid, readyFile, releaseFile }
+}
+
+// dispatch_start が observe に running を書くのは spawnSync が実際に wrapper を
+// fork する前なので、running だけを見て kill すると wrapper が一度も起動しないまま
+// dispatcher が落ちる競合がある。fake CLI の ready file で子 CLI 起動済みを確認する
+const waitForChildCliReady = async (readyFile: string): Promise<void> =>
+  waitForCondition(
+    () => existsSync(readyFile),
+    'timed out waiting for the fake claude CLI to start'
+  )
+
+// 子 CLI の残り sleep に加えて wrapper の finalize（usage 抽出・response 書き出し・
+// stream 取り込み）を待つので、他の poll より長い budget を取る
+const waitForInterrupted = async (observeFile: string): Promise<void> =>
+  waitForCondition(
+    () => observeStateIs(observeFile, (state) => state.phase === 'interrupted'),
+    'timed out waiting for phase=interrupted after killing the dispatcher',
+    500
+  )
+
+const readStableObserveDoc = async (observeFile: string): Promise<Record<string, unknown>> => {
+  await waitForCondition(
+    () => isRecord(tryReadObserveJson(observeFile)),
+    'timed out reading a well-formed observe json'
+  )
+  const doc = tryReadObserveJson(observeFile)
+  if (!isRecord(doc)) {
+    throw new Error('observe json is not an object')
+  }
+  return doc
+}
+
+const expectInterruptedObserve = async (
+  observeFile: string,
+  dispatcherPid: number
+): Promise<void> => {
+  const doc = await readStableObserveDoc(observeFile)
+  if (!isRecord(doc.state) || !Array.isArray(doc.events)) {
+    throw new Error('observe json is missing state/events')
+  }
+  expect(doc.state.dispatcher_pid).toBe(dispatcherPid)
+  expect(doc.state.ended_at).not.toBeNull()
+  expect(doc.state.exit_code).not.toBeNull()
+  expect(doc.state.duration_ms).not.toBeNull()
+  const lastEvent = doc.events[doc.events.length - 1]
+  expect(isRecord(lastEvent) && lastEvent.kind).toBe('dispatcher_lost')
+}
+
+const BACKEND_SHIM_NAMES = ['claude', 'codex', 'cursor', 'devin', 'opencode'] as const
+
+// shim が node を exec せず fork すると wrapper の親が shim になり、dispatcher 喪失
+// 判定（process.ppid 比較）が通常 run で誤検知に転じる
+const bundleInvocationsOf = (backend: string): string[] =>
+  readFileSync(path.join(repoRoot, 'shared', `delegate-${backend}.sh`), 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /(?:^|\s)node\s+.*delegate-cli\.mjs/.test(line))
+
+describe('dispatcher loss (process-level)', () => {
+  it('wrapper survives a SIGKILL to the dispatcher and records phase=interrupted', async () => {
+    const fixture = makeFixture('claude')
+    const { dispatcherPid, readyFile, releaseFile } = spawnHandshakeClaudeDispatcher(fixture)
+    try {
+      await waitForChildCliReady(readyFile)
+      process.kill(dispatcherPid, 'SIGKILL')
+    } finally {
+      writeFileSync(releaseFile, 'release')
+    }
+    await waitForInterrupted(fixture.observeFile)
+
+    await expectInterruptedObserve(fixture.observeFile, dispatcherPid)
+  })
+
+  // 喪失判定は「wrapper の親がそのまま dispatcher」に依存するので、shim が exec を
+  // やめるなど中間プロセスが挟まると通常 run が丸ごと誤検知になる。通常 run の確認は
+  // claude 1 本だけなので、残り 4 backend は shim の終端が exec であることで担保する
+  it.each(BACKEND_SHIM_NAMES)(
+    'delegate-%s.sh hands the wrapper its own pid via exec',
+    (backend) => {
+      const invocations = bundleInvocationsOf(backend)
+      expect(invocations.length).toBeGreaterThan(0)
+      for (const invocation of invocations) {
+        expect(invocation.startsWith('exec node ')).toBe(true)
+        expect(invocation).toContain(`wrapper ${backend}`)
+      }
+    }
+  )
+
+  it('records dispatch_end and no dispatcher_lost when the dispatcher survives', () => {
+    const fixture = makeFixture('claude')
+    execFileSync('bash', [path.join(repoRoot, 'shared', 'dispatch.sh'), ...claudeArgs(fixture)], {
+      cwd: repoRoot,
+      env: fixture.env,
+      stdio: 'pipe',
+    })
+    const doc: unknown = JSON.parse(readFileSync(fixture.observeFile, 'utf8'))
+    if (!isRecord(doc) || !isRecord(doc.state) || !Array.isArray(doc.events)) {
+      throw new Error('observe json is missing state/events')
+    }
+    const eventKinds = doc.events.filter(isRecord).map((event) => event.kind)
+    expect(doc.state.phase).toBe('ended')
+    expect(eventKinds).toContain('dispatch_end')
+    expect(eventKinds).not.toContain('dispatcher_lost')
+  })
+})

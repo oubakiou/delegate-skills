@@ -563,6 +563,44 @@ const epochSeconds = (timestamp: string): number => {
   return Math.floor(parsed / 1000)
 }
 
+interface TerminalStateDetail {
+  backend: string
+  exitCode: number
+  responsePresent: boolean
+}
+
+interface TerminalStateUpdate {
+  endedAt: string
+  phase: 'ended' | 'interrupted'
+  detail: TerminalStateDetail
+}
+
+const durationSinceStarted = (state: ObserveDoc, endedAt: string): number => {
+  const startedAt = stringOrEmpty(jqCoalesce(state.started_at))
+  if (startedAt === '') {
+    return 0
+  }
+  return (epochSeconds(endedAt) - epochSeconds(startedAt)) * 1000
+}
+
+// dispatcher_pid は呼び出し側で扱いが分かれる（dispatchEnd は上書き、dispatcherLost は
+// 記録済みの値を保持）ため、ここでは触らない
+const applyTerminalState = (doc: ObserveDoc, update: TerminalStateUpdate): ObserveDoc => {
+  const { endedAt, phase, detail } = update
+  const state = sectionOf(doc, 'state')
+  if (state.phase !== 'stalled') {
+    state.phase = phase
+  }
+  Object.assign(state, {
+    ended_at: endedAt,
+    exit_code: detail.exitCode,
+    duration_ms: durationSinceStarted(state, endedAt),
+    response_present: detail.responsePresent,
+  })
+  Object.assign(sectionOf(doc, 'heartbeat'), { ts: endedAt, backend: detail.backend })
+  return state
+}
+
 export const dispatchEnd = (
   observeFile: string,
   runDir: string,
@@ -570,23 +608,8 @@ export const dispatchEnd = (
 ): void => {
   const endedAt = utcTimestamp()
   updateObserve(observeFile, runDir, (doc) => {
-    const state = sectionOf(doc, 'state')
-    const startedAt = stringOrEmpty(jqCoalesce(state.started_at))
-    let durationMs = 0
-    if (startedAt !== '') {
-      durationMs = (epochSeconds(endedAt) - epochSeconds(startedAt)) * 1000
-    }
-    if (state.phase !== 'stalled') {
-      state.phase = 'ended'
-    }
-    Object.assign(state, {
-      dispatcher_pid: detail.dispatcherPid,
-      ended_at: endedAt,
-      exit_code: detail.exitCode,
-      duration_ms: durationMs,
-      response_present: detail.responsePresent,
-    })
-    Object.assign(sectionOf(doc, 'heartbeat'), { ts: endedAt, backend: detail.backend })
+    const state = applyTerminalState(doc, { endedAt, phase: 'ended', detail })
+    state.dispatcher_pid = detail.dispatcherPid
     eventsOf(doc).push({
       kind: 'dispatch_end',
       ts: endedAt,
@@ -594,6 +617,37 @@ export const dispatchEnd = (
       dispatcher_pid: detail.dispatcherPid,
       exit_code: detail.exitCode,
     })
+  })
+}
+
+// dispatcher プロセスが終端 (dispatchEnd) を書けずに落ちたことを wrapper が代わりに
+// 記録する。state.dispatcher_pid は記録済みの値を保持し、wrapper 自身の PID で
+// 上書きしない（dispatcher_pid はあくまで喪失した dispatcher を指す）。呼び出し側は
+// lock の外で dispatcher_pid を読んでいるため、lock 内で再検証してから書く
+// （別 run の再 dispatch で PID が変わっていたり、既に終端済みなら no-op にする）
+export const dispatcherLost = (
+  observeFile: string,
+  runDir: string,
+  detail: { backend: string; dispatcherPid: number; exitCode: number; responsePresent: boolean }
+): void => {
+  const endedAt = utcTimestamp()
+  updateObserveConditional(observeFile, runDir, (doc) => {
+    const state = sectionOf(doc, 'state')
+    if (state.dispatcher_pid !== detail.dispatcherPid) {
+      return false
+    }
+    if (state.phase !== 'running' && state.phase !== 'stalled') {
+      return false
+    }
+    applyTerminalState(doc, { endedAt, phase: 'interrupted', detail })
+    eventsOf(doc).push({
+      kind: 'dispatcher_lost',
+      ts: endedAt,
+      backend: detail.backend,
+      dispatcher_pid: detail.dispatcherPid,
+      exit_code: detail.exitCode,
+    })
+    return true
   })
 }
 
@@ -883,6 +937,84 @@ if (import.meta.vitest) {
       const kinds = observeEventKinds(observeDocOf(run.observeFile))
       expect(kinds).toContain('response_missing')
       expect(kinds).toContain('failed_response_written')
+    })
+  })
+
+  describe('dispatcherLost', () => {
+    it('writes phase=interrupted and terminal fields without overwriting dispatcher_pid', () => {
+      const run = initFixture()
+      dispatchStart(run.observeFile, run.runDir, { backend: 'claude', dispatcherPid: 4242 })
+      dispatcherLost(run.observeFile, run.runDir, {
+        backend: 'claude',
+        dispatcherPid: 4242,
+        exitCode: 137,
+        responsePresent: false,
+      })
+      const doc = observeDocOf(run.observeFile)
+      expect(doc).toMatchObject({
+        state: {
+          phase: 'interrupted',
+          dispatcher_pid: 4242,
+          exit_code: 137,
+          response_present: false,
+        },
+      })
+      expect(observeEventKinds(doc)).toEqual(['run_created', 'dispatch_start', 'dispatcher_lost'])
+    })
+
+    it('does not overwrite an already-stalled phase', () => {
+      const run = initFixture()
+      dispatchStart(run.observeFile, run.runDir, { backend: 'claude', dispatcherPid: 4242 })
+      stallTimeout({
+        observeFile: run.observeFile,
+        runDir: run.runDir,
+        backend: 'claude',
+        childPid: 555,
+        timeoutSeconds: 300,
+        idleSeconds: 300,
+        stdoutCapture: `${run.runDir}/stdout.capture`,
+        stderrCapture: `${run.runDir}/stderr.capture`,
+      })
+      dispatcherLost(run.observeFile, run.runDir, {
+        backend: 'claude',
+        dispatcherPid: 4242,
+        exitCode: 137,
+        responsePresent: false,
+      })
+      expect(getPath(observeDocOf(run.observeFile), ['state', 'phase'])).toBe('stalled')
+    })
+
+    it('does not write when dispatcher_pid no longer matches the recorded value', () => {
+      const run = initFixture()
+      dispatchStart(run.observeFile, run.runDir, { backend: 'claude', dispatcherPid: 4242 })
+      dispatchStart(run.observeFile, run.runDir, { backend: 'claude', dispatcherPid: 9999 })
+      dispatcherLost(run.observeFile, run.runDir, {
+        backend: 'claude',
+        dispatcherPid: 4242,
+        exitCode: 137,
+        responsePresent: false,
+      })
+      const doc = observeDocOf(run.observeFile)
+      expect(doc).toMatchObject({ state: { phase: 'running', dispatcher_pid: 9999 } })
+    })
+
+    it('does not write when phase is already a terminal state', () => {
+      const run = initFixture()
+      dispatchStart(run.observeFile, run.runDir, { backend: 'claude', dispatcherPid: 4242 })
+      dispatchEnd(run.observeFile, run.runDir, {
+        backend: 'claude',
+        dispatcherPid: 4242,
+        exitCode: 0,
+        responsePresent: true,
+      })
+      dispatcherLost(run.observeFile, run.runDir, {
+        backend: 'claude',
+        dispatcherPid: 4242,
+        exitCode: 137,
+        responsePresent: false,
+      })
+      const doc = observeDocOf(run.observeFile)
+      expect(doc).toMatchObject({ state: { phase: 'ended', exit_code: 0 } })
     })
   })
 

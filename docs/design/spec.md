@@ -227,7 +227,7 @@ delegate_<type>_<ts>_<token>/             # run_dir（run ごとの scratch）
 
 - request_file と response_file は `<ts>` とランダムトークンを共有し、末尾の `_req`/`_res` だけが異なる → 同一秒に並列実行してもファイル名から両者の対応関係を一意特定できる
 - 乱数の出所は request 予約時の `randomToken(5)` 1 箇所。一意性も保たれる
-- クリーンアップ: request / response / observe JSON は残す（監査・デバッグ用）。run ごとの scratch directory は `DELEGATE_RUN_RETENTION_DAYS` に正の整数を指定した場合だけ、request 準備時に同じ `DELEGATE_WORK_DIR` 配下の古い directory を削除する。`state.phase == "running"` の observe JSON を持つ directory は active とみなして削除しない。既定では自動削除しない
+- クリーンアップ: request / response / observe JSON は残す（監査・デバッグ用）。run ごとの scratch directory は `DELEGATE_RUN_RETENTION_DAYS` に正の整数を指定した場合だけ、request 準備時に同じ `DELEGATE_WORK_DIR` 配下の古い directory を削除する。`running` かつ `heartbeat.ts` が retention 窓（cutoff）より新しい observe JSON を持つ directory を active とみなして削除しない。強制終了された run は `running` のまま heartbeat が停止するため、retention 窓を過ぎれば回収対象になる。回収されるのは scratch directory だけで、observe JSON の `state.phase` は `running` のまま残る。既定では自動削除しない
 - **main 事前確保の利点**: main は sub の最終メッセージをパースせずに response_file パスを決定的に知れる。sub の返答が崩れてもパスを見失わない
 
 ### 人間向け Markdown 派生物
@@ -314,7 +314,8 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 }
 ```
 
-- `state.phase`: `prepared | running | superseded | stalled | ended`。observe JSON は prepare 時点で作られるため、main が dispatch 前にリクエストを作り直すと放棄された observe が `prepared` のまま WORK_DIR に残留し得る。集計・監視は observe の全数を往復の全数とみなさず、`state.phase` で除外すること。特に usage を集計する消費者は、dispatch されなかった observe（`prepared` / `superseded`。`usage` は未設定で read-json では null 相当）を分母から除外すること。この判定には `state.started_at == null` も同値に使える。dispatch は同一 WORK_DIR / 同一 task_type / 同一 requester で dispatch 時点より mtime が古い prepared-only observe に `superseded` を付ける（basename の timestamp は秒精度で同一秒内の順序を表せないため mtime で判定する。run_dir が `DELEGATE_RUN_RETENTION_DAYS` で削除済みの候補は、削除済み directory を復活させないため触らない）。マークは best-effort であり `prepared` 残留が完全に無くなる保証はない
+- `state.phase`: `prepared | running | superseded | stalled | interrupted | ended`。observe JSON は prepare 時点で作られるため、main が dispatch 前にリクエストを作り直すと放棄された observe が `prepared` のまま WORK_DIR に残留し得る。集計・監視は observe の全数を往復の全数とみなさず、`state.phase` で除外すること。特に usage を集計する消費者は、dispatch されなかった observe（`prepared` / `superseded`。`usage` は未設定で read-json では null 相当）を分母から除外すること。この判定には `state.started_at == null` も同値に使える。dispatch は同一 WORK_DIR / 同一 task_type / 同一 requester で dispatch 時点より mtime が古い prepared-only observe に `superseded` を付ける（basename の timestamp は秒精度で同一秒内の順序を表せないため mtime で判定する。run_dir が `DELEGATE_RUN_RETENTION_DAYS` で削除済みの候補は、削除済み directory を復活させないため触らない）。マークは best-effort であり `prepared` 残留が完全に無くなる保証はない
+- `state.phase == "interrupted"`: dispatcher プロセスが終端を書けずに終了し、代わりに wrapper が終端を記録した run を示す。`response_present` が `true` なら成果物（response）は揃っている。`stalled` との違いは、`interrupted` では wrapper プロセス自身は生存し続けている可能性がある点で、dispatcher と別プロセスの wrapper が孤児化して動き続けることがあるため、implement / chore で `interrupted` の run を見た後に新しい run を出す前は `heartbeat.child_pid` の生存確認が要る。dispatcher のみが失われた場合（SIGKILL / OOM killer 等）は wrapper が生存して `interrupted` を書く。`running` のまま残るのは dispatcher と wrapper が同時に失われた場合（process group への SIGKILL 等）で、その場合は retention 窓の経過によってのみ回収される。`interrupted` の記録は best-effort である: wrapper が終端 phase を書くのは response 確定後の一点なので、その後の backend 固有 cleanup 中に dispatcher が失われた場合や wrapper 自身が例外終了した場合は記録されず `running` が残る。retention が回収するのは run ごとの scratch directory だけで observe JSON は監査用に残るため、記録漏れした run の `state.phase` は `running` のままになる。したがって観測側は終端 phase だけを待たず、`running` かつ `heartbeat.ts` が停止している observe を終端とみなす判定を持つこと。usage を集計する消費者も同様に、この条件の observe を実行中として数えないこと。専用 wrapper（`delegate-imagegen` / `delegate-x-research`）は wrapper 自身が dispatcher を兼ねるため、この経路を通らず `interrupted` を生成しない
 - `run.model_source`: `env | default`。`prepare.sh` / `prepare-imagegen.sh` 経由で初期化された observe JSON に入り、wrapper が直接初期化した fallback 経路では省略される場合がある
 - `state.dispatcher_pid`: `dispatch.sh` または専用 wrapper の管理プロセス PID。子 CLI の kill 対象ではない
 - `heartbeat.child_pid`: 実際の子 CLI PID。子 CLI 起動前の preflight failure では dispatcher PID が入る場合がある
@@ -337,6 +338,7 @@ observe JSON に記録する `backend` は model prefix ではなく実行系名
 - `events[].kind == "session_delete_failed"`: OpenCode の `session delete` が非 0 終了または timeout したことを示す。event は `session_id` / `timed_out` を持つ。状態の残留なので記録は残すが、delegate 本体は失敗させない
 - `timing`: 完了 run の所要時間テレメトリ。`total_ms` / `time_to_first_useful_event_ms` / `report_ready_at_ms` は monotonic clock 由来の経過 ms とし、backend stream から取れる `model_turns` / `tool_calls` と `measurement_source` を併記する。Claude / Codex の構造化最終応答方式では `structured_output_parse` に parse 成否（`true` / `false`）を記録し、`report_md` / `stdout_text` では `null` とする（front-matter parse の成否はここへ入れない）
 - `events[].kind == "superseded"`: dispatch 済みの新しい run が、放棄された古い prepared-only observe に付けるマーク。`superseded_by` に新しい observe の basename が入る。並列 dispatch 直前の observe を誤マークしても、その run の dispatch_start が phase を `running` で上書きするため自己修復する
+- `events[].kind == "dispatcher_lost"`: dispatcher が終端（`dispatch_end`）を書けずに失われ、wrapper が代わりに終端を記録したことを示す。`ts` / `backend` / `dispatcher_pid` / `exit_code` を持つ。直前の phase が `running` なら同じ更新で `interrupted` へ遷移し、既に `stalled` なら phase を保持したまま終端 metadata と event だけを足す。したがって event の有無だけで `interrupted` を判定しない
 - `events[].kind == "stall_timeout"`: `DELEGATE_OBSERVE_STALL_TIMEOUT_SECONDS` 有効時、stdout/stderr bytes が指定秒数増えず wrapper が子 CLI を kill したことを示す。wrapper は exit code `124` を返し、response 未生成なら failed response を書く。event の `process_tree`（pid / ppid / 経過秒 / コマンドの行配列）に kill 時点の子プロセスツリーを残し、何を待って停滞したかを stream content の目視なしで切り分けられるようにする
 - `streams.*.content`: 終了時または preflight failure 時の状況把握用。既定で末尾 `DELEGATE_OBSERVE_STREAM_MAX_BYTES` bytes だけを残し、超過時は `truncated: true` と総 bytes を記録する
 - `lineage`: opt-in の resumable / follow-up run だけに入る。`lineage_id` と、follow-up では前回 `observe_file` への `followup_of` を持つ
@@ -350,7 +352,7 @@ observe JSON の更新は `shared/src/observe-{store,lock,followup,…}.ts` に�
 watchdog の通常判定は `read-json.sh`（`jq -r <dotpath>` 相当のバンドル内蔵リーダ）で必要 field だけを読む:
 
 ```bash
-phase="$(read-json.sh .state.phase "$observe_file")"          # prepared|running|superseded|stalled|ended
+phase="$(read-json.sh .state.phase "$observe_file")"          # prepared|running|superseded|stalled|interrupted|ended
 exit_code="$(read-json.sh .state.exit_code "$observe_file")"
 present="$(read-json.sh .state.response_present "$observe_file")"
 # 正常終了は phase=ended && exit_code=0 && present=true。監視は heartbeat の

@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process'
-import { closeSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import { backendFromModel } from './backend.ts'
 import type { Env } from './build-request.ts'
@@ -14,6 +22,7 @@ import {
 } from './observe-effort.ts'
 import { writeFailedResponse } from './observe-followup.ts'
 import {
+  dispatcherLost,
   heartbeat,
   importStreams,
   initObserve,
@@ -201,6 +210,29 @@ export const recordRunContext = (context: WrapperContext): void => {
   }
 }
 
+// dispatcher が spawnSync でブロック中に SIGKILL 等で落ちると dispatchEnd を書けない。
+// wrapper は完全 async なので生存し続け、reparent で process.ppid が変わることを
+// 手がかりに検出し、代わりに終端を記録する。自身が dispatcher を兼ねる専用 wrapper
+// (imagegen / xresearch) はこの経路を通らないため process.pid 一致で除外する
+export const recordDispatcherLoss = (context: WrapperContext, exitCode: number): void => {
+  quietly(() => {
+    const doc: unknown = JSON.parse(readFileSync(context.args.observeFile, 'utf8'))
+    const dispatcherPid = getPath(doc, ['state', 'dispatcher_pid'])
+    if (typeof dispatcherPid !== 'number') {
+      return
+    }
+    if (dispatcherPid === process.pid || dispatcherPid === process.ppid) {
+      return
+    }
+    dispatcherLost(context.args.observeFile, context.workDir, {
+      backend: context.backend,
+      dispatcherPid,
+      exitCode,
+      responsePresent: hasFileContent(context.args.responseFile),
+    })
+  })
+}
+
 // 子を起動できない失敗の共通終端。stderr capture へ理由を残し、failed response を
 // 生成して response パスだけを stdout へ返す（bash 版 finish_without_child と同一）
 export const finishWithoutChild = (
@@ -235,6 +267,7 @@ export const finishWithoutChild = (
     env: context.env,
   })
   recordRunContext(context)
+  recordDispatcherLoss(context, exitCode)
   return { exitCode, stdout: `${context.args.responseFile}\n`, stderr: '' }
 }
 
@@ -693,6 +726,7 @@ export const recordFollowupOutcome = (
 // wrapper の正常系終端: response パスだけを stdout に返す
 export const wrapperResult = (context: WrapperContext, outcome: ResponseOutcome): CliResult => {
   recordRunContext(context)
+  recordDispatcherLoss(context, outcome.responseStatus)
   return {
     exitCode: outcome.responseStatus,
     stdout: `${context.args.responseFile}\n`,
@@ -702,7 +736,8 @@ export const wrapperResult = (context: WrapperContext, outcome: ResponseOutcome)
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { readdirSync, readFileSync } = await import('node:fs')
+  const { readdirSync } = await import('node:fs')
+  const { dispatchStart } = await import('./observe-store.ts')
   const { createTestScratchDir, createTestScratchFile } = await import('./test-scratch.ts')
 
   const makeCommonTestContext = (backend?: string): WrapperContext => {
@@ -941,6 +976,42 @@ if (import.meta.vitest) {
       expect(response).toMatchObject({ status: 'failed' })
       expect(JSON.stringify(response)).toContain('front-matter')
       expect(finalizeResponse(context, 0).responseStatus).toBe(1)
+    })
+  })
+
+  const contextWithDispatcher = (dispatcherPid: number): WrapperContext => {
+    const context = makeCommonTestContext()
+    dispatchStart(context.args.observeFile, context.workDir, {
+      backend: context.backend,
+      dispatcherPid,
+    })
+    return context
+  }
+
+  describe('recordDispatcherLoss', () => {
+    it('writes nothing when dispatcher_pid equals process.ppid (dispatcher still alive)', () => {
+      const context = contextWithDispatcher(process.ppid)
+      recordDispatcherLoss(context, 1)
+      const doc: unknown = JSON.parse(readFileSync(context.args.observeFile, 'utf8'))
+      expect(getPath(doc, ['state'])).toMatchObject({ phase: 'running' })
+    })
+
+    it('writes nothing when dispatcher_pid equals process.pid (dedicated wrapper)', () => {
+      const context = contextWithDispatcher(process.pid)
+      recordDispatcherLoss(context, 1)
+      const doc: unknown = JSON.parse(readFileSync(context.args.observeFile, 'utf8'))
+      expect(getPath(doc, ['state'])).toMatchObject({ phase: 'running' })
+    })
+
+    it('records interrupted when dispatcher_pid differs from both pid and ppid', () => {
+      const lostPid = process.pid + process.ppid + 1
+      const context = contextWithDispatcher(lostPid)
+      recordDispatcherLoss(context, 1)
+      const doc: unknown = JSON.parse(readFileSync(context.args.observeFile, 'utf8'))
+      expect(getPath(doc, ['state'])).toMatchObject({
+        phase: 'interrupted',
+        dispatcher_pid: lostPid,
+      })
     })
   })
 }
