@@ -91,22 +91,35 @@ const resolveCursorAgent = (env: Env, timeoutMs = 10_000): string | null => {
 // Cursor catalog 側が parameterized model かどうかに従うため:
 // glm-5.2 は parameterized で bracket override（glm-5.2[reasoning=<v>]）を受理し、
 // grok-4.5 は bracket を受理せず catalog の effort 別 slug（cursor-grok-4.5-<v>）のみ
-// 通る。grok-4.6 も catalog slug（cursor-grok-4.6-<v>[-fast]）を使い、CLI model 名は
+// 通る。grok-4.6 / 4.7 も catalog slug（<slug base>-<v>[-fast]）を使い、CLI model 名は
 // base model と一致しない場合がある
-const cursorGrok46CliModelOf = (context: WrapperContext, model: string): string => {
-  // catalog の素の grok-4.6 は high かつ fast を既定にし、grok-4.6-fast は catalog に
-  // 存在しない名前のため、どちらの表記も effort 無指定時に明示 slug へ解決して
-  // 指定どおりの fast / non-fast 単価を保つ
-  const effort = context.effort || 'high'
-  if (model === 'grok-4.6-fast') {
-    return `cursor-grok-4.6-${effort}-fast`
+// grok-4.7 の catalog slug には 4.6 と異なり `cursor-` prefix が付かない
+const CURSOR_GROK_SLUG_BASE: ReadonlyMap<string, string> = new Map([
+  ['grok-4.6', 'cursor-grok-4.6'],
+  ['grok-4.6-fast', 'cursor-grok-4.6'],
+  ['grok-4.7', 'grok-4.7'],
+  ['grok-4.7-fast', 'grok-4.7'],
+])
+
+// catalog の素の grok-4.6 / 4.7 は high かつ fast を既定にし、<base>-fast は catalog に
+// 存在しない名前のため、どちらの表記も effort 無指定時に明示 slug へ解決して
+// 指定どおりの fast / non-fast 単価を保つ
+const cursorGrokSlugCliModelOf = (context: WrapperContext, model: string): string | null => {
+  const slugBase = CURSOR_GROK_SLUG_BASE.get(model)
+  if (typeof slugBase === 'undefined') {
+    return null
   }
-  return `cursor-grok-4.6-${effort}`
+  const effort = context.effort || 'high'
+  if (model.endsWith('-fast')) {
+    return `${slugBase}-${effort}-fast`
+  }
+  return `${slugBase}-${effort}`
 }
 
 const cursorCliModelOf = (context: WrapperContext, model: string): string | CliResult => {
-  if (model === 'grok-4.6' || model === 'grok-4.6-fast') {
-    return cursorGrok46CliModelOf(context, model)
+  const grokSlug = cursorGrokSlugCliModelOf(context, model)
+  if (grokSlug !== null) {
+    return grokSlug
   }
   if (context.effort === '') {
     return model
@@ -570,6 +583,15 @@ if (import.meta.vitest) {
       for (const effort of ['low', 'medium', 'high', 'xhigh']) {
         expect(cliModelFor(`cursor-grok-4.6@${effort}`)).toBe(`cursor-grok-4.6-${effort}`)
         expect(cliModelFor(`cursor-grok-4.6-fast@${effort}`)).toBe(`cursor-grok-4.6-${effort}-fast`)
+      }
+    })
+
+    it('maps 4.7 non-fast and fast names to catalog slugs without the cursor- prefix', () => {
+      expect(cliModelFor('cursor-grok-4.7')).toBe('grok-4.7-high')
+      expect(cliModelFor('cursor-grok-4.7-fast')).toBe('grok-4.7-high-fast')
+      for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+        expect(cliModelFor(`cursor-grok-4.7@${effort}`)).toBe(`grok-4.7-${effort}`)
+        expect(cliModelFor(`cursor-grok-4.7-fast@${effort}`)).toBe(`grok-4.7-${effort}-fast`)
       }
     })
 

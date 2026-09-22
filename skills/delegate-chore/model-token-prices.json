@@ -328,6 +328,28 @@
       "pricing_source": "cursor"
     },
     {
+      "model_provider": "cursor",
+      "model": "grok-4.7",
+      "display_name": "Grok 4.7(cursor)",
+      "input": 2,
+      "cached_input": 0.5,
+      "output": 6,
+      "context": "standard",
+      "pricing_source": "cursor",
+      "retrieved_at": "2026-09-22"
+    },
+    {
+      "model_provider": "cursor",
+      "model": "grok-4.7-fast",
+      "display_name": "Grok 4.7 Fast(cursor)",
+      "input": 4,
+      "cached_input": 1,
+      "output": 12,
+      "context": "standard",
+      "pricing_source": "cursor",
+      "retrieved_at": "2026-09-22"
+    },
+    {
       "model_provider": "google",
       "model": "gemini-3.1-pro",
       "display_name": "Gemini 3.1 Pro(cursor)",

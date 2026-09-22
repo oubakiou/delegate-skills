@@ -2599,7 +2599,7 @@ var CURSOR_GROK_EFFORTS = /* @__PURE__ */ new Set([
 	"medium",
 	"high"
 ]);
-var CURSOR_GROK_46_EFFORTS = /* @__PURE__ */ new Set([
+var CURSOR_GROK_46_47_EFFORTS = /* @__PURE__ */ new Set([
 	"low",
 	"medium",
 	"high",
@@ -2615,11 +2615,19 @@ var CURSOR_NAMED_MODEL_RULES = /* @__PURE__ */ new Map([
 		allowedLabel: "low|medium|high"
 	}],
 	["grok-4.6", {
-		allowed: CURSOR_GROK_46_EFFORTS,
+		allowed: CURSOR_GROK_46_47_EFFORTS,
 		allowedLabel: "low|medium|high|xhigh"
 	}],
 	["grok-4.6-fast", {
-		allowed: CURSOR_GROK_46_EFFORTS,
+		allowed: CURSOR_GROK_46_47_EFFORTS,
+		allowedLabel: "low|medium|high|xhigh"
+	}],
+	["grok-4.7", {
+		allowed: CURSOR_GROK_46_47_EFFORTS,
+		allowedLabel: "low|medium|high|xhigh"
+	}],
+	["grok-4.7-fast", {
+		allowed: CURSOR_GROK_46_47_EFFORTS,
 		allowedLabel: "low|medium|high|xhigh"
 	}]
 ]);
@@ -2662,7 +2670,7 @@ var validateCursorEffort = (model, base, effort) => {
 	if (cursorModel.endsWith("-high") || cursorModel.endsWith("-max")) return invalid(`ERROR: effort suffix cannot be combined with the effort slug in cursor model '${model}'; use either '${base}' or '${base.slice(0, base.lastIndexOf("-"))}@<effort>'`);
 	const named = cursorNamedModelValidation(cursorModel, model, effort);
 	if (named !== null) return named;
-	return invalid(`ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high), cursor-grok-4.6@(low|medium|high|xhigh), cursor-grok-4.6-fast@(low|medium|high|xhigh)`);
+	return invalid(`ERROR: effort suffix is not supported for cursor model '${model}'; supported: cursor-glm-5.2@(high|max), cursor-grok-4.5@(low|medium|high), cursor-grok-4.6@(low|medium|high|xhigh), cursor-grok-4.6-fast@(low|medium|high|xhigh), cursor-grok-4.7@(low|medium|high|xhigh), cursor-grok-4.7-fast@(low|medium|high|xhigh)`);
 };
 var validateConfiguredBackendEffort = (context, rule) => {
 	if (rule.allowed.has(context.effort)) return { ok: true };
@@ -2689,12 +2697,24 @@ var validateModelEffort = (backend, model) => {
 		effort
 	});
 };
-var CURSOR_GROK_SLUG_PATTERN = /^cursor-grok-4\.5-(?<effort>low|medium|high)$/;
-var CURSOR_GROK_46_SLUG_PATTERN = /^cursor-grok-4\.6-(?<effort>low|medium|high|xhigh)(?<fast>-fast)?$/;
+var CURSOR_GROK_SLUG_CORRECTIONS = [
+	{
+		pattern: /^cursor-grok-4\.5-(?<effort>low|medium|high)$/,
+		corrected: "cursor-grok-4.5"
+	},
+	{
+		pattern: /^cursor-grok-4\.6-(?<effort>low|medium|high|xhigh)(?<fast>-fast)?$/,
+		corrected: "cursor-grok-4.6"
+	},
+	{
+		pattern: /^cursor-grok-4\.7-(?<effort>low|medium|high|xhigh)(?<fast>-fast)?$/,
+		corrected: "cursor-grok-4.7"
+	}
+];
 var cursorModelNameIssue = (model) => {
 	const { base_model: base } = splitModelEffort(model);
 	if (base.startsWith("cursor-cursor-")) return "the 'cursor-' backend prefix must appear exactly once";
-	if (CURSOR_GROK_SLUG_PATTERN.test(base) || CURSOR_GROK_46_SLUG_PATTERN.test(base)) return "grok effort must be specified with the '@' suffix, not the catalog slug";
+	if (CURSOR_GROK_SLUG_CORRECTIONS.some(({ pattern }) => pattern.test(base))) return "grok effort must be specified with the '@' suffix, not the catalog slug";
 	return null;
 };
 var collapseCursorSelectors = (base) => {
@@ -2713,10 +2733,10 @@ var reattachEffort = (base, effort) => {
 var correctedCursorModel = (model) => {
 	const { base_model: base, effort } = splitModelEffort(model);
 	const collapsed = collapseCursorSelectors(base);
-	const grokSlug = CURSOR_GROK_SLUG_PATTERN.exec(collapsed);
-	if (grokSlug !== null) return `cursor-grok-4.5@${grokSlug[1]}`;
-	const grok46Slug = CURSOR_GROK_46_SLUG_PATTERN.exec(collapsed);
-	if (grok46Slug !== null) return `cursor-grok-4.6${grok46Slug[2] ?? ""}@${grok46Slug[1]}`;
+	for (const { pattern, corrected } of CURSOR_GROK_SLUG_CORRECTIONS) {
+		const slug = pattern.exec(collapsed);
+		if (slug !== null) return `${corrected}${slug[2] ?? ""}@${slug[1]}`;
+	}
 	return reattachEffort(dropComposerSelector(collapsed), effort);
 };
 var cursorCorrectionGuidance = (model) => {
@@ -2841,7 +2861,7 @@ var resolveCursorParams = (config, model, baseModel) => {
 	return cursorParamsFor(config, baseModel);
 };
 var firstParamValue = (params, ids) => {
-	for (const param of params) if (isRecord$1(param) && typeof param.id === "string" && ids.includes(param.id)) return jqCoalesce(param.value);
+	for (const id of ids) for (const param of params) if (isRecord$1(param) && param.id === id) return jqCoalesce(param.value);
 	return null;
 };
 var asFastBoolean = (fastRaw) => {
@@ -2869,7 +2889,11 @@ var effortFromCursorConfig = (model, cliConfig) => {
 	const slugEffort = cursorSlugEffort(model);
 	const baseModel = cursorConfigBaseModel(model, slugEffort);
 	const params = resolveCursorParams(readConfigJson(cliConfig), model, baseModel);
-	let effort = firstParamValue(params, ["effort", "reasoning"]);
+	let effort = firstParamValue(params, [
+		"effort",
+		"reasoning",
+		"reasoning_effort"
+	]);
 	if (slugEffort !== "") effort = slugEffort;
 	return buildCursorEffort(effort, firstParamValue(params, ["fast"]));
 };
@@ -6216,13 +6240,22 @@ var resolveCursorAgent = (env, timeoutMs = 1e4) => {
 	for (const candidate of cursorAgentCandidates(env)) if (cursorAgentVersionIsValid(candidate, env, timeoutMs)) return candidate;
 	return null;
 };
-var cursorGrok46CliModelOf = (context, model) => {
+var CURSOR_GROK_SLUG_BASE = /* @__PURE__ */ new Map([
+	["grok-4.6", "cursor-grok-4.6"],
+	["grok-4.6-fast", "cursor-grok-4.6"],
+	["grok-4.7", "grok-4.7"],
+	["grok-4.7-fast", "grok-4.7"]
+]);
+var cursorGrokSlugCliModelOf = (context, model) => {
+	const slugBase = CURSOR_GROK_SLUG_BASE.get(model);
+	if (typeof slugBase === "undefined") return null;
 	const effort = context.effort || "high";
-	if (model === "grok-4.6-fast") return `cursor-grok-4.6-${effort}-fast`;
-	return `cursor-grok-4.6-${effort}`;
+	if (model.endsWith("-fast")) return `${slugBase}-${effort}-fast`;
+	return `${slugBase}-${effort}`;
 };
 var cursorCliModelOf = (context, model) => {
-	if (model === "grok-4.6" || model === "grok-4.6-fast") return cursorGrok46CliModelOf(context, model);
+	const grokSlug = cursorGrokSlugCliModelOf(context, model);
+	if (grokSlug !== null) return grokSlug;
 	if (context.effort === "") return model;
 	if (model === "glm-5.2") return `glm-5.2[reasoning=${context.effort}]`;
 	if (model === "grok-4.5") return `cursor-grok-4.5-${context.effort}`;

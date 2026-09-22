@@ -3065,6 +3065,23 @@ describe('wrapper cursor grok effort slug', () => {
       expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', expectedCliModel])
     }
   })
+
+  it('maps 4.7 names to catalog slugs without the cursor- prefix in argv', () => {
+    for (const [model, expectedCliModel] of [
+      ['cursor-grok-4.7', 'grok-4.7-high'],
+      ['cursor-grok-4.7@xhigh', 'grok-4.7-xhigh'],
+      ['cursor-grok-4.7-fast', 'grok-4.7-high-fast'],
+      ['cursor-grok-4.7-fast@xhigh', 'grok-4.7-xhigh-fast'],
+    ] as const) {
+      const fixture = makeFixture('cursor')
+      const result = runWrapper('delegate-cursor.sh', wrapperModelArgs(fixture, model), fixture.env)
+      const log = readLog(fixture.logFile)
+      const modelIndex = log.args.indexOf('--model')
+
+      expect(result.status).toBe(0)
+      expect(log.args.slice(modelIndex, modelIndex + 2)).toEqual(['--model', expectedCliModel])
+    }
+  })
 })
 
 describe('wrapper cursor model name validation', () => {
