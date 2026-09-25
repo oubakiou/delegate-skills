@@ -2887,7 +2887,7 @@ describe('wrapper effort suffix', () => {
     })
   })
 
-  it.each(['gpt-5.6-sol', 'gpt-6-astra'])(
+  it.each(['gpt-5.6-sol', 'gpt-6-astra', 'gpt-6-sol'])(
     'passes the ultra effort suffix through to Codex for %s',
     (model) => {
       const fixture = makeFixture('codex')

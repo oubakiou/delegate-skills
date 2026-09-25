@@ -319,6 +319,8 @@ if (import.meta.vitest) {
   describe('augmentCostEstimate', () => {
     it.each([
       { model: 'gpt-6-astra@ultra', priced: 'gpt-6-astra', source: 'openai', backend: 'codex' },
+      { model: 'gpt-6-sol@ultra', priced: 'gpt-6-sol', source: 'openai', backend: 'codex' },
+      { model: 'gpt-6-luna@max', priced: 'gpt-6-luna', source: 'openai', backend: 'codex' },
       { model: 'gpt-5.6@high', priced: 'gpt-5.6-sol', source: 'openai', backend: 'codex' },
       {
         model: 'claude-fable-5-1@high',
@@ -327,6 +329,13 @@ if (import.meta.vitest) {
         backend: 'claude',
       },
       { model: 'fable@high', priced: 'claude-fable-5.1', source: 'anthropic', backend: 'claude' },
+      {
+        model: 'claude-opus-5-5@high',
+        priced: 'claude-opus-5.5',
+        source: 'anthropic',
+        backend: 'claude',
+      },
+      { model: 'opus@high', priced: 'claude-opus-5.5', source: 'anthropic', backend: 'claude' },
       {
         model: 'devin-gemini-3.8-flash',
         priced: 'gemini-3.8-flash',
