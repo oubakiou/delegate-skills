@@ -319,6 +319,7 @@ if (import.meta.vitest) {
   describe('augmentCostEstimate', () => {
     it.each([
       { model: 'gpt-6-astra@ultra', priced: 'gpt-6-astra', source: 'openai', backend: 'codex' },
+      { model: 'gpt-6.1-sol@ultra', priced: 'gpt-6.1-sol', source: 'openai', backend: 'codex' },
       { model: 'gpt-6-sol@ultra', priced: 'gpt-6-sol', source: 'openai', backend: 'codex' },
       { model: 'gpt-6-luna@max', priced: 'gpt-6-luna', source: 'openai', backend: 'codex' },
       { model: 'gpt-5.6@high', priced: 'gpt-5.6-sol', source: 'openai', backend: 'codex' },
