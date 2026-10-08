@@ -338,6 +338,13 @@ if (import.meta.vitest) {
       },
       { model: 'opus@high', priced: 'claude-opus-5.5', source: 'anthropic', backend: 'claude' },
       {
+        model: 'claude-haiku-5-5@max',
+        priced: 'claude-haiku-5.5',
+        source: 'anthropic',
+        backend: 'claude',
+      },
+      { model: 'haiku', priced: 'claude-haiku-5.5', source: 'anthropic', backend: 'claude' },
+      {
         model: 'devin-gemini-3.8-flash',
         priced: 'gemini-3.8-flash',
         source: 'cognition_cli',
