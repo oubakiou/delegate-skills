@@ -63,6 +63,16 @@
     },
     {
       "model_provider": "anthropic",
+      "model": "claude-sonnet-5.5",
+      "display_name": "Claude Sonnet 5.5",
+      "input": 2,
+      "cached_input": 0.1,
+      "output": 10,
+      "pricing_source": "anthropic",
+      "retrieved_at": "2026-10-08"
+    },
+    {
+      "model_provider": "anthropic",
       "model": "claude-sonnet-5",
       "display_name": "Claude Sonnet 5",
       "input": 2,
@@ -749,7 +759,7 @@
     {
       "model_provider": "anthropic",
       "alias": "sonnet",
-      "alias_for": "claude-sonnet-5"
+      "alias_for": "claude-sonnet-5.5"
     },
     {
       "model_provider": "anthropic",
@@ -770,6 +780,11 @@
       "model_provider": "anthropic",
       "alias": "claude-opus-4-8[1m]",
       "alias_for": "claude-opus-4.8"
+    },
+    {
+      "model_provider": "anthropic",
+      "alias": "claude-sonnet-5-5",
+      "alias_for": "claude-sonnet-5.5"
     },
     {
       "model_provider": "anthropic",

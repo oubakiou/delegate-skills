@@ -345,6 +345,13 @@ if (import.meta.vitest) {
       },
       { model: 'haiku', priced: 'claude-haiku-5.5', source: 'anthropic', backend: 'claude' },
       {
+        model: 'claude-sonnet-5-5@medium',
+        priced: 'claude-sonnet-5.5',
+        source: 'anthropic',
+        backend: 'claude',
+      },
+      { model: 'sonnet', priced: 'claude-sonnet-5.5', source: 'anthropic', backend: 'claude' },
+      {
         model: 'devin-gemini-3.8-flash',
         priced: 'gemini-3.8-flash',
         source: 'cognition_cli',
